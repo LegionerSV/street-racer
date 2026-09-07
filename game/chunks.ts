@@ -1,5 +1,5 @@
 import earcut from 'earcut';
-import { dashSpans } from './markings';
+import { dashSpans, periodicOffsets } from './markings';
 import type { Building, ChunkData, Edge, MeshData, Point, Settings, World } from './types';
 import { CHUNK_SIZE, distance2, mixPoint, polygonContains, projectOnSegment, sampleElevation, seeded, smooth, tileKey } from './geo';
 
@@ -61,18 +61,20 @@ function clipToChunk(polygon: Point[], x0: number, z0: number): Point[] {
 export function indexWorld(world: World): Index {
   const existing = worldIndices.get(world); if (existing) return existing;
   const index: Index = { segments: new Map(), owned: new Map(), buildings: new Map(), junctions: new Set() }, seen = new Set<string>();
-  const nodeWays = new Map<number, Set<number>>();
   const links = new Map<number, Set<number>>(), normals = new Map<string, { x: number; z: number; count: number }>();
+  const endpoints = new Map<number, { normal: { x: number; z: number }; x: number; z: number; sign: number }[]>();
   const normalAt = (edge: Edge, p: Point, x: number, z: number) => { const key = `${edge.way}/${p.x.toFixed(3)}/${p.y.toFixed(3)}/${p.z.toFixed(3)}`, normal = normals.get(key) || { x: 0, z: 0, count: 0 }; normal.x += x; normal.z += z; normal.count++; normals.set(key, normal); return normal; };
   for (const edge of world.edges) {
     const id = `${edge.way}/${Math.min(edge.from, edge.to)}/${Math.max(edge.from, edge.to)}`;
     if (seen.has(id)) continue; seen.add(id);
-    for (const id of [edge.from, edge.to]) { const ways = nodeWays.get(id) || new Set<number>(); ways.add(edge.way); nodeWays.set(id, ways); }
     for (const [a, b] of [[edge.from, edge.to], [edge.to, edge.from]]) { const neighbours = links.get(a) || new Set<number>(); neighbours.add(b); links.set(a, neighbours); }
     let station = edge.markingStart || 0;
     for (let i = 0; i < edge.points.length - 1; i++) {
       const a = edge.points[i], b = edge.points[i + 1], length = distance2(a, b) || 1, nx = (b.z - a.z) / length, nz = -(b.x - a.x) / length;
       const segment: Segment = { a, b, edge, index: i, station, na: normalAt(edge, a, nx, nz), nb: normalAt(edge, b, nx, nz) };
+      for (const [id, normal, sign] of [[i === 0 ? edge.from : null, segment.na!, 1], [i === edge.points.length - 2 ? edge.to : null, segment.nb!, -1]] as const) if (id !== null) {
+        const list = endpoints.get(id) || []; list.push({ normal, x: nx * sign, z: nz * sign, sign }); endpoints.set(id, list);
+      }
       station += length * (edge.laneProfile?.direction || 1);
       const key = tileKey((a.x + b.x) / 2, (a.z + b.z) / 2), list = index.owned.get(key) || []; list.push(segment); index.owned.set(key, list);
       const extra = edge.width / 2 + 35;
@@ -81,8 +83,16 @@ export function indexWorld(world: World): Index {
       }
     }
   }
-  for (const [id, neighbours] of links) if (neighbours.size > 2 || (neighbours.size === 2 && (nodeWays.get(id)?.size || 0) > 1)) index.junctions.add(id);
+  for (const [id, neighbours] of links) if (neighbours.size > 2) index.junctions.add(id);
   for (const normal of normals.values()) { normal.x /= normal.count; normal.z /= normal.count; const square = normal.x * normal.x + normal.z * normal.z; const factor = Math.min(1 / (square || 1), 1.8 / (Math.sqrt(square) || 1)); normal.x *= factor; normal.z *= factor; }
+  // Стык двух way тоже имеет общие поперечные вершины. Учитываем направление
+  // каждого торца, в том числе когда один OSM-путь записан задом наперёд.
+  for (const [id, ends] of endpoints) if (links.get(id)?.size === 2 && ends.length === 2 && ends[0].normal !== ends[1].normal) {
+    const [a, b] = ends, x = (a.x - b.x) / 2, z = (a.z - b.z) / 2, square = x * x + z * z;
+    const factor = Math.min(1 / (square || 1), 1.8 / (Math.sqrt(square) || 1));
+    a.normal.x = x * factor * a.sign; a.normal.z = z * factor * a.sign;
+    b.normal.x = -x * factor * b.sign; b.normal.z = -z * factor * b.sign;
+  }
   for (const b of world.buildings) {
     const center = b.footprint.reduce((a, p) => ({ x: a.x + p.x / b.footprint.length, y: 0, z: a.z + p.z / b.footprint.length }), { x: 0, y: 0, z: 0 });
     const key = tileKey(center.x, center.z), list = index.buildings.get(key) || []; list.push(b); index.buildings.set(key, list);
@@ -173,21 +183,21 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
         const aa = { x: a.x + nx * (w + .4) * side, y: a.y, z: a.z + nz * (w + .4) * side }, bb = { x: b.x + nx * (w + .4) * side, y: b.y, z: b.z + nz * (w + .4) * side };
         quad(result.structures, aa, bb, { ...bb, y: bb.y + 1.1 }, { ...aa, y: aa.y + 1.1 }, [.37, .41, .41]);
       }
-      if (s.index % 7 === 3) { const p = mixPoint(a, b, .5), base = sampleElevation(world.elevation, p.x, p.z); if (p.y - base > 2) box(result.structures, { ...p, y: base }, 1.4, p.y - base - .5, 1.4, [.23, .27, .28]); }
+      for (const d of periodicOffsets(s.station, distance2(a, b), edge.laneProfile?.direction || 1, 70, 35)) { const p = mixPoint(a, b, d / distance2(a, b)), base = sampleElevation(world.elevation, p.x, p.z); if (p.y - base > 2) box(result.structures, { ...p, y: base }, 1.4, p.y - base - .5, 1.4, [.23, .27, .28]); }
     }
     if (edge.tunnel) {
       const length = distance2(a, b), nx = (b.z - a.z) / length, nz = -(b.x - a.x) / length;
       const offset = (p: Point, side: number) => ({ x: p.x + nx * (w + 1) * side, y: p.y - .3, z: p.z + nz * (w + 1) * side });
       for (const side of [-1, 1]) { const aa = offset(a, side), bb = offset(b, side); quad(result.structures, aa, bb, { ...bb, y: bb.y + 6 }, { ...aa, y: aa.y + 6 }, [.26, .29, .28]); }
       ribbon(result.structures, a, b, -w - 1, w + 1, 5.7, [.25, .28, .27]);
-      if (lod === 0 && s.index % 3 === 0) ribbon(result.windows, a, mixPoint(a, b, .35), w - .4, w - .1, 5.6, [.7, .85, .85]);
+      if (lod === 0) for (const [start, end] of dashSpans(s.station, length, edge.laneProfile?.direction || 1, 30, 3)) ribbon(result.windows, mixPoint(a, b, start / length), mixPoint(a, b, end / length), w - .4, w - .1, 5.6, [.7, .85, .85]);
     }
     if (edge.blocked && s.index === 0 && Math.abs(a.x) < 2490 && Math.abs(a.z) < 2490) {
       const length = distance2(a, b), nx = (b.z - a.z) / length, nz = -(b.x - a.x) / length;
       for (let k = -Math.floor(w / 1.4); k <= Math.floor(w / 1.4); k++) box(result.structures, { x: a.x + nx * k * 1.4, y: a.y, z: a.z + nz * k * 1.4 }, 1.3, .9, 1.3, k % 2 ? [.8, .33, .12] : [.67, .68, .58]);
     }
-    if (lod === 0 && !edge.tunnel && s.index % 7 === 0 && (s.index > 0 || edge.length > 35)) {
-      const l = distance2(a, b), p = { x: a.x + (b.z - a.z) / l * (w + 1.6), y: a.y, z: a.z - (b.x - a.x) / l * (w + 1.6) };
+    if (lod === 0 && !edge.tunnel) for (const d of periodicOffsets(s.station, distance2(a, b), edge.laneProfile?.direction || 1)) {
+      const l = distance2(a, b), anchor = mixPoint(a, b, d / l), p = { x: anchor.x + (b.z - a.z) / l * (w + 1.6), y: anchor.y, z: anchor.z - (b.x - a.x) / l * (w + 1.6) };
       const free = segments.every(other => Math.abs(other.a.y-p.y)>3 || projectOnSegment(p,other.a,other.b).distance > other.edge.width/2+.6);
       if (free) { box(result.structures, p, .12, 7, .12, [.2, .25, .25]); box(result.windows, { ...p, y: p.y + 7 }, .7, .12, 1.4, [.85, .82, .55]); result.lamps.push({ ...p, y: p.y + 6.7 }); }
     }

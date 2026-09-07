@@ -1,5 +1,6 @@
 import type { Area, Building, Edge, OSMElement, Point, RegionData, Restriction, RoadNode, Route, World } from './types';
-import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment } from './geo';
+import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, sampleRoadElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment } from './geo';
+import { structureProfiles } from './elevation';
 import { validateClearance } from './clearance';
 import { roadLayout, directedLanes } from './lanes';
 
@@ -51,18 +52,24 @@ export function buildWorld(region: RegionData): World {
   // Все объекты используют одну относительную высоту, чтобы избежать потери точности физики.
   const elevation = { ...filteredElevation, values: Float32Array.from(filteredElevation.values, h => h - originHeight) };
   const local = (id: number): Point | null => { const n = sourceNodes.get(id); if (n?.lat === undefined || n.lon === undefined) return null; const p = toLocal(n.lat, n.lon, region.center); p.y = sampleElevation(elevation, p.x, p.z); return p; };
+  const roadLocal = (id: number): Point | null => { const p = local(id); if (p) p.y = sampleRoadElevation(elevation, p.x, p.z); return p; };
   const tagsNumber = (value: string | undefined, fallback: number) => { const n = parseFloat(value || ''); return Number.isFinite(n) ? n : fallback; };
-  for (const way of region.elements) {
+  const roadWays = region.elements.filter(way => {
+    const tags = way.tags || {};
+    return way.type === 'way' && way.nodes && roadTypes.has(tags.highway) && tags.area !== 'yes' && tags.access !== 'no' && tags.access !== 'private' && tags.motor_vehicle !== 'no' && tags.motorcar !== 'no';
+  });
+  const profiles = structureProfiles(roadWays, roadLocal, elevation);
+  for (const way of roadWays) {
     const tags = way.tags || {};
     if (way.type !== 'way' || !way.nodes || !roadTypes.has(tags.highway) || tags.area === 'yes' || tags.access === 'no' || tags.access === 'private' || tags.motor_vehicle === 'no' || tags.motorcar === 'no') continue;
     const bridge = !!tags.bridge && tags.bridge !== 'no', tunnel = !!tags.tunnel && !['no', 'building_passage'].includes(tags.tunnel);
     const layout=roadLayout(tags),oneWay=layout.oneWay===1,reverse=layout.oneWay===-1,lanes=layout.total,width=layout.width;
     const speedTag = tagsNumber(tags.maxspeed, tags.highway === 'living_street' ? 20 : tags.highway === 'motorway' ? 90 : tags.highway === 'service' ? 25 : 50);
     const speed = clamp(speedTag * (tags.maxspeed?.includes('mph') ? 1.609344 : 1) / 3.6, 5, 36);
-    const full = way.nodes.map(local);
+    const full = way.nodes.map(roadLocal);
     if (full.some(p => !p)) { warnings.push(`Дорога ${way.id}: неполные координаты.`); continue; }
-    const source = full as Point[], lengths = pathLengths(source), total = lengths.at(-1) || 1;
-    const first = source[0], last = source[source.length - 1];
+    const source = full as Point[], lengths = [0];
+    for (let i = 1; i < source.length; i++) lengths.push(lengths[i - 1] + distance2(source[i - 1], source[i]));
     const layer = tagsNumber(tags.layer, bridge ? 1 : tunnel ? -1 : 0);
     for (let i = 0; i < way.nodes.length - 1; i++) {
       const a = source[i], b = source[i + 1];
@@ -70,15 +77,10 @@ export function buildWorld(region: RegionData): World {
       if ((Math.abs(a.x) > 2600 || Math.abs(a.z) > 2600) && (Math.abs(b.x) > 2600 || Math.abs(b.z) > 2600)) continue;
       // Дороги, пересекающие границу, закрываются, а не ведут за пределы подготовленного мира.
       const outside = [a, b].some(p => Math.abs(p.x) > 2480 || Math.abs(p.z) > 2480);
-      let points = resample([a, b], 10);
+      let points = resample([a, b], bridge || tunnel ? 2.5 : 10);
+      const profile = profiles.get(`${way.id}:${i}`);
       points = points.map((p, j) => {
-        const d = lengths[i] + distance2(a, b) * j / (points.length - 1), t = d / total;
-        let h = sampleElevation(elevation, p.x, p.z);
-        if (bridge || tunnel) {
-          const transition = smooth(Math.min(d, total - d) / Math.min(90, total * .4));
-          const base = first.y + (last.y - first.y) * t;
-          h = bridge ? base + Math.max(6.5, Math.abs(layer) * 6.5) * transition : base - Math.max(8, Math.abs(layer) * 7) * transition;
-        }
+        const h = profile ? profile(j / (points.length - 1)) : sampleRoadElevation(elevation, p.x, p.z);
         return { ...p, y: h + .12 };
       });
       const grades = points.slice(1).map((p, j) => Math.abs(p.y - points[j].y) / (distance2(p, points[j]) || 1));
@@ -168,13 +170,12 @@ export function buildWorld(region: RegionData): World {
   if (omitted) warnings.push(`${omitted} конфликтующих контуров зданий пропущено для свободного проезда.`);
   buildings.splice(0, buildings.length, ...validBuildings);
   const nodes = [...roadNodes.values()];
-  const neighbours = new Map<number, Set<number>>(), nodeWays = new Map<number, Set<number>>();
-  for (const e of edges) for (const id of [e.from, e.to]) { const ways = nodeWays.get(id) || new Set<number>(); ways.add(e.way); nodeWays.set(id, ways); }
+  const neighbours = new Map<number, Set<number>>();
   for (const edge of edges) for (const [a, b] of [[edge.from, edge.to], [edge.to, edge.from]]) { const list = neighbours.get(a) || new Set<number>(); list.add(b); neighbours.set(a, list); }
   for (const edge of edges) {
     const distances = pathLengths(edge.points), total = distances.at(-1)!;
     const start = roadNodes.get(edge.from)!, end = roadNodes.get(edge.to)!;
-    const junction = (id: number) => (neighbours.get(id)?.size || 0) > 2 || (nodeWays.get(id)?.size || 0) > 1;
+    const junction = (id: number) => (neighbours.get(id)?.size || 0) > 2;
     const flattenStart = junction(edge.from), flattenEnd = junction(edge.to);
     edge.points = edge.points.map((p, i) => { let y = p.y; if (flattenStart && distances[i] < 16) y = start.y + (y - start.y) * smooth(distances[i] / 16); if (flattenEnd && total - distances[i] < 16) y = end.y + (y - end.y) * smooth((total - distances[i]) / 16); return { ...p, y }; });
     edge.length = pathLengths(edge.points).at(-1)!;
@@ -243,7 +244,11 @@ export function createRoutes(world: World): Route[] {
     for (const id of ids) raw.push(...world.edges[id].points.slice(raw.length ? 1 : 0));
     // Контрольные точки по 70 м, с обязательными углами маршрута.
     const points = [raw[0]];
-    for (let i = 1; i < raw.length - 1; i++) if (distance2(points.at(-1)!, raw[i]) > 65 || (i % 4 === 0 && Math.abs((raw[i].x - raw[i - 1].x) * (raw[i + 1].z - raw[i].z) - (raw[i].z - raw[i - 1].z) * (raw[i + 1].x - raw[i].x)) > 20)) points.push(raw[i]);
+    for (let i = 1; i < raw.length - 1; i++) {
+      const a = raw[i - 1], b = raw[i], c = raw[i + 1];
+      const turn = Math.abs((b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x)) / (distance2(a, b) * distance2(b, c) || 1);
+      if (distance2(points.at(-1)!, b) > 65 || turn > .1) points.push(b);
+    }
     points.push(raw.at(-1)!);
     const cumulative = pathLengths(points), length = cumulative.at(-1)!;
     if (length < 400) return;
