@@ -1,5 +1,5 @@
-import { distance2, mixPoint, projectOnSegment, smoother } from './geo';
-import type { Edge, Point } from './types';
+import { distance2, mixPoint, projectOnSegment, smoother, sampleRoadElevation } from './geo';
+import type { Edge, Point, ElevationGrid } from './types';
 
 export const BRIDGE_DECK_THICKNESS = 0.55;
 export const MIN_ROAD_CLEARANCE = 3.5;
@@ -145,6 +145,12 @@ export function crossingClearance(c: RoadCrossing) {
 // Поднимаем связанную конструкцию целиком; поправка плавно затухает на подходах
 // по расстоянию вдоль дорожного графа, а не по близости соседней набережной.
 export function fitBridgeClearance(edges: Edge[]) {
+  fitStructureHeight(edges);
+}
+export function fitTunnelDepth(edges: Edge[], elevation: ElevationGrid) {
+  fitStructureHeight(edges, elevation);
+}
+function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
   const physical = physicalEdges(edges),
     links = new Map<number, Edge[]>();
   for (const e of physical)
@@ -156,8 +162,8 @@ export function fitBridgeClearance(edges: Edge[]) {
   const visited = new Set<Edge>(),
     groups: Edge[][] = [];
   for (const seed of physical
-    .filter((e) => e.bridge)
-    .sort((a, b) => a.layer - b.layer || a.way - b.way)) {
+    .filter((e) => tunnelTerrain ? e.tunnel : e.bridge)
+    .sort((a, b) => (tunnelTerrain ? b.layer - a.layer : a.layer - b.layer) || a.way - b.way)) {
     if (visited.has(seed)) continue;
     const group: Edge[] = [],
       queue = [seed];
@@ -168,7 +174,7 @@ export function fitBridgeClearance(edges: Edge[]) {
       group.push(e);
       for (const id of [e.from, e.to])
         for (const next of links.get(id) || [])
-          if (next.bridge && next.layer === seed.layer && !visited.has(next))
+          if ((tunnelTerrain ? next.tunnel : next.bridge) && next.layer === seed.layer && !visited.has(next))
             queue.push(next);
     }
     groups.push(group);
@@ -176,13 +182,17 @@ export function fitBridgeClearance(edges: Edge[]) {
   const crossings = roadCrossings(physical);
   for (const group of groups) {
     const members = new Set(group),
-      contacts = crossings.filter((c) => members.has(c.upper.edge));
-    const rise = Math.max(
+      contacts = crossings.filter((c) => members.has(tunnelTerrain ? c.lower.edge : c.upper.edge));
+    // 5,7 м внутренней высоты плюс перекрытие и грунт над крышей.
+    const rise = tunnelTerrain ? Math.min(0,
+      ...group.flatMap(e => e.points.map(p => sampleRoadElevation(tunnelTerrain, p.x, p.z) - 6.5 - p.y)),
+      ...contacts.map(c => crossingClearance(c) - 6.5),
+    ) : Math.max(
       0,
       ...contacts.map((c) => MIN_ROAD_CLEARANCE + 0.03 - crossingClearance(c)),
     );
-    if (rise <= 0) continue;
-    const ramp = Math.max(100, (rise * 1.875) / 0.06),
+    if (Math.abs(rise) < 1e-6) continue;
+    const ramp = Math.max(100, (Math.abs(rise) * 1.875) / 0.06),
       distances = new Map<number, number>();
     const queue: { id: number; d: number }[] = [];
     for (const e of group)
@@ -236,10 +246,12 @@ export function fitBridgeClearance(edges: Edge[]) {
     // Обновляем в том числе обратные направления и ссылки сегментов проверки.
     for (const e of edges) {
       const heights = changed.get(physicalKey(e));
-      if (heights)
+      if (heights) {
+        if(tunnelTerrain && !e.tunnel && e.points.some((p,i)=>Math.abs(p.y-heights[e.from<e.to?i:heights.length-1-i])>1e-6))e.tunnelApproach=true;
         e.points.forEach(
           (p, i) => (p.y = heights[e.from < e.to ? i : heights.length - 1 - i]),
         );
+      }
     }
   }
 }

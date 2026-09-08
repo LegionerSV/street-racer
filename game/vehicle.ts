@@ -87,7 +87,7 @@ export class PlayerCar {
       if(!throttle&&!brake)drive-=this.speed*65;
       if(parking)drive=-this.speed*9000+1200*9.81*f.y;
       drive=clamp(drive,-16500*grip,12500*grip);
-      drive+=boost*8000*grip*(1-clamp(this.speed,0,110)/110);
+      drive+=boost*10000*grip*(1-clamp(this.speed,0,110)/110);
       body.applyForce(f.scale(drive-this.speed*Math.abs(this.speed)*.8),mesh.position);
       if(this.impact<=0){
         const desiredYaw=handbrake?this.steering*this.speed/(11+v*.4)*1.5:requestedYaw;

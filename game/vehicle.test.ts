@@ -5,6 +5,27 @@ import { readFile } from 'node:fs/promises';
 import { PlayerCar } from './vehicle';
 
 describe('Физическая машина', () => {
+  it('нитро даёт заметный дополнительный разгон за три секунды на скорости 72 км/ч', async()=>{
+    // Arrange
+    const havok=await HavokPhysics({wasmBinary:Uint8Array.from(await readFile(new URL('../node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm',import.meta.url))).buffer});
+    const engine=new NullEngine(),scene=new Scene(engine);
+    scene.enablePhysics(new Vector3(0,-9.81,0),new HavokPlugin(true,havok));
+    const floor=MeshBuilder.CreateGround('floor',{width:1000,height:1000},scene);
+    const ground=new PhysicsAggregate(floor,PhysicsShapeType.MESH,{mass:0,friction:.7},scene);
+    const normal=new PlayerCar(scene),boosted=new PlayerCar(scene);
+    normal.teleport({x:-10,y:.9,z:0},0);boosted.teleport({x:10,y:.9,z:0},0);
+    try{
+      for(let i=0;i<180;i++){for(const car of [normal,boosted])car.step(1/60,new Set(),false);scene.getPhysicsEngine()!._step(1/60);for(const car of [normal,boosted])car.afterPhysics();}
+      normal.aggregate.body.setLinearVelocity(new Vector3(0,0,20));boosted.aggregate.body.setLinearVelocity(new Vector3(0,0,20));
+      // Act
+      for(let i=0;i<180;i++){normal.step(1/60,new Set(['KeyW']),false);boosted.step(1/60,new Set(['KeyW','ShiftLeft']),false);scene.getPhysicsEngine()!._step(1/60);normal.afterPhysics();boosted.afterPhysics();}
+      // Assert
+      expect(boosted.speed-normal.speed).toBeGreaterThan(13);
+      expect(boosted.speed-normal.speed).toBeLessThan(16);
+      expect(boosted.grounded).toBe(true);
+      expect(boosted.nitro.charge).toBeCloseTo(1/3,1);
+    }finally{normal.dispose();boosted.dispose();ground.dispose();scene.dispose();engine.dispose();}
+  },20000);
   it('держится на подвеске, разгоняется и тормозит на настоящем Havok', async () => {
     // Arrange
     const havok = await HavokPhysics({ wasmBinary: Uint8Array.from(await readFile(new URL('../node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm', import.meta.url))).buffer });

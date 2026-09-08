@@ -40,8 +40,8 @@ export function directedLanes(layout:RoadLayout,side:'left'|'right',direction:1|
   const raw=direction===1?layout.forwardTurns:layout.backwardTurns;
   return {direction,offsets,turns:offsets.map((_,i)=>raw[i]||[]),separators,opposite,shared:layout.shared,source:layout.source};
 }
-export function laneCaption(edge:Pick<Edge,'lanes'|'laneProfile'>):string{
-  const n=edge.lanes,word=n%100>=11&&n%100<=14?'полос':n%10===1?'полоса':n%10>=2&&n%10<=4?'полосы':'полос';
+export function laneCaption(edge:Pick<Edge,'lanes'|'laneProfile'|'combinedLanes'>):string{
+  const n=edge.combinedLanes??edge.lanes,word=n%100>=11&&n%100<=14?'полос':n%10===1?'полоса':n%10>=2&&n%10<=4?'полосы':'полос';
   return `${edge.laneProfile?.source==='estimated'?'≈ ':''}${n} ${word}${edge.laneProfile?.shared?' · общий проезд':edge.laneProfile?` · ${edge.laneProfile.offsets.length} в вашем направлении`:''}`;
 }
 export function laneOffsets(edge:Edge,side:'left'|'right'):number[]{

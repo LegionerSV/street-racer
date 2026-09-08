@@ -56,13 +56,15 @@ describe('Дорожная сеть', () => {
     // Assert
     expect(w.warnings).toContain('Недостаточно связанных дорог для заезда. Выберите другой участок.');
   });
-  it('держит тоннель под рельефом и соединяет входы без ступеней', () => {
+  it('держит весь тоннель вместе с порталами под рельефом', () => {
     // Arrange
     const input = region([node(1, -.004, 0), node(2, .004, 0), road(10, [1, 2], { tunnel: 'yes', layer: '-1' })]);
     // Act
     const w = buildWorld(input), e = w.edges[0];
     // Assert
-    expect(e.points[0].y).toBeCloseTo(.12, 2);
+    expect(e.points[0].y + 5.7).toBeLessThan(-.5);
+    expect(e.points.at(-1)!.y).toBeCloseTo(e.points[0].y, 6);
+    expect(e.points[0].y).toBeCloseTo(w.nodes.find(n=>n.id===e.from)!.y, 6);
     expect(Math.min(...e.points.map(p => p.y))).toBeLessThan(-5);
     expect(e.blocked).toBe(false);
   });

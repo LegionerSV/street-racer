@@ -1,4 +1,6 @@
 import earcut from 'earcut';
+import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
+import { cutSoil } from './terrain-cutouts';
 import { SpatialGrid,boundsOf,roadPrism,footprintPrism,subtractPrisms,type Prism } from './geometry';
 import { appendBuilding } from './buildings';
 import { worldLandmarks,appendLandmark } from './landmarks';
@@ -58,7 +60,7 @@ function ribbon(mesh: MeshData, a: Point, b: Point, left: number, right: number,
   const offset = (p: Point, n: number) => { const normal = p === a ? na : nb; return { x: p.x + (normal?.x ?? nx) * n, y: p.y + up, z: p.z + (normal?.z ?? nz) * n }; };
   quad(mesh, offset(a, left), offset(b, left), offset(b, right), offset(a, right), color);
 }
-type Segment = { a: Point; b: Point; edge: Edge; index: number; station: number; na?: { x: number; z: number }; nb?: { x: number; z: number } };
+type Segment = { a: Point; b: Point; edge: Edge; index: number; station: number; na?: { x: number; z: number }; nb?: { x: number; z: number }; join?: CarriagewayJoin };
 type Paving={id:string;segment:Segment;side:number;mask:Prism};
 function sidewalkShape(s:Segment,side:number){
   const {a,b,edge}=s,length=distance2(a,b)||1,normal={x:(b.z-a.z)/length,z:-(b.x-a.x)/length},w=edge.width/2,outer=w+CURB_WIDTH+SIDEWALK_WIDTH;
@@ -74,7 +76,7 @@ function sidewalkPolygon(mesh:MeshData,polygon:Point[],colour:Colour,masks:Prism
     for(let i=1;i<piece.length-1;i++)mesh.indices.push(base,base+i,base+i+1);
   }
 }
-type Index = { segments: Map<string, Segment[]>; owned: Map<string, Segment[]>; buildings: Map<string, Building[]>; junctions: Set<number>; spatial:SpatialGrid<Segment>; paving:SpatialGrid<Paving>; ground:Map<string,number>; waters:SpatialGrid<World['areas'][number]> };
+type Index = { segments: Map<string, Segment[]>; owned: Map<string, Segment[]>; buildings: Map<string, Building[]>; junctions: Set<number>; spatial:SpatialGrid<Segment>; paving:SpatialGrid<Paving>; cavities:SpatialGrid<Prism>; ground:Map<string,number>; waters:SpatialGrid<World['areas'][number]> };
 const worldIndices = new WeakMap<World, Index>();
 function clipToChunk(polygon: Point[], x0: number, z0: number): Point[] {
   for (const [axis, bound, sign] of [['x', x0, 1], ['x', x0 + 250, -1], ['z', z0, 1], ['z', z0 + 250, -1]] as const) {
@@ -90,7 +92,7 @@ function clipToChunk(polygon: Point[], x0: number, z0: number): Point[] {
 }
 export function indexWorld(world: World): Index {
   const existing = worldIndices.get(world); if (existing) return existing;
-  const index: Index = { segments: new Map(), owned: new Map(), buildings: new Map(), junctions: new Set(), spatial:new SpatialGrid(),paving:new SpatialGrid(),ground:new Map(),waters:new SpatialGrid(250) }, seen = new Set<string>();
+  const index: Index = { segments: new Map(), owned: new Map(), buildings: new Map(), junctions: new Set(), spatial:new SpatialGrid(),paving:new SpatialGrid(),cavities:new SpatialGrid(),ground:new Map(),waters:new SpatialGrid(250) }, seen = new Set<string>();
   const links = new Map<number, Set<number>>(), normals = new Map<string, { x: number; z: number; count: number }>();
   const endpoints = new Map<number, { normal: { x: number; z: number }; x: number; z: number; sign: number }[]>();
   const normalAt = (edge: Edge, p: Point, x: number, z: number) => { const key = `${edge.way}/${p.x.toFixed(3)}/${p.y.toFixed(3)}/${p.z.toFixed(3)}`, normal = normals.get(key) || { x: 0, z: 0, count: 0 }; normal.x += x; normal.z += z; normal.count++; normals.set(key, normal); return normal; };
@@ -106,6 +108,12 @@ export function indexWorld(world: World): Index {
         const list = endpoints.get(id) || []; list.push({ normal, x: nx * sign, z: nz * sign, sign }); endpoints.set(id, list);
       }
       index.spatial.add(segment,boundsOf([a,b],edge.width/2+35));
+      if(edge.tunnel || edge.tunnelApproach){
+        // Небольшое продольное перекрытие закрывает щели на стыках сегментов.
+        const aa=mixPoint(a,b,-.25/length),bb=mixPoint(a,b,1+.25/length);
+        const cavity=roadPrism(aa,bb,edge.width+2*(SIDEWALK_WIDTH+CURB_WIDTH+.2),.4,5.7);
+        index.cavities.add(cavity,cavity.bounds);
+      }
       station += length * (edge.laneProfile?.direction || 1);
       const key = tileKey((a.x + b.x) / 2, (a.z + b.z) / 2), list = index.owned.get(key) || []; list.push(segment); index.owned.set(key, list);
       const extra = edge.width / 2 + 35;
@@ -124,7 +132,13 @@ export function indexWorld(world: World): Index {
     a.normal.x = x * factor * a.sign; a.normal.z = z * factor * a.sign;
     b.normal.x = -x * factor * b.sign; b.normal.z = -z * factor * b.sign;
   }
+  for(const segments of index.owned.values())for(const segment of segments){
+    if(!segment.edge.oneWay || segment.edge.bridge || segment.edge.tunnel)continue;
+    segment.join=carriagewayJoin(segment,index.spatial.query(boundsOf([segment.a,segment.b],segment.edge.width/2+22)),world.drivingSide);
+    if(segment.join)segment.edge.combinedLanes=segment.edge.lanes+segment.join.other.lanes;
+  }
   for(const segments of index.owned.values())for(const segment of segments)for(const side of [-1,1]){
+    if(segment.join?.side===side)continue;
     const {points}=sidewalkShape(segment,side),{a,b}=segment,dx=b.x-a.x,dz=b.z-a.z,slope=(b.y-a.y)/(dx*dx+dz*dz||1);
     const height={x:-dx*slope,y:1,z:-dz*slope,w:-a.y-CURB_HEIGHT+(a.x*dx+a.z*dz)*slope};
     const endpoints=[`${a.x},${a.z}`,`${b.x},${b.z}`].sort().join('/');
@@ -170,10 +184,8 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     terrain.colors!.push(.105 * shade, .16 * shade, .125 * shade, 1);
   }
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
-    const p = { x: x0 + (i + .5) * 250 / n, y: 0, z: z0 + (j + .5) * 250 / n };
-    // У входов в тоннель вырезаем землю. Над глубокими участками поверхность сохраняется.
-    const portal = segments.some(s => s.edge.tunnel && projectOnSegment(p, s.a, s.b).distance < s.edge.width / 2 + 10 && sampleElevation(world.elevation, p.x, p.z) < projectOnSegment(p, s.a, s.b).point.y + 6);
-    if (portal) continue;
+    // Треугольники вырезаются по объёму тоннеля после построения откосов,
+    // без удаления целых ячеек и дыр в поверхности над крышей.
     const k = j * (n + 1) + i; terrain.indices.push(k, k + n + 1, k + 1, k + 1, k + n + 1, k + n + 2);
   }
   const circles = new Set<string>();
@@ -186,6 +198,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     const { a, b, edge } = s, w = edge.width / 2;
     const outer=w+CURB_WIDTH+SIDEWALK_WIDTH;
     for(const side of [-1,1]){
+      if(s.join?.side===side)continue;
       const {aa,bb,points}=sidewalkShape(s,side),bounds=boundsOf(points);
       const candidates=index.paving.query(bounds),own=candidates.find(p=>p.segment===s&&p.side===side)!;
       const roads=index.spatial.query(bounds).filter(other=>other.edge.way!==edge.way).map(other=>roadPrism(other.a,other.b,other.edge.width+.5,.6,.6));
@@ -197,6 +210,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       sidewalkPolygon(result.sidewalks!,[aa(outer,-.08),aa(outer),bb(outer),bb(outer,-.08)],[.34,.35,.35],walls);
     }
     if (!edge.bridge && !edge.tunnel) for (const side of [-1, 1]) {
+      if(s.join?.side===side)continue;
       const len = distance2(a, b) || 1, normal = { x: (b.z - a.z) / len, z: -(b.x - a.x) / len };
       const offset = (p: Point, n: {x:number;z:number}, d: number) => ({ x:p.x+n.x*d*side, y:p.y-.08, z:p.z+n.z*d*side });
       const aa = offset(a, s.na || normal, outer), bb = offset(b, s.nb || normal, outer);
@@ -205,7 +219,17 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       if(side>0)quad(result.shoulders,aa,bb,cc,dd,[.23,.27,.22]);else quad(result.shoulders,dd,cc,bb,aa,[.23,.27,.22]);
     }
     ribbon(result.road, a, b, -w - 1.3, w + 1.3, -.08, [.29, .32, .34], s.na, s.nb);
-    ribbon(result.road, a, b, -w, w, 0, [.18, .21, .24], s.na, s.nb);
+    if(s.join){
+      const {nearA,nearB,farA,farB,side}=s.join;
+      const centerA=mixPoint(nearA,farA,.5),centerB=mixPoint(nearB,farB,.5),length=distance2(a,b);
+      const offset=(p:Point,n:{x:number;z:number}|undefined)=>({x:p.x-(n?.x??(b.z-a.z)/length)*w*side,y:p.y,z:p.z-(n?.z??-(b.x-a.x)/length)*w*side});
+      const outerA=offset(a,s.na),outerB=offset(b,s.nb);
+      // Каждая половина заканчивается на общей оси: и промежуток, и небольшое
+      // перекрытие OSM-полотен превращаются в одну поверхность без наложений.
+      if(side>0)quad(result.road,outerA,outerB,centerB,centerA,[.18,.21,.24]);
+      else quad(result.road,centerA,centerB,outerB,outerA,[.18,.21,.24]);
+      if(lod===0&&s.join.owner)ribbon(result.markings,centerA,centerB,-.075,.075,.05,[.82,.84,.8]);
+    }else ribbon(result.road, a, b, -w, w, 0, [.18, .21, .24], s.na, s.nb);
     // Площадки нужны только на перекрёстках. На склонах полотно сшивается боковыми вершинами.
     const junctionPoints = [s.index === 0 && index.junctions.has(edge.from) ? a : null, s.index === edge.points.length - 2 && index.junctions.has(edge.to) ? b : null].filter(Boolean) as Point[];
     for (const p of junctionPoints) {
@@ -219,7 +243,8 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     }
     const crossing = segments.some(other => other.edge.way !== edge.way && other.edge.layer === edge.layer && Math.abs(other.a.y - a.y) < 2 && projectOnSegment(mixPoint(a,b,.5),other.a,other.b).distance < other.edge.width/2 + 1);
     if (lod === 0 && !crossing) {
-      ribbon(result.markings, a, b, -w + .25, -w + .36, .045, [.85, .87, .83], s.na, s.nb); ribbon(result.markings, a, b, w - .36, w - .25, .045, [.85, .87, .83], s.na, s.nb);
+      if(s.join?.side!==-1)ribbon(result.markings, a, b, -w + .25, -w + .36, .045, [.85, .87, .83], s.na, s.nb);
+      if(s.join?.side!==1)ribbon(result.markings, a, b, w - .36, w - .25, .045, [.85, .87, .83], s.na, s.nb);
       const separators = edge.laneProfile?.separators || Array.from({length:Math.max(0,edge.lanes-1)},(_,i)=>({offset:-w+(i+1)*edge.width/edge.lanes,kind:'lane' as const}));
       const length = distance2(a,b);
       for(const line of separators) for(const [start,end] of dashSpans(s.station,length,edge.laneProfile?.direction || 1)){
@@ -248,7 +273,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       const length = distance2(a, b), nx = (b.z - a.z) / length, nz = -(b.x - a.x) / length;
       for (let k = -Math.floor(w / 1.4); k <= Math.floor(w / 1.4); k++) box(result.structures, { x: a.x + nx * k * 1.4, y: a.y, z: a.z + nz * k * 1.4 }, 1.3, .9, 1.3, k % 2 ? [.8, .33, .12] : [.67, .68, .58]);
     }
-    if (lod === 0 && !edge.tunnel) for (const d of periodicOffsets(s.station, distance2(a, b), edge.laneProfile?.direction || 1)) {
+    if (lod === 0 && !edge.tunnel && s.join?.side!==1) for (const d of periodicOffsets(s.station, distance2(a, b), edge.laneProfile?.direction || 1)) {
       const l = distance2(a, b), anchor = mixPoint(a, b, d / l), p = { x: anchor.x + (b.z - a.z) / l * (w + 1.6), y: anchor.y, z: anchor.z - (b.x - a.x) / l * (w + 1.6) };
       const free = segments.every(other => Math.abs(other.a.y-p.y)>3 || projectOnSegment(p,other.a,other.b).distance > other.edge.width/2+.6);
       if (free) { box(result.structures, p, .12, 7, .12, [.2, .25, .25]); box(result.windows, { ...p, y: p.y + 7 }, .7, .12, 1.4, [.85, .82, .55]); result.lamps.push({ ...p, y: p.y + 6.7 }); }
@@ -293,5 +318,9 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     }
   }
   if (lod === 0) for (const tree of world.trees) if (tileKey(tree.x, tree.z) === key && segments.every(s => projectOnSegment(tree,s.a,s.b).distance > s.edge.width/2+2)) result.trees.push({ ...tree, y: ground(tree.x,tree.z) });
+  if(segments.some(s=>s.edge.tunnel||s.edge.tunnelApproach)){
+    cutSoil(result.terrain,index.cavities);
+    cutSoil(result.shoulders,index.cavities);
+  }
   return result;
 }

@@ -47,7 +47,9 @@ export function structureProfiles(ways: OSMElement[], local: (id: number) => Poi
     for (const { segment } of chain) for (const p of resample([segment.a, segment.b], 10)) minimum = Math.min(minimum, sampleRoadElevation(elevation, p.x, p.z));
     // layer задаёт порядок пересечений, а не высоту. Высокие берега уже обеспечивают
     // часть просвета; прибавлять к ним ещё один полный подъём нельзя.
-    const requestedRise = seed.tunnel ? 8 : Math.max(0, 6.5 - (Math.min(first.y, last.y) - minimum));
+    // У тоннеля портал уже находится под землёй; спуск располагается на
+    // наземном подходе и рассчитывается fitTunnelDepth по связанному графу.
+    const requestedRise = seed.tunnel ? 0 : Math.max(0, 6.5 - (Math.min(first.y, last.y) - minimum));
     const gradeBudget = Math.max(0, .08 - Math.abs(last.y - first.y) / total);
     const ramp = Math.min(total * .4, Math.max(90, requestedRise * 1.875 / Math.max(.001, gradeBudget)));
     // При отсутствии данных подходов короткий пролёт не превращаем в трамплин.

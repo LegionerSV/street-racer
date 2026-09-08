@@ -1,7 +1,7 @@
 import type { Area, Building, Edge, OSMElement, Point, RegionData, Restriction, RoadNode, Route, World } from './types';
 import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, sampleRoadElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment } from './geo';
 import { structureProfiles } from './elevation';
-import { fitBridgeClearance, validateClearance } from './clearance';
+import { fitBridgeClearance, fitTunnelDepth, validateClearance } from './clearance';
 import { roadLayout, directedLanes,roadTypes } from './lanes';
 import {buildingCoveredByParts} from './buildings';
 import {SpatialGrid,boundsOf} from './geometry';
@@ -160,6 +160,7 @@ export function buildWorld(region: RegionData): World {
     edge.length = pathLengths(edge.points).at(-1)!;
     if (edge.points.slice(1).some((p, i) => Math.abs(p.y - edge.points[i].y) / (distance2(p, edge.points[i]) || 1) > .38)) edge.blocked = true;
   }
+  fitTunnelDepth(edges, elevation);
   fitBridgeClearance(edges);
   for(const edge of edges){
     edge.length=pathLengths(edge.points).at(-1)!;
