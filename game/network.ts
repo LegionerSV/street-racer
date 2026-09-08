@@ -202,58 +202,320 @@ export function buildWorld(region: RegionData): World {
     }
     world.spawnEdge = bestSpawn; world.routes = best;
   }
+  world.routes = createRaceLocations(world);
   return world;
 }
 
-function shortest(world: World, first: Edge, target: number, forbidden = new Set<number>()): number[] | null {
+const safeRaceCache = new WeakMap<World, Set<number>>();
+function safeRaceEdges(world: World) {
+  let safe = safeRaceCache.get(world);
+  if (!safe) {
+    const margin = world.edges.reduce(
+      (m, e) => Math.max(m, e.width / 2 + 110),
+      120,
+    );
+    safe = new Set(
+      world.edges
+        .filter(
+          (e) =>
+            !e.blocked && routeHasCoverage(e.points, world.loadedTiles, margin),
+        )
+        .map((e) => e.id),
+    );
+    safeRaceCache.set(world, safe);
+  }
+  return safe;
+}
+function shortest(
+  world: World,
+  first: Edge,
+  target: number,
+  forbidden = new Set<number>(),
+  historyAtFirst?: number[],
+): number[] | null {
+  const safe = safeRaceEdges(world);
+  if (!safe.has(first.id)) return null;
   // Дейкстра по направленным рёбрам: состояние сохраняет въезд для запретов поворота.
-  const initialHistory = advanceTurnHistory(world, [], first.way);
-  const states = [{ edge: first.id, history: initialHistory }], stateIds = new Map<string, number>([[`${first.id}:${initialHistory.join(',')}`, 0]]);
-  const heap: [number, number][] = [], costs = new Map<number, number>([[0, 0]]), prev = new Map<number, number>();
-  const push = (item: [number, number]) => { heap.push(item); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= item[0]) break; heap[i] = heap[p]; i = p; } heap[i] = item; };
-  const pop = () => { const top = heap[0], last = heap.pop()!; if (heap.length) { let i = 0; while (i * 2 + 1 < heap.length) { let c = i * 2 + 1; if (c + 1 < heap.length && heap[c + 1][0] < heap[c][0]) c++; if (heap[c][0] >= last[0]) break; heap[i] = heap[c]; i = c; } heap[i] = last; } return top; };
+  const initialHistory =
+    historyAtFirst ?? advanceTurnHistory(world, [], first.way);
+  const states = [{ edge: first.id, history: initialHistory }],
+    stateIds = new Map<string, number>([
+      [`${first.id}:${initialHistory.join(',')}`, 0],
+    ]);
+  const heap: [number, number][] = [],
+    costs = new Map<number, number>([[0, 0]]),
+    prev = new Map<number, number>();
+  const push = (item: [number, number]) => {
+    heap.push(item);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heap[p][0] <= item[0]) break;
+      heap[i] = heap[p];
+      i = p;
+    }
+    heap[i] = item;
+  };
+  const pop = () => {
+    const top = heap[0],
+      last = heap.pop()!;
+    if (heap.length) {
+      let i = 0;
+      while (i * 2 + 1 < heap.length) {
+        let c = i * 2 + 1;
+        if (c + 1 < heap.length && heap[c + 1][0] < heap[c][0]) c++;
+        if (heap[c][0] >= last[0]) break;
+        heap[i] = heap[c];
+        i = c;
+      }
+      heap[i] = last;
+    }
+    return top;
+  };
   push([0, 0]);
   while (heap.length) {
-    const [cost, id] = pop(), state = states[id], edge = world.edges[state.edge]; if (cost !== costs.get(id)) continue;
-    if (edge.to === target && id !== 0 && (target !== first.from || allowedTurn(world, edge, first, state.history))) { const route = [edge.id]; let current = id; while (current !== 0) { current = prev.get(current)!; route.push(states[current].edge); } return route.reverse(); }
+    const [cost, id] = pop(),
+      state = states[id],
+      edge = world.edges[state.edge];
+    if (cost !== costs.get(id)) continue;
+    if (
+      edge.to === target &&
+      id !== 0 &&
+      (target !== first.from || allowedTurn(world, edge, first, state.history))
+    ) {
+      const route = [edge.id];
+      let current = id;
+      while (current !== 0) {
+        current = prev.get(current)!;
+        route.push(states[current].edge);
+      }
+      return route.reverse();
+    }
     for (const next of outgoing(world, edge.to)) {
-      if (forbidden.has(next.id) || next.to === edge.from || !allowedTurn(world, edge, next, state.history)) continue;
-      const history = advanceTurnHistory(world, state.history, next.way), key = `${next.id}:${history.join(',')}`;
-      let nextId = stateIds.get(key); if (nextId === undefined) { nextId = states.length; states.push({ edge: next.id, history }); stateIds.set(key, nextId); }
-      const nc = cost + next.length; if (nc >= (costs.get(nextId) ?? Infinity)) continue;
-      costs.set(nextId, nc); prev.set(nextId, id); push([nc, nextId]);
+      if (
+        !safe.has(next.id) ||
+        forbidden.has(next.id) ||
+        next.to === edge.from ||
+        !allowedTurn(world, edge, next, state.history)
+      )
+        continue;
+      const history = advanceTurnHistory(world, state.history, next.way),
+        key = `${next.id}:${history.join(',')}`;
+      let nextId = stateIds.get(key);
+      if (nextId === undefined) {
+        nextId = states.length;
+        states.push({ edge: next.id, history });
+        stateIds.set(key, nextId);
+      }
+      const nc = cost + next.length;
+      if (nc >= (costs.get(nextId) ?? Infinity)) continue;
+      costs.set(nextId, nc);
+      prev.set(nextId, id);
+      push([nc, nextId]);
     }
   }
   return null;
 }
-export function createRoutes(world: World): Route[] {
-  if (world.spawnEdge < 0 || !world.edges.length) return [];
-  const first = world.edges[world.spawnEdge], routes: Route[] = [];
+const routeCache = new WeakMap<World, Map<string, Route[]>>();
+export function invalidateRaceRoutes(world: World) {
+  safeRaceCache.delete(world);
+  routeCache.delete(world);
+}
+export function createRoutes(
+  world: World,
+  startEdge = world.spawnEdge,
+  expandCircuit = false,
+): Route[] {
+  const safe = safeRaceEdges(world);
+  if (!safe.has(startEdge)) return [];
+  let cache = routeCache.get(world);
+  if (!cache) {
+    cache = new Map();
+    routeCache.set(world, cache);
+  }
+  const cacheKey = `${startEdge}/${expandCircuit}`;
+  if (cache.has(cacheKey)) return cache.get(cacheKey)!;
+  const first = world.edges[startEdge],
+    routes: Route[] = [];
   function add(kind: 'sprint' | 'circuit', ids: number[]) {
     if (kind === 'circuit') {
       let history = advanceTurnHistory(world, [], world.edges[ids[0]].way);
-      for (let i = 1; i < ids.length * 2; i++) { const from = world.edges[ids[(i - 1) % ids.length]], to = world.edges[ids[i % ids.length]]; if (!allowedTurn(world, from, to, history)) return; history = advanceTurnHistory(world, history, to.way); }
+      for (let i = 1; i < ids.length * 2; i++) {
+        const from = world.edges[ids[(i - 1) % ids.length]],
+          to = world.edges[ids[i % ids.length]];
+        if (!allowedTurn(world, from, to, history)) return;
+        history = advanceTurnHistory(world, history, to.way);
+      }
     }
     const raw: Point[] = [];
-    for (const id of ids) raw.push(...world.edges[id].points.slice(raw.length ? 1 : 0));
+    for (const id of ids)
+      raw.push(...world.edges[id].points.slice(raw.length ? 1 : 0));
     // Контрольные точки по 70 м, с обязательными углами маршрута.
     const points = [raw[0]];
     for (let i = 1; i < raw.length - 1; i++) {
-      const a = raw[i - 1], b = raw[i], c = raw[i + 1];
-      const turn = Math.abs((b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x)) / (distance2(a, b) * distance2(b, c) || 1);
-      if (distance2(points.at(-1)!, b) > 65 || turn > .1) points.push(b);
+      const a = raw[i - 1],
+        b = raw[i],
+        c = raw[i + 1];
+      const turn =
+        Math.abs((b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x)) /
+        (distance2(a, b) * distance2(b, c) || 1);
+      if (distance2(points.at(-1)!, b) > 65 || turn > 0.1) points.push(b);
     }
     points.push(raw.at(-1)!);
-    const cumulative = pathLengths(points), length = cumulative.at(-1)!;
+    const cumulative = pathLengths(points),
+      length = cumulative.at(-1)!;
     if (length < 400) return;
-    if(!routeHasCoverage(points,world.loadedTiles,Math.max(120,...ids.map(id=>world.edges[id].width/2+110))))return;
-    routes.push({ id: `${kind}-${first.way}`, title: kind === 'circuit' ? 'Ночной круг' : 'Через район', kind, edges: ids, points, cumulative, length, laps: kind === 'circuit' ? 3 : 1 });
+    if (
+      !routeHasCoverage(
+        points,
+        world.loadedTiles,
+        Math.max(120, ...ids.map((id) => world.edges[id].width / 2 + 110)),
+      )
+    )
+      return;
+    let hash = 2166136261;
+    for (const id of ids) {
+      const e = world.edges[id];
+      for (const c of `${e.way}/${e.from}/${e.to};`)
+        hash = Math.imul(hash ^ c.charCodeAt(0), 16777619);
+    }
+    routes.push({
+      id: `${kind}-${first.way}-${first.from}-${first.to}-${(hash >>> 0).toString(36)}`,
+      title: kind === 'circuit' ? 'Ночной круг' : 'Через район',
+      kind,
+      edges: ids,
+      points,
+      cumulative,
+      length,
+      laps: kind === 'circuit' ? 3 : 1,
+    });
   }
-  const ring = shortest(world, first, first.from);
-  if (ring) add('circuit', ring);
-  const reachable = new Set<number>(), queue = [first.to];
-  while (queue.length) { const id = queue.pop()!; if (reachable.has(id)) continue; reachable.add(id); for (const edge of outgoing(world, id)) if (!reachable.has(edge.to)) queue.push(edge.to); }
-  const distant = world.nodes.filter(n => reachable.has(n.id) && outgoing(world, n.id).length).sort((a, b) => distance2(b, first.points[0]) - distance2(a, first.points[0]));
-  for (const target of distant.slice(0, 12)) { const path = shortest(world, first, target.id); if (path) { add('sprint', path); break; } }
+  const reachable = new Set<number>(),
+    queue = [first.to];
+  while (queue.length) {
+    const id = queue.pop()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    for (const edge of outgoing(world, id))
+      if (safe.has(edge.id) && !reachable.has(edge.to)) queue.push(edge.to);
+  }
+  const distant = world.nodes
+    .filter(
+      (n) =>
+        reachable.has(n.id) &&
+        outgoing(world, n.id).some((e) => safe.has(e.id)),
+    )
+    .sort(
+      (a, b) => distance2(b, first.points[0]) - distance2(a, first.points[0]),
+    );
+  for (const target of distant.slice(0, 8)) {
+    const path = shortest(world, first, target.id);
+    if (!path) continue;
+    if (!routes.some((r) => r.kind === 'sprint')) add('sprint', path);
+    if (!expandCircuit) {
+      if (routes.some((r) => r.kind === 'sprint')) break;
+      continue;
+    }
+    let history: number[] = [];
+    for (const id of path)
+      history = advanceTurnHistory(world, history, world.edges[id].way);
+    const back = shortest(
+      world,
+      world.edges[path.at(-1)!],
+      first.from,
+      new Set(path),
+      history,
+    );
+    if (back) {
+      add('circuit', [...path, ...back.slice(1)]);
+      if (routes.some((r) => r.kind === 'circuit')) break;
+    }
+  }
+  if (!routes.some((r) => r.kind === 'circuit')) {
+    const ring = shortest(world, first, first.from);
+    if (ring) add('circuit', ring);
+  }
+  routes.sort((a, b) => a.kind.localeCompare(b.kind));
+  cache.set(cacheKey, routes);
   return routes;
+}
+
+// Один распределённый старт на километровый участок; возле исходного старта
+// оставляем оба вида гонки. Выбор детерминирован, старые доступные старты сохраняются.
+export function createRaceLocations(
+  world: World,
+  preferredStarts: number[] = [],
+): Route[] {
+  const safe = safeRaceEdges(world),
+    groups = new Map<string, Edge[]>();
+  const cell = (e: Edge) =>
+    `${Math.floor(e.points[0].x / 1000)},${Math.floor(e.points[0].z / 1000)}`;
+  const preferred = new Map<string, number>();
+  for (const id of preferredStarts) {
+    const e = world.edges[id];
+    if (e && safe.has(id) && !preferred.has(cell(e)))
+      preferred.set(cell(e), id);
+  }
+  for (const e of world.edges)
+    if (safe.has(e.id) && !e.bridge && !e.tunnel && e.length >= 15) {
+      const key = cell(e),
+        list = groups.get(key) || [];
+      list.push(e);
+      groups.set(key, list);
+    }
+  const spawn = world.edges[world.spawnEdge];
+  if (spawn && safe.has(spawn.id)) {
+    const key = cell(spawn);
+    if (!preferred.has(key)) preferred.set(key, spawn.id);
+    if (!groups.has(key)) groups.set(key, [spawn]);
+  }
+  const result: Route[] = [];
+  for (const [key, edges] of [...groups]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, 36)) {
+    const [x, z] = key.split(',').map(Number);
+    const score = (e: Edge) =>
+      distance2(e.points[0], {
+        x: (x + 0.5) * 1000,
+        y: 0,
+        z: (z + 0.5) * 1000,
+      }) +
+      (e.category === 'service' ? 2000 : 0) +
+      (e.width < 6 ? 800 : 0);
+    const candidates = edges
+      .sort(
+        (a, b) =>
+          score(a) - score(b) ||
+          a.way - b.way ||
+          a.from - b.from ||
+          a.to - b.to,
+      )
+      .slice(0, 3)
+      .map((e) => e.id);
+    const old = preferred.get(key);
+    if (old !== undefined) candidates.unshift(old);
+    for (const id of new Set(candidates)) {
+      const routes = createRoutes(world, id);
+      if (!routes.length) continue;
+      if (spawn && key === cell(spawn)) result.push(...routes);
+      else {
+        const kind = Math.abs(x + z) % 2 ? 'sprint' : 'circuit';
+        result.push(routes.find((r) => r.kind === kind) || routes[0]);
+      }
+      break;
+    }
+  }
+  return result;
+}
+
+export function createRaceRoute(
+  world: World,
+  start: Pick<Edge, 'way' | 'from' | 'to'>,
+  kind: Route['kind'],
+): Route | undefined {
+  const edge = world.edges.find(
+    (e) => e.way === start.way && e.from === start.from && e.to === start.to,
+  );
+  if (!edge) return;
+  return createRoutes(world, edge.id, true).find((r) => r.kind === kind);
 }

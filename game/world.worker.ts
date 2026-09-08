@@ -1,30 +1,55 @@
-import { buildWorld } from './network';
+import { buildWorld, createRaceRoute } from './network';
 import { reconcileWorld } from './world-update';
 import { buildChunk, ChunkBudget, indexWorld } from './chunks';
 import type { ChunkData, WorkerRequest, WorkerResponse, World } from './types';
 let world: World | null = null;
-let prepared:World|null=null;
+let prepared: World | null = null;
 let cache = new ChunkBudget<ChunkData>(32);
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   try {
     let response: WorkerResponse;
     if (request.type === 'world' || request.type === 'prepare') {
-      const next=buildWorld(request.region);
-      if(request.type==='prepare'&&world){prepared=reconcileWorld(world,next);indexWorld(prepared);response={id:request.id,type:'world',world:prepared};}
-      else {world=next;prepared=null;cache=new ChunkBudget(32);indexWorld(world);response={id:request.id,type:'world',world};}
-    }
-    else if(request.type==='commit'){
-      if(!prepared)throw new Error('Новая часть района ещё не подготовлена.');
-      world=prepared;prepared=null;cache=new ChunkBudget(32);response={id:request.id,type:'committed'};
-    }
-    else if(request.type==='chunk') {
+      const next = buildWorld(request.region);
+      if (request.type === 'prepare' && world) {
+        prepared = reconcileWorld(world, next);
+        indexWorld(prepared);
+        response = { id: request.id, type: 'world', world: prepared };
+      } else {
+        world = next;
+        prepared = null;
+        cache = new ChunkBudget(32);
+        indexWorld(world);
+        response = { id: request.id, type: 'world', world };
+      }
+    } else if (request.type === 'race') {
+      if (!world) throw new Error('Район ещё не подготовлен.');
+      response = {
+        id: request.id,
+        type: 'race',
+        route: createRaceRoute(world, request.start, request.kind) ?? null,
+      };
+    } else if (request.type === 'commit') {
+      if (!prepared) throw new Error('Новая часть района ещё не подготовлена.');
+      world = prepared;
+      prepared = null;
+      cache = new ChunkBudget(32);
+      response = { id: request.id, type: 'committed' };
+    } else if (request.type === 'chunk') {
       if (!world) throw new Error('Район ещё не подготовлен.');
       cache.setLimit(request.cacheLimit || 32);
-      const id = `${request.key}/${request.lod}`, chunk = cache.get(id) || buildChunk(world, request.key, request.lod); cache.touch(id, chunk);
+      const id = `${request.key}/${request.lod}`,
+        chunk = cache.get(id) || buildChunk(world, request.key, request.lod);
+      cache.touch(id, chunk);
       response = { id: request.id, type: 'chunk', chunk };
-    }
-    else throw new Error('Неизвестная команда подготовки района.');
+    } else throw new Error('Неизвестная команда подготовки района.');
     self.postMessage(response);
-  } catch (error) { self.postMessage({ id: request.id, type: 'error', error: error instanceof Error ? error.message : 'Ошибка подготовки района.' } satisfies WorkerResponse); }
+  } catch (error) {
+    self.postMessage({
+      id: request.id,
+      type: 'error',
+      error:
+        error instanceof Error ? error.message : 'Ошибка подготовки района.',
+    } satisfies WorkerResponse);
+  }
 };

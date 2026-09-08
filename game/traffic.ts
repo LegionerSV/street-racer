@@ -1,3 +1,4 @@
+import {RACER_COLOURS} from './race-map-markers';
 import { PhysicsAggregate, PhysicsMotionType, PhysicsShapeType, Quaternion, Scene, Vector3 } from '@babylonjs/core';
 import type { Edge, Point, Route, World } from './types';
 import { allowedTurn, outgoing, advanceTurnHistory } from './network';
@@ -70,7 +71,7 @@ export class Traffic {
     }
   }
   private show(a:Agent){
-    if(a.visual)return;const colors=a.race?['#d7e0df','#e25542','#794fd0']:['#657b88','#c6cac6','#43565c','#824b48','#b1a783','#4e6f6b'];
+    if(a.visual)return;const colors=a.race?RACER_COLOURS:['#657b88','#c6cac6','#43565c','#824b48','#b1a783','#4e6f6b'];
     const kinds:CarKind[]=['sedan','hatch','suv','sedan','van','hatch'];
     a.visual=createTrafficCar(this.scene,colors[a.id%colors.length],'traffic-'+a.id,a.race?'sport':kinds[a.id%kinds.length]);
     a.visual.root.position.copyFromFloats(a.point.x,a.point.y,a.point.z);a.visual.root.rotationQuaternion=Quaternion.RotationYawPitchRoll(a.heading,0,0);

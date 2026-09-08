@@ -1,7 +1,7 @@
 import type { Edge, Point, World } from './types';
 import { boundsOf, overlaps, type Bounds } from './geometry';
-import { coverageBounds, routeHasCoverage } from './stream-coverage';
-import { createRoutes } from './network';
+import { coverageBounds } from './stream-coverage';
+import { createRaceLocations, invalidateRaceRoutes } from './network';
 export const edgeKey = (e: Edge) => `${e.way}/${e.from}/${e.to}`;
 // Уже построенную поверхность не меняем под автомобилями из-за нового
 // соседнего перекрёстка. Доступность дороги берём из новой карты покрытия.
@@ -15,32 +15,17 @@ export function reconcileWorld(previous: World, next: World): World {
     }
   }
   const remap = new Map(next.edges.map((e) => [edgeKey(e), e.id]));
-  const routes = previous.routes.flatMap((route) => {
-    const ids = route.edges.map((id) => remap.get(edgeKey(previous.edges[id])));
-    if (ids.some((id) => id === undefined || next.edges[id].blocked)) return [];
-    if (
-      !routeHasCoverage(
-        route.points,
-        next.loadedTiles,
-        Math.max(120, ...ids.map((id) => next.edges[id!].width / 2 + 110)),
-      )
-    )
-      return [];
-    return [{ ...route, edges: ids as number[] }];
+  const preferred = previous.routes.flatMap((route) => {
+    const start = previous.edges[route.edges[0]],
+      id = start ? remap.get(edgeKey(start)) : undefined;
+    return id === undefined ? [] : [id];
   });
-  if (routes.length) {
-    const generatedSpawn = next.spawnEdge;
-    const spawn = previous.edges[previous.spawnEdge],
-      id = spawn ? remap.get(edgeKey(spawn)) : undefined;
-    if (id !== undefined && !next.edges[id].blocked) next.spawnEdge = id;
-    // Сохраняем знакомый старт, но не скрываем новый вид заезда.
-    for (const route of createRoutes(next))
-      if (!routes.some((r) => r.kind === route.kind)) routes.push(route);
-    if (routes.length < 2 && generatedSpawn !== next.spawnEdge)
-      for (const route of createRoutes({ ...next, spawnEdge: generatedSpawn }))
-        if (!routes.some((r) => r.kind === route.kind)) routes.push(route);
-    next.routes = routes;
-  } else next.routes = createRoutes(next);
+  const spawn = previous.edges[previous.spawnEdge],
+    id = spawn ? remap.get(edgeKey(spawn)) : undefined;
+  if (id !== undefined && !next.edges[id].blocked) next.spawnEdge = id;
+  // Сохраняем места старта, но обновляем трассы и добавляем старты новых клеток.
+  invalidateRaceRoutes(next);
+  next.routes = createRaceLocations(next, preferred);
   return next;
 }
 

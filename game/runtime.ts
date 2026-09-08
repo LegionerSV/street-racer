@@ -1,3 +1,4 @@
+import {opponentMarkers,raceMarkerPosition} from './race-map-markers';
 import {mapDiagnostics} from './map-diagnostics';
 import {
   Color3, Color4, Engine, Scene, Vector3, FreeCamera,
@@ -9,7 +10,7 @@ import havokWasm from '@babylonjs/havok/lib/esm/HavokPhysics.wasm?url';
 import type { ChunkData, HUD, MeshData, Point, RaceState, Route, Settings, World, RegionData } from './types';
 import { WorldWorker } from './worker-client';
 import { desiredChunks,criticalChunks } from './chunks';
-import { distance2, pathLengths, pointAt, projectOnSegment, tileKey } from './geo';
+import { distance2, pathLengths, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
 import { DrivingInput,drivingKeys,type DrivingKey } from './input';
 import { Traffic } from './traffic';
@@ -63,6 +64,7 @@ export class Game {
   private hudClock = 0;
   private previous = Vector3.Zero();
   private loading = true;
+  private preparingRace=false;
   private message = '';
   private signalMeshes = new Map<number, { node: TransformNode; lamps: Mesh[][] }>();
   private signalMaterials: StandardMaterial[];
@@ -93,7 +95,7 @@ export class Game {
     if (!e.repeat) {
       if (e.code === 'Escape') this.togglePause();
       if (e.code === 'KeyR' && !this.paused) this.recover();
-      if (e.code === 'KeyE' && !this.paused) { if (this.race?.phase === 'finished') this.finishRace(); else if (this.nearRace && !this.race) this.startRace(this.nearRace); }
+      if (e.code === 'KeyE' && !this.paused) { if (this.race?.phase === 'finished') this.finishRace(); else if (this.nearRace && !this.race) void this.startRace(this.nearRace); }
     }
   };
   private readonly onKeyUp = (e: KeyboardEvent) => this.input.release('key:'+e.code);
@@ -169,9 +171,8 @@ export class Game {
       jet.parent=this.player.visual.root;jet.position.set(x,-.23,-2.6);jet.rotation.x=-Math.PI/2;jet.material=nitroMat;jet.isPickable=false;jet.setEnabled(false);this.nitroJets.push(jet);
     }
     const markerMat = material(this.scene, 'race-marker', '#d8ff3e', true); markerMat.alpha = .35;
-    world.routes.forEach((route, index) => {
-      const spawn=world.edges[route.edges[0]];
-      const sample = pointAt(spawn.points, pathLengths(spawn.points), Math.min(55 + index * 35, spawn.length * (.45 + index * .2)));
+    world.routes.forEach(route => {
+      const sample={point:raceMarkerPosition(world,route)};
       const mesh = MeshBuilder.CreateCylinder(`marker-${route.kind}`, { diameter: 8, height: .12, tessellation: 40 }, this.scene); mesh.position.set(sample.point.x, sample.point.y + .12, sample.point.z); mesh.material = markerMat; mesh.isPickable = false;
       const symbol = MeshBuilder.CreateTorus('marker-symbol', { diameter: 3.2, thickness: .09, tessellation: 30 }, this.scene); symbol.rotation.x = Math.PI / 2; symbol.position.copyFrom(mesh.position).addInPlace(new Vector3(0, 3, 0)); symbol.material = markerMat; symbol.isPickable = false;
       this.markers.push({ route, mesh, symbol });
@@ -294,7 +295,7 @@ export class Game {
     this.pump();
     const p = this.player.position, h = this.player.heading;
     const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage));
-    this.loading = this.applyingMap || critical.some(k => this.mapCoverage ? !tileReady(this.mapCoverage,k)||this.chunks.get(k)?.lod!==0||this.staleChunks.has(k) : this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
+    this.loading = this.preparingRace || this.applyingMap || critical.some(k => this.mapCoverage ? !tileReady(this.mapCoverage,k)||this.chunks.get(k)?.lod!==0||this.staleChunks.has(k) : this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
     if(this.loading)this.clearControls();
     advanceDrivingPhysics(this.scene,this.engine.getDeltaTime(),!this.paused&&!this.loading);
     if ((!this.mapCoverage&&(Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495)) || p.y < -200 || p.y > 10000) this.recover();
@@ -315,9 +316,11 @@ export class Game {
     const sheltered=(indexWorld(this.world).segments.get(tileKey(p.x,p.z))||[]).some(s=>s.edge.tunnel&&projectOnSegment(p,s.a,s.b).distance<s.edge.width/2+1&&Math.abs(projectOnSegment(p,s.a,s.b).point.y-p.y)<3);
     this.scene.getMeshByName('rain')?.setEnabled(!sheltered&&this.atmosphere.state.rain>.02);
     this.nearRace = null;
+    let nearRaceDistance=22;
     for (const marker of this.markers) {
       marker.mesh.setEnabled(!this.race); marker.symbol.setEnabled(!this.race); marker.symbol.rotation.y += dt * .5;
-      if (!this.race && distance2(p, marker.mesh.position) < 22 && Math.abs(p.y - marker.mesh.position.y) < 4) this.nearRace = marker.route;
+      const distance=distance2(p,marker.mesh.position);
+      if (!this.race && distance<nearRaceDistance && Math.abs(p.y - marker.mesh.position.y) < 4){this.nearRace = marker.route;nearRaceDistance=distance;}
     }
     const checkpointVisible = !!this.race && this.race.phase !== 'finished';
     this.checkpoint.setEnabled(checkpointVisible); this.checkpointGlow.setEnabled(checkpointVisible);
@@ -332,7 +335,7 @@ export class Game {
     if (this.hudClock <= 0) { this.hudClock = .1; this.emit(); }
   }
   private emit() {
-    this.onHUD({ speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.mapStream?.status, race: this.race ? { ...this.race } : null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
+    this.onHUD({ opponents:this.race?opponentMarkers(this.traffic.racers):[], speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.preparingRace?'Прокладываем маршрут по загруженной карте…':this.mapStream?.status, race: this.race ? { ...this.race } : null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
   }
   private recoverAtMapBoundary(critical:string[]){
     if(!needsRaceRecovery(!!this.race||!!this.driveTest,this.mapCoverage,critical))return critical;
@@ -349,7 +352,7 @@ export class Game {
       const timer=setTimeout(finish,ms);signal.addEventListener('abort',finish,{once:true});
       if(signal.aborted)finish();
     });
-    const blocked=()=>!!this.race||!!this.driveTest||document.hidden;
+    const blocked=()=>this.preparingRace||!!this.race||!!this.driveTest||document.hidden;
     void (async()=>{
       let awaiting:RegionData|null=null;
       while(!this.disposed){
@@ -393,9 +396,8 @@ export class Game {
   private replaceRouteMarkers(){
     for(const marker of this.markers){marker.mesh.dispose();marker.symbol.dispose();}
     this.markers=[];this.nearRace=null;this.routeLengths.clear();
-    this.world.routes.forEach((route,index)=>{
-      const spawn=this.world.edges[route.edges[0]];if(!spawn)return;
-      const sample=pointAt(spawn.points,pathLengths(spawn.points),Math.min(55+index*35,spawn.length*(.45+index*.2)));
+    this.world.routes.forEach(route=>{
+      const sample={point:raceMarkerPosition(this.world,route)};
       const mesh=MeshBuilder.CreateCylinder(`marker-${route.kind}`,{diameter:8,height:.12,tessellation:40},this.scene);mesh.position.set(sample.point.x,sample.point.y+.12,sample.point.z);mesh.material=this.checkpoint.material;mesh.isPickable=false;
       const symbol=MeshBuilder.CreateTorus('marker-symbol',{diameter:3.2,thickness:.09,tessellation:30},this.scene);symbol.rotation.x=Math.PI/2;symbol.position.copyFrom(mesh.position).addInPlace(new Vector3(0,3,0));symbol.material=this.checkpoint.material;symbol.isPickable=false;
       this.markers.push({route,mesh,symbol});
@@ -417,10 +419,21 @@ export class Game {
     } else { const edge=this.world.edges[id];if(!edge){this.message='Поблизости пока нет загруженной дороги для возвращения.';return;}this.player.reset(edge,this.world.drivingSide); }
     this.clearControls(); this.refreshWanted(); this.streamClock = 0; this.camera.position.setAll(0);
   }
-  startRace(route: Route) {
-    if (this.race || this.paused || this.suspendPump) return;
-    if(!routeHasCoverage(route.points,this.world.loadedTiles,Math.max(120,...route.edges.map(id=>this.world.edges[id].width/2+110)))){this.message='Загружаем район вдоль трассы. Заезд станет доступен после подготовки.';this.emit();return;}
-    this.race = makeRace(route); this.player.reset(this.world.edges[route.edges[0]], this.world.drivingSide, 2); this.traffic.startRace(route); this.clearControls(); this.emit();
+  async startRace(invitation: Route) {
+    if (this.race || this.paused || this.suspendPump || this.preparingRace || this.loading) return;
+    const start=this.world.edges[invitation.edges[0]];
+    if(!start||start.blocked)return;
+    this.preparingRace=true;this.loading=true;this.clearControls();this.emit();
+    try {
+      const route=await this.worker.raceRoute({way:start.way,from:start.from,to:start.to},invitation.kind);
+      if(this.disposed)return;
+      if(this.paused)return;
+      if(!route||!routeHasCoverage(route.points,this.world.loadedTiles,Math.max(120,...route.edges.map(id=>this.world.edges[id].width/2+110))))
+        throw new Error('Для этого заезда пока не хватает связанных загруженных дорог. Попробуйте другой старт или дождитесь подгрузки карты.');
+      this.race = makeRace(route);this.message='';this.player.reset(this.world.edges[route.edges[0]], this.world.drivingSide, 2);
+      this.traffic.startRace(route);this.refreshWanted();this.clearControls();
+    }catch(error){if(!this.disposed){this.message=error instanceof Error?error.message:'Не удалось построить маршрут заезда.';this.paused=true;}}
+    finally{this.preparingRace=false;if(!this.disposed)this.emit();}
   }
   finishRace() { this.race = null; this.traffic.clearRacers(); this.emit(); }
   private configureGlow(quality:Settings['quality']){
