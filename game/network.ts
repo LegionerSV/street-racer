@@ -1,10 +1,11 @@
 import type { Area, Building, Edge, OSMElement, Point, RegionData, Restriction, RoadNode, Route, World } from './types';
-import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, sampleRoadElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment } from './geo';
+import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, sampleRoadElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment, offsetElevation } from './geo';
 import { structureProfiles } from './elevation';
 import { fitBridgeClearance, fitTunnelDepth, validateClearance } from './clearance';
 import { roadLayout, directedLanes,roadTypes } from './lanes';
 import {buildingCoveredByParts} from './buildings';
-import {SpatialGrid,boundsOf} from './geometry';
+import {SpatialGrid,boundsOf,overlaps} from './geometry';
+import {coverageBounds,routeHasCoverage} from './stream-coverage';
 
 const adjacencyCache = new WeakMap<World, Map<number, Edge[]>>();
 export function outgoing(world: World, id: number): Edge[] {
@@ -45,13 +46,16 @@ export function allowedTurn(world: World, from: Edge, to: Edge, history: number[
 }
 
 export function buildWorld(region: RegionData): World {
+  const coverage=region.loadedTiles?new Set(region.loadedTiles):undefined;
+  const objectBounds=coverageBounds(region.loadedTiles);
+  const covered=(p:Point)=>coverage?.has(`${Math.floor((p.x+1e-5)/1000)},${Math.floor((p.z+1e-5)/1000)}`)??false;
   const sourceNodes = new Map(region.elements.filter(e => e.type === 'node').map(e => [e.id, e]));
   const roadNodes = new Map<number, RoadNode>();
   const edges: Edge[] = [], warnings: string[] = [];
   const filteredElevation = smoothElevation(region.elevation);
-  const originHeight = sampleElevation(filteredElevation, 0, 0);
+  const originHeight = region.heightDatum ?? sampleElevation(filteredElevation, 0, 0);
   // Все объекты используют одну относительную высоту, чтобы избежать потери точности физики.
-  const elevation = { ...filteredElevation, values: Float32Array.from(filteredElevation.values, h => h - originHeight) };
+  const elevation = offsetElevation(filteredElevation, originHeight);
   const local = (id: number): Point | null => { const n = sourceNodes.get(id); if (n?.lat === undefined || n.lon === undefined) return null; const p = toLocal(n.lat, n.lon, region.center); p.y = sampleElevation(elevation, p.x, p.z); return p; };
   const roadLocal = (id: number): Point | null => { const p = local(id); if (p) p.y = sampleRoadElevation(elevation, p.x, p.z); return p; };
   const tagsNumber = (value: string | undefined, fallback: number) => { const n = parseFloat(value || ''); return Number.isFinite(n) ? n : fallback; };
@@ -75,21 +79,22 @@ export function buildWorld(region: RegionData): World {
     for (let i = 0; i < way.nodes.length - 1; i++) {
       const a = source[i], b = source[i + 1];
       if (distance2(a, b) < .5) continue;
-      if ((Math.abs(a.x) > 2600 || Math.abs(a.z) > 2600) && (Math.abs(b.x) > 2600 || Math.abs(b.z) > 2600)) continue;
+      if (coverage ? !resample([a,b],100).some(covered) : (Math.abs(a.x) > 2600 || Math.abs(a.z) > 2600) && (Math.abs(b.x) > 2600 || Math.abs(b.z) > 2600)) continue;
       // Дороги, пересекающие границу, закрываются, а не ведут за пределы подготовленного мира.
-      const outside = [a, b].some(p => Math.abs(p.x) > 2480 || Math.abs(p.z) > 2480);
+      const outside = coverage ? !resample([a,b],50).every(covered) : [a, b].some(p => Math.abs(p.x) > 2480 || Math.abs(p.z) > 2480);
       let points = resample([a, b], bridge || tunnel ? 2.5 : 10);
       const profile = profiles.get(`${way.id}:${i}`);
       points = points.map((p, j) => {
         const h = profile ? profile(j / (points.length - 1)) : sampleRoadElevation(elevation, p.x, p.z);
         return { ...p, y: h + .12 };
       });
-      const grades = points.slice(1).map((p, j) => Math.abs(p.y - points[j].y) / (distance2(p, points[j]) || 1));
-      const blocked = outside || grades.some(g => g > .38);
+      const blocked = outside;
       for (const [id, p] of [[way.nodes[i], points[0]], [way.nodes[i + 1], points.at(-1)!]] as [number, Point][]) {
         if (!roadNodes.has(id)) roadNodes.set(id, { ...p, id, signal: sourceNodes.get(id)?.tags?.highway === 'traffic_signals' });
       }
-      const base = { way: way.id, length: pathLengths(points).at(-1)!, width, lanes, speed, name: tags.name || 'Безымянная улица', category: tags.highway, oneWay: oneWay || reverse, passage: tags.tunnel === 'building_passage', bridge, tunnel, layer, blocked };
+      const rawHeights=points.map(p=>sampleElevation(region.elevation,p.x,p.z));
+      const blockedReasons: NonNullable<Edge['blockedReasons']> = outside ? ['coverage'] : [];
+      const base = { sourceHeightRange:[Math.min(...rawHeights),Math.max(...rawHeights)] as [number,number], blockedReasons, way: way.id, length: pathLengths(points).at(-1)!, width, lanes, speed, name: tags.name || 'Безымянная улица', category: tags.highway, oneWay: oneWay || reverse, passage: tags.tunnel === 'building_passage', bridge, tunnel, layer, blocked, unloaded: !!coverage&&outside };
       if (!reverse && layout.forward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i], to: way.nodes[i + 1], laneProfile: directedLanes(layout, region.drivingSide, 1), markingStart: lengths[i], points });
       if ((!oneWay || reverse) && layout.backward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i + 1], to: way.nodes[i], laneProfile: directedLanes(layout, region.drivingSide, -1), markingStart: lengths[i + 1], points: [...points].reverse() });
     }
@@ -119,7 +124,9 @@ export function buildWorld(region: RegionData): World {
   }
   function addObject(e: OSMElement, footprint: Point[], holes: Point[][] = []) {
     const t = e.tags || {};
-    if (footprint.length < 3 || footprint.every(p => Math.abs(p.x) > 2800 || Math.abs(p.z) > 2800)) return;
+    if (footprint.length < 3 || (!coverage && footprint.every(p => Math.abs(p.x) > 2800 || Math.abs(p.z) > 2800))) return;
+    const footprintBounds=boundsOf(footprint);
+    if(objectBounds && !objectBounds.some(b=>overlaps(b,footprintBounds)))return;
     if (t.building || t['building:part']) {
       const fallback = ['house', 'detached', 'garage', 'garages'].includes(t.building) ? 6 : 10 + Math.floor(seeded(e.id) * 6) * 3;
       const height = clamp(tagsNumber(t.height, tagsNumber(t['building:levels'], fallback / 3) * 3), 2.5, 260);
@@ -138,7 +145,7 @@ export function buildWorld(region: RegionData): World {
   }
   // Части здания заменяют общую оболочку только при полном покрытии у земли.
   // Надземные и перекрывающиеся части не должны удалять оставшиеся этажи/крылья.
-  const parts=new SpatialGrid<Building>(250);
+  const parts=new SpatialGrid<Building>(250,objectBounds);
   for(const b of buildings)if(b.part&&(b.minHeight||0)<=.3)parts.add(b,boundsOf(b.footprint));
   const filteredBuildings = buildings.filter(b => {
     if(b.part)return true;
@@ -158,21 +165,23 @@ export function buildWorld(region: RegionData): World {
     const flattenStart = junction(edge.from), flattenEnd = junction(edge.to);
     edge.points = edge.points.map((p, i) => { let y = p.y; if (flattenStart && distances[i] < 16) y = start.y + (y - start.y) * smooth(distances[i] / 16); if (flattenEnd && total - distances[i] < 16) y = end.y + (y - end.y) * smooth((total - distances[i]) / 16); return { ...p, y }; });
     edge.length = pathLengths(edge.points).at(-1)!;
-    if (edge.points.slice(1).some((p, i) => Math.abs(p.y - edge.points[i].y) / (distance2(p, edge.points[i]) || 1) > .38)) edge.blocked = true;
   }
   fitTunnelDepth(edges, elevation);
   fitBridgeClearance(edges);
   for(const edge of edges){
     edge.length=pathLengths(edge.points).at(-1)!;
+    edge.blockedReasons = (edge.blockedReasons || []).filter(r=>r!=='grade');
+    if(edge.points.slice(1).some((p,i)=>Math.abs(p.y-edge.points[i].y)/(distance2(p,edge.points[i])||1)>.38))edge.blockedReasons.push('grade');
+    edge.blocked=edge.blockedReasons.length>0;
     for(const [id,p] of [[edge.from,edge.points[0]],[edge.to,edge.points.at(-1)!]] as [number,Point][])Object.assign(roadNodes.get(id)!,p);
   }
   warnings.push(...validateClearance(edges));
   const usable = edges.filter(e => !e.blocked);
   const candidates = [...usable].sort((a, b) => {
-    const score = (e: Edge) => Math.hypot(e.points[0].x, e.points[0].z) + (e.bridge || e.tunnel ? 1500 : 0) + (e.width < 6 ? 500 : 0) + (e.category === 'service' ? 4000 : e.category === 'living_street' ? 2000 : e.category === 'residential' ? 300 : 0) + (e.length < 45 ? 200 : 0);
+    const score = (e: Edge) => Math.hypot(e.points[0].x-(region.focus?.x||0), e.points[0].z-(region.focus?.z||0)) + (e.bridge || e.tunnel ? 1500 : 0) + (e.width < 6 ? 500 : 0) + (e.category === 'service' ? 4000 : e.category === 'living_street' ? 2000 : e.category === 'residential' ? 300 : 0) + (e.length < 45 ? 200 : 0);
     return score(a) - score(b);
   });
-  const world: World = { center: region.center, nodes, edges, restrictions, buildings, areas, trees, elevation, drivingSide: region.drivingSide, warnings: [...new Set(warnings)].slice(0, 10), spawnEdge: candidates[0]?.id ?? -1, routes: [] };
+  const world: World = { heightDatum:originHeight, center: region.center, nodes, edges, restrictions, buildings, areas, trees, elevation, drivingSide: region.drivingSide, warnings: [...new Set(warnings)].slice(0, 10), spawnEdge: candidates[0]?.id ?? -1, routes: [], loadedTiles: region.loadedTiles };
   // Выбираем старт в связном компоненте, из которого действительно можно ехать.
   for (const candidate of candidates.slice(0, 100)) {
     const seen = new Set<number>(), stack = [candidate.from]; let length = 0;
@@ -237,6 +246,7 @@ export function createRoutes(world: World): Route[] {
     points.push(raw.at(-1)!);
     const cumulative = pathLengths(points), length = cumulative.at(-1)!;
     if (length < 400) return;
+    if(!routeHasCoverage(points,world.loadedTiles,Math.max(120,...ids.map(id=>world.edges[id].width/2+110))))return;
     routes.push({ id: `${kind}-${first.way}`, title: kind === 'circuit' ? 'Ночной круг' : 'Через район', kind, edges: ids, points, cumulative, length, laps: kind === 'circuit' ? 3 : 1 });
   }
   const ring = shortest(world, first, first.from);

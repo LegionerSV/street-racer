@@ -6,6 +6,7 @@ import { laneOffsets } from './lanes';
 import { signalPhase } from './simulation';
 import { smoothPath, samplePath, type DrivingPath } from './driving-path';
 import { createTrafficCar, setCarLights, type CarVisual, type CarKind } from './visuals';
+import {edgeKey} from './world-update';
 
 type Plan={ids:number[]; ends:number[]; path:DrivingPath; total:number; exhausted:boolean};
 type Agent={id:number;edge:number;distance:number;speed:number;point:Point;heading:number;stuck:number;visual?:CarVisual;body?:PhysicsAggregate;plan?:Plan;travel?:number;laneOffset?:number;passing?:boolean;dynamic?:boolean;impact?:number;turn?:number;race?:{route:Route;index:number;lap:number;finished:boolean;progress:number;finishTime?:number}};
@@ -18,6 +19,16 @@ export class Traffic {
   private reservations=new Map<number,{id:number;until:number}>();
   private signals: Set<number>;
   constructor(private scene:Scene,private world:World){this.signals=new Set(world.nodes.filter(n=>n.signal).map(n=>n.id));}
+  replaceWorld(world:World){
+    if(this.agents.some(a=>a.race))throw new Error('Нельзя менять дорожную сеть во время гонки.');
+    const ids=new Map(world.edges.filter(e=>!e.blocked).map(e=>[edgeKey(e),e.id]));
+    this.agents=this.agents.filter(a=>{
+      const id=ids.get(edgeKey(this.world.edges[a.edge]));
+      if(id===undefined){this.hide(a);return false;}
+      a.edge=id;a.plan=undefined;a.travel=a.distance;return true;
+    });
+    this.world=world;this.signals=new Set(world.nodes.filter(n=>n.signal).map(n=>n.id));this.reservations.clear();
+  }
   setDensity(d:'light'|'city'|'rush'){this.density=d;this.spawnTimer=0;}
   private makePlan(agent:Agent){
     const ids=agent.race?Array.from({length:agent.race.route.laps},()=>agent.race!.route.edges).flat():[agent.edge];

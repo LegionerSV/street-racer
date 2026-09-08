@@ -6,13 +6,17 @@ export function Minimap({ world, hud, mobile=false }: { world: World; hud: HUD; 
   const base = useRef<{ world: World; canvas: HTMLCanvasElement; size:number } | null>(null);
   useEffect(() => {
     const ctx = ref.current?.getContext('2d'); if (!ctx) return;
-    const width = 300, height = 240, scale = .23,size=mobile?1024:2000,mapScale=size/5000;
+    const cells=world.loadedTiles?.map(k=>k.split(',').map(Number));
+    const minX=cells?Math.min(...cells.map(c=>c[0]))*1000:-2500,maxX=cells?(Math.max(...cells.map(c=>c[0]))+1)*1000:2500;
+    const minZ=cells?Math.min(...cells.map(c=>c[1]))*1000:-2500,maxZ=cells?(Math.max(...cells.map(c=>c[1]))+1)*1000:2500;
+    const originX=(minX+maxX)/2,originZ=(minZ+maxZ)/2;
+    const width = 300, height = 240, scale = .23,size=mobile?1024:2000,mapScale=size/Math.max(maxX-minX,maxZ-minZ);
     ctx.clearRect(0, 0, width, height); ctx.fillStyle = '#101b20ed'; ctx.fillRect(0, 0, width, height);
     const transform = (x: number, z: number) => [width / 2 + (x - hud.position.x) * scale, height / 2 - (z - hud.position.z) * scale];
     if (base.current?.world !== world||base.current.size!==size) {
       const canvas = document.createElement('canvas'); canvas.width = canvas.height = size;
       const map = canvas.getContext('2d')!; map.fillStyle='#101b20';map.fillRect(0,0,size,size);
-      const xy=(x:number,z:number)=>[size/2+x*mapScale,size/2-z*mapScale];
+      const xy=(x:number,z:number)=>[size/2+(x-originX)*mapScale,size/2-(z-originZ)*mapScale];
       for(const area of world.areas)if(area.kind==='water'){
         map.beginPath();for(const ring of [area.points,...(area.holes||[])]){ring.forEach((p,i)=>{const [x,y]=xy(p.x,p.z);if(i)map.lineTo(x,y);else map.moveTo(x,y);});map.closePath();}map.fillStyle='#24596b';map.fill('evenodd');
       }
@@ -22,7 +26,7 @@ export function Minimap({ world, hud, mobile=false }: { world: World; hud: HUD; 
       base.current={world,canvas,size};
     }
     const sourceWidth=width/scale*mapScale, sourceHeight=height/scale*mapScale;
-    ctx.drawImage(base.current.canvas,size/2+hud.position.x*mapScale-sourceWidth/2,size/2-hud.position.z*mapScale-sourceHeight/2,sourceWidth,sourceHeight,0,0,width,height);
+    ctx.drawImage(base.current.canvas,size/2+(hud.position.x-originX)*mapScale-sourceWidth/2,size/2-(hud.position.z-originZ)*mapScale-sourceHeight/2,sourceWidth,sourceHeight,0,0,width,height);
     /* Слой дорог и зданий кэшируется один раз; кадр мини-карты только вырезает нужную область. */
     if (hud.race) {
       ctx.strokeStyle = '#d8ff3e'; ctx.lineWidth = 3.5; ctx.beginPath();

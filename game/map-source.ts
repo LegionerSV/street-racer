@@ -1,6 +1,14 @@
 import type { OSMElement } from './types';
 import type { LoadingLog } from './loading-log';
 import { roadTypes } from './lanes';
+import {
+  downloadMap,
+  MapDownloadError,
+  MAP_HEADER_TIMEOUT_MS,
+  MAP_IDLE_TIMEOUT_MS,
+  MAP_TOTAL_TIMEOUT_MS,
+  type DownloadMetrics,
+} from './map-download';
 export type MapBox = {
   south: number;
   west: number;
@@ -16,11 +24,12 @@ type Store = {
   get: (key: string) => Promise<MapCacheEntry | undefined>;
   put: (key: string, value: MapCacheEntry) => Promise<void>;
 };
-const ENDPOINTS = [
+export const MAP_ENDPOINTS = [
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
 ];
-export const MAP_REQUEST_TIMEOUT_MS = 35000;
+export const MAP_REQUEST_TIMEOUT_MS = MAP_HEADER_TIMEOUT_MS;
 export async function abortableDelay(ms: number, signal: AbortSignal) {
   signal.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
@@ -77,14 +86,14 @@ export class MapSource {
   private preferred = 0;
   private queue: Promise<void> = Promise.resolve();
   private unavailable = new Set<number>();
-  private readyAt = [0, 0];
+  private readyAt = MAP_ENDPOINTS.map(() => 0);
   constructor(
     private signal: AbortSignal,
     private log?: LoadingLog,
     private store?: Store,
   ) {
     this.log?.start('План загрузки карты', {
-      policyVersion: 3,
+      policyVersion: 5,
       mapConcurrency: 1,
     })();
   }
@@ -176,11 +185,22 @@ export class MapSource {
     splitOnTimeout: boolean,
   ): Promise<OSMElement[]> {
     let last: unknown;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const attempts = MAP_ENDPOINTS.map(() => 0);
+    for (let attempt = 0; attempt < MAP_ENDPOINTS.length * 2; attempt++) {
       this.signal.throwIfAborted();
+      if (
+        this.unavailable.has(this.preferred) ||
+        attempts[this.preferred] >= 2
+      ) {
+        const available = MAP_ENDPOINTS.findIndex(
+          (_, i) => !this.unavailable.has(i) && attempts[i] < 2,
+        );
+        if (available < 0) break;
+        this.preferred = available;
+      }
       const endpointIndex = this.preferred;
-      if (this.unavailable.has(endpointIndex)) break;
-      const endpoint = ENDPOINTS[endpointIndex];
+      const endpoint = MAP_ENDPOINTS[endpointIndex];
+      attempts[endpointIndex]++;
       const delayMs = this.readyAt[endpointIndex] - Date.now();
       if (delayMs > 0) {
         const waitEnd = this.log?.start(`${stage} / повтор`, {
@@ -195,29 +215,33 @@ export class MapSource {
           throw error;
         }
       }
-      const begin = performance.now();
       const end = this.log?.start(stage, {
         endpoint,
         attempt: attempt + 1,
+        endpointAttempt: attempts[endpointIndex],
         clientTimeoutMs: MAP_REQUEST_TIMEOUT_MS,
+        idleTimeoutMs: MAP_IDLE_TIMEOUT_MS,
+        totalTimeoutMs: MAP_TOTAL_TIMEOUT_MS,
         serverTimeoutSeconds: 25,
       });
       let httpStatus: number | undefined,
         headersMs: number | undefined,
         responseChars: number | undefined,
         serverMessage: string | undefined;
+      const metrics: DownloadMetrics = { receivedBytes: 0 };
       try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          body: new URLSearchParams({
-            data: `[out:json][timeout:25];${query}`,
-          }),
-          signal: AbortSignal.any([
-            this.signal,
-            AbortSignal.timeout(MAP_REQUEST_TIMEOUT_MS),
-          ]),
-        });
-        headersMs = Math.round(performance.now() - begin);
+        const { response, body } = await downloadMap(
+          endpoint,
+          {
+            method: 'POST',
+            body: new URLSearchParams({
+              data: `[out:json][timeout:25];${query}`,
+            }),
+            signal: this.signal,
+          },
+          metrics,
+        );
+        headersMs = metrics.headersMs;
         httpStatus = response.status;
         if (!response.ok) {
           const after = response.headers.get('retry-after'),
@@ -229,17 +253,7 @@ export class MapSource {
               : response.status === 429
                 ? await this.slotDelay(endpoint, stage)
                 : 5000;
-          const reader = response.body?.getReader();
-          if (reader)
-            try {
-              const part = await reader.read();
-              serverMessage = part.value
-                ? new TextDecoder().decode(part.value.subarray(0, 1024))
-                : undefined;
-            } finally {
-              await reader.cancel();
-              reader.releaseLock();
-            }
+          serverMessage = body.slice(0, 1024) || undefined;
           throw new MapRequestError(
             `Сервер карт ответил ${response.status}.`,
             executionLimit(serverMessage),
@@ -247,9 +261,8 @@ export class MapSource {
             Number.isFinite(retryAfterMs) ? Math.max(0, retryAfterMs) : 30000,
           );
         }
-        const body = await response.text();
         responseChars = body.length;
-        const readMs = Math.round(performance.now() - begin) - headersMs,
+        const readMs = metrics.readMs,
           parseStart = performance.now();
         const json = JSON.parse(body) as {
             remark?: string;
@@ -270,41 +283,57 @@ export class MapSource {
           parseMs,
           responseChars,
           elements: json.elements.length,
+          ...metrics,
         });
         await this.save(query, json.elements);
         return json.elements;
       } catch (error) {
+        httpStatus ??= metrics.httpStatus;
         end?.(this.signal.aborted ? 'cancelled' : 'error', {
           httpStatus,
           headersMs,
           responseChars,
           serverMessage,
           error: error instanceof Error ? error.message : String(error),
+          ...metrics,
         });
         this.signal.throwIfAborted();
         const timeout = error instanceof Error && error.name === 'TimeoutError';
-        last = timeout
-          ? new MapRequestError('Сервер карт не ответил за 35 секунд.')
-          : error;
-        // Делим только при явном превышении времени/памяти выполнения запроса.
-        // 504 диспетчера, 429 и сетевые таймауты не исправляются дроблением карты.
+        last =
+          error instanceof MapDownloadError
+            ? new MapRequestError(error.message, error.split)
+            : timeout
+              ? new MapRequestError('Сервер карт не ответил за 35 секунд.')
+              : error;
+        // Дробим тяжёлые ответы и обрыв чтения после заголовков. Ожидание
+        // заголовков, 504 диспетчера и 429 не означают большой объём карты.
         if (splitOnTimeout && last instanceof MapRequestError && last.split)
           throw last;
-        if (last instanceof MapRequestError && last.status === 400) break;
         if (
-          httpStatus === 429 ||
-          httpStatus === 504 ||
-          (last instanceof MapRequestError && last.split)
+          last instanceof MapRequestError &&
+          last.split &&
+          attempts[endpointIndex] >= 2
+        )
+          break;
+        if (last instanceof MapRequestError && last.status === 400) break;
+        if (httpStatus === 429) {
+          // Соблюдаем квоту всей очереди; смена сервера не обходит ограничение.
+          this.readyAt[endpointIndex] =
+            Date.now() +
+            (last instanceof MapRequestError ? last.retryAfterMs : 5000);
+          if (attempts[endpointIndex] >= 2) break;
+        } else if (
+          (httpStatus === 504 ||
+            (last instanceof MapRequestError && last.split)) &&
+          attempts[endpointIndex] < 2
         ) {
-          // Ограничение действует для всей очереди. Не переносим запросы на
-          // резерв из-за квоты: это создавало в логах бесполезные ожидания по 35 с.
           this.readyAt[endpointIndex] =
             Date.now() +
             (last instanceof MapRequestError ? last.retryAfterMs : 5000);
         } else {
           // Неответивший сервер больше не используем в этой загрузке.
           this.unavailable.add(endpointIndex);
-          this.preferred = 1 - endpointIndex;
+          this.preferred = (endpointIndex + 1) % MAP_ENDPOINTS.length;
           this.readyAt[this.preferred] = Math.max(
             this.readyAt[this.preferred],
             Date.now() + 2500,
@@ -316,7 +345,20 @@ export class MapSource {
       `Не удалось загрузить карту. ${last instanceof Error ? last.message : 'Ошибка соединения.'} Попробуйте ещё раз.`,
     );
   }
-  async cell(box: MapBox, stage: string, depth = 0): Promise<OSMElement[]> {
+  async seedCell(box: MapBox, elements: OSMElement[], savedAt: number) {
+    this.signal.throwIfAborted();
+    const query = mapCellQuery(box),
+      current = await this.store?.get(this.key(query));
+    this.signal.throwIfAborted();
+    if (!fresh(current) || current.split)
+      await this.store?.put(this.key(query), { elements, savedAt });
+  }
+  async cell(
+    box: MapBox,
+    stage: string,
+    depth = 0,
+    splitFirst = false,
+  ): Promise<OSMElement[]> {
     const query = mapCellQuery(box);
     if (depth === 0 && this.store) {
       this.signal.throwIfAborted();
@@ -339,6 +381,14 @@ export class MapSource {
       }
     }
     try {
+      if (splitFirst && depth === 0) {
+        const cached = await this.cached(query, stage);
+        if (cached && !cached.split) return cached.elements;
+        throw new MapRequestError(
+          'Загружаем участок четырьмя малыми частями.',
+          true,
+        );
+      }
       return await this.request(query, stage, depth < 1);
     } catch (error) {
       this.signal.throwIfAborted();

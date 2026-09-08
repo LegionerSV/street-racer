@@ -1,9 +1,11 @@
+import { MAP_BUILD_VERSION } from './map-version';
 import type { Center } from './types';
 export const LOADING_LOG_KEY = 'street-racer:loading-log:v1';
 type Details = Record<string, string | number | boolean | undefined>;
 type Status = 'running' | 'success' | 'error' | 'cancelled' | 'interrupted';
 export type LoadingReport = {
   version: 1;
+  mapBuildVersion?: string;
   startedAt: string;
   center: Center;
   quality: string;
@@ -26,6 +28,7 @@ export class LoadingLog {
   constructor(center: Center, quality: string) {
     this.report = {
       version: 1,
+      mapBuildVersion: MAP_BUILD_VERSION,
       startedAt: new Date().toISOString(),
       center: { ...center },
       quality,

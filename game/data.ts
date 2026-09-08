@@ -80,14 +80,16 @@ function tileCoord(lat: number, lon: number, z: number) {
     y: ((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2) * n,
   };
 }
-async function loadElevations(
+export async function loadElevations(
   center: Center,
   signal: AbortSignal,
   progress: (text: string, percent: number) => void,
   log?: LoadingLog,
+  shape = { size: 5600, width: 257, offsetX: 0, offsetZ: 0 },
 ) {
+  const sw = toGeo({x:shape.offsetX-shape.size/2,y:0,z:shape.offsetZ-shape.size/2},center), ne = toGeo({x:shape.offsetX+shape.size/2,y:0,z:shape.offsetZ+shape.size/2},center);
   const z = 12,
-    box = bounds(center),
+    box = {south:sw.lat,west:sw.lon,north:ne.lat,east:ne.lon},
     nw = tileCoord(box.north, box.west, z),
     se = tileCoord(box.south, box.east, z);
   const images = new Map<string, Uint8ClampedArray>(),
@@ -149,8 +151,7 @@ async function loadElevations(
       }
     }),
   );
-  const width = 257,
-    size = 5600,
+  const { width, size } = shape,
     values = new Float32Array(width * width);
   function height(px: number, py: number) {
     const x = Math.floor(px / 256),
@@ -164,9 +165,9 @@ async function loadElevations(
     for (let i = 0; i < width; i++) {
       const p = toGeo(
           {
-            x: (i / (width - 1) - 0.5) * size,
+            x: shape.offsetX + (i / (width - 1) - 0.5) * size,
             y: 0,
-            z: (j / (width - 1) - 0.5) * size,
+            z: shape.offsetZ + (j / (width - 1) - 0.5) * size,
           },
           center,
         ),
@@ -187,7 +188,7 @@ async function loadElevations(
         py - iy,
       );
     }
-  return { width, size, values };
+  return { width, size, values, offsetX: shape.offsetX, offsetZ: shape.offsetZ };
 }
 export async function loadRegion(
   center: Center,

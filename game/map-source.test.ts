@@ -4,6 +4,7 @@ import {
   mapCellQuery,
   splitMapBox,
   type MapCacheEntry,
+  MAP_ENDPOINTS,
 } from './map-source';
 import { LoadingLog } from './loading-log';
 afterEach(() => {
@@ -21,6 +22,62 @@ const memory = () => {
     },
   };
 };
+it('после 504 и таймаута основного сервера всё равно обращается к резервному', async () => {
+  // Arrange
+  vi.useFakeTimers();
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response('Dispatcher_Client::timeout', { status: 504 }),
+    )
+    .mockImplementationOnce(() => new Promise(() => {}))
+    .mockResolvedValueOnce(
+      Response.json({ elements: [{ type: 'node', id: 42 }] }),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  const promise = new MapSource(new AbortController().signal).cell(
+    box,
+    'Карта',
+  );
+  const result = expect(promise).resolves.toEqual([{ type: 'node', id: 42 }]);
+  // Act
+  await vi.runAllTimersAsync();
+  await result;
+  // Assert
+  expect(fetcher.mock.calls.map((c) => c[0])).toEqual([
+    MAP_ENDPOINTS[0],
+    MAP_ENDPOINTS[0],
+    MAP_ENDPOINTS[1],
+  ]);
+});
+it('предварительно делит клетку на четыре запроса и повторно открывает её из кэша', async () => {
+  // Arrange
+  const store = memory(),
+    fetcher = vi.fn();
+  for (let id = 1; id <= 4; id++)
+    fetcher.mockResolvedValueOnce(
+      Response.json({
+        elements: [
+          { type: 'node', id },
+          { type: 'node', id: 99 },
+        ],
+      }),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  const source = new MapSource(new AbortController().signal, undefined, store);
+  // Act
+  const result = await source.cell(box, 'Карта', 0, true);
+  const cached = await source.cell(box, 'Карта', 0, true);
+  // Assert
+  expect(result).toHaveLength(5);
+  expect(cached).toEqual(result);
+  expect(fetcher).toHaveBeenCalledTimes(4);
+  expect(
+    fetcher.mock.calls.map((c) => (c[1].body as URLSearchParams).get('data')),
+  ).toEqual(
+    splitMapBox(box).map((b) => `[out:json][timeout:25];${mapCellQuery(b)}`),
+  );
+});
 it('запрашивает только используемые автомобильные дороги, сохраняя части домов и ограничения', () => {
   // Arrange / Act
   const q = mapCellQuery(box);
@@ -35,13 +92,11 @@ it('запрашивает только используемые автомоб�
 it('превышение времени выполнения делит участок и сохраняет успешные части', async () => {
   // Arrange
   const store = memory(),
-    fetcher = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response('runtime error: Query timed out in "query" at line 1', {
-          status: 504,
-        }),
-      );
+    fetcher = vi.fn().mockResolvedValueOnce(
+      new Response('runtime error: Query timed out in "query" at line 1', {
+        status: 504,
+      }),
+    );
   for (let i = 1; i <= 4; i++)
     fetcher.mockResolvedValueOnce(
       Response.json({ elements: [{ type: 'node', id: i }] }),
@@ -135,7 +190,7 @@ it('не дробит запрос при 429, учитывает Retry-After и
   expect(fetcher).toHaveBeenCalledTimes(2);
   expect(String(fetcher.mock.calls[0][1].body)).toContain('timeout%3A25');
 });
-it('сетевой таймаут не дробит участок и пробует резерв только один раз', async () => {
+it('сетевой таймаут не дробит участок и пробует каждый независимый сервер один раз', async () => {
   // Arrange
   vi.useFakeTimers();
   const fetcher = vi
@@ -148,10 +203,11 @@ it('сетевой таймаут не дробит участок и пробу
     'Сервер карт не ответил за 35 секунд.',
   );
   // Act
-  await vi.advanceTimersByTimeAsync(2500);
+  await vi.runAllTimersAsync();
   await failed;
   // Assert — один и тот же квадрат, по одной попытке на каждом сервере.
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(new Set(fetcher.mock.calls.map((c) => c[0])).size).toBe(3);
   expect(fetcher.mock.calls[0][0]).not.toBe(fetcher.mock.calls[1][0]);
   expect(String(fetcher.mock.calls[0][1].body)).toBe(
     String(fetcher.mock.calls[1][1].body),
@@ -219,11 +275,9 @@ it('очередь ждёт окончания ответа и общей пау
   await Promise.all([first, second]);
   // Assert
   expect(fetcher).toHaveBeenCalledTimes(3);
-  expect(
-    fetcher.mock.calls.every(
-      (call) => call[0] === 'https://overpass-api.de/api/interpreter',
-    ),
-  ).toBe(true);
+  expect(fetcher.mock.calls.every((call) => call[0] === MAP_ENDPOINTS[0])).toBe(
+    true,
+  );
 });
 
 it('при 429 без Retry-After использует время свободного слота из статуса сервера', async () => {
@@ -246,7 +300,9 @@ it('при 429 без Retry-After использует время свободн
   await vi.advanceTimersByTimeAsync(1);
   await load;
   // Assert
-  expect(fetcher.mock.calls[1][0]).toBe('https://overpass-api.de/api/status');
+  expect(fetcher.mock.calls[1][0]).toBe(
+    MAP_ENDPOINTS[0].replace(/interpreter$/, 'status'),
+  );
   expect(fetcher.mock.calls[2][0]).toBe(fetcher.mock.calls[0][0]);
 });
 
@@ -368,7 +424,7 @@ it('сбой резервного сервера не отправляет оч�
   const results = await settled;
   // Assert
   expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
 it('дробление ограничено одним уровнем, а частичный ответ с remark не сохраняется как карта', async () => {

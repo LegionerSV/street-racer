@@ -1,3 +1,4 @@
+import {mapDiagnostics} from './map-diagnostics';
 import {
   Color3, Color4, Engine, Scene, Vector3, FreeCamera,
   Mesh, MeshBuilder, VertexData, StandardMaterial, PhysicsAggregate, PhysicsShapeType, HavokPlugin,
@@ -5,7 +6,7 @@ import {
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import havokWasm from '@babylonjs/havok/lib/esm/HavokPhysics.wasm?url';
-import type { ChunkData, HUD, MeshData, Point, RaceState, Route, Settings, World } from './types';
+import type { ChunkData, HUD, MeshData, Point, RaceState, Route, Settings, World, RegionData } from './types';
 import { WorldWorker } from './worker-client';
 import { desiredChunks,criticalChunks } from './chunks';
 import { distance2, pathLengths, pointAt, projectOnSegment, tileKey } from './geo';
@@ -26,6 +27,9 @@ import { VehicleLighting } from './vehicle-lighting';
 import { worldLandmarks } from './landmarks';
 import {advanceDrivingPhysics,ChasePosition} from './driving-frame';
 import type {LoadingLog} from './loading-log';
+import {RegionStream,tileReady} from './region-stream';
+import {edgeKey,changedChunks} from './world-update';
+import {routeHasCoverage,needsRaceRecovery} from './stream-coverage';
 
 type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; lamps: Point[]; buildingBounds:BoundingBox[]; dispose: () => void };
 export class Game {
@@ -70,6 +74,12 @@ export class Game {
   private glow: GlowLayer | null;
   private nitroJets:Mesh[]=[];
   private streamFailure: string | null = null;
+  private mapStream?:RegionStream;
+  private mapCoverage?:Set<string>;
+  private suspendPump=false;
+  private applyingMap=false;
+  private staleChunks=new Set<string>();
+  private streamingControl=new AbortController();
   paused = false;
   race: RaceState | null = null;
   nearRace: Route | null = null;
@@ -102,7 +112,7 @@ export class Game {
       const spawn = world.edges[world.spawnEdge]; if (!spawn) throw new Error('В этом участке нет дорог для машины. Выберите другой район.');
       game.player.reset(spawn, world.drivingSide);
       game.refreshWanted();
-      const critical=new Set(criticalChunks(game.player.position,game.player.heading));
+      const critical=new Set(criticalChunks(game.player.position,game.player.heading,!!world.loadedTiles));
       const first = game.wanted.filter(c => critical.has(c.key) && c.lod === 0);
       for (let i = 0; i < first.length; i++) {
         signal.throwIfAborted();
@@ -118,7 +128,8 @@ export class Game {
     } catch (error) { game.dispose(); throw error; }
     finally { signal.removeEventListener('abort', abort); }
   }
-  private constructor(private canvas: HTMLCanvasElement, readonly world: World, private worker: WorldWorker, public settings: Settings, private onHUD: (hud: HUD) => void, havok: unknown) {
+  private constructor(private canvas: HTMLCanvasElement, public world: World, private worker: WorldWorker, public settings: Settings, private onHUD: (hud: HUD) => void, havok: unknown) {
+    this.mapCoverage=world.loadedTiles?new Set(world.loadedTiles):undefined;
     this.engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
     this.engine.setHardwareScalingLevel(resolutionScale(settings.quality,canvas.clientWidth,canvas.clientHeight));
     this.scene = new Scene(this.engine); this.scene.clearColor = new Color4(.105, .15, .2, 1);
@@ -159,7 +170,8 @@ export class Game {
     }
     const markerMat = material(this.scene, 'race-marker', '#d8ff3e', true); markerMat.alpha = .35;
     world.routes.forEach((route, index) => {
-      const sample = pointAt(world.edges[world.spawnEdge].points, pathLengths(world.edges[world.spawnEdge].points), Math.min(55 + index * 35, world.edges[world.spawnEdge].length * (.45 + index * .2)));
+      const spawn=world.edges[route.edges[0]];
+      const sample = pointAt(spawn.points, pathLengths(spawn.points), Math.min(55 + index * 35, spawn.length * (.45 + index * .2)));
       const mesh = MeshBuilder.CreateCylinder(`marker-${route.kind}`, { diameter: 8, height: .12, tessellation: 40 }, this.scene); mesh.position.set(sample.point.x, sample.point.y + .12, sample.point.z); mesh.material = markerMat; mesh.isPickable = false;
       const symbol = MeshBuilder.CreateTorus('marker-symbol', { diameter: 3.2, thickness: .09, tessellation: 30 }, this.scene); symbol.rotation.x = Math.PI / 2; symbol.position.copyFrom(mesh.position).addInPlace(new Vector3(0, 3, 0)); symbol.material = markerMat; symbol.isPickable = false;
       this.markers.push({ route, mesh, symbol });
@@ -223,15 +235,16 @@ export class Game {
     const buildingBounds=(indexWorld(this.world).buildings.get(chunk.key)||[]).map(b=>new BoundingBox(new Vector3(Math.min(...b.footprint.map(p=>p.x)),Math.min(...b.footprint.map(p=>p.y))+(b.minHeight||0),Math.min(...b.footprint.map(p=>p.z))),new Vector3(Math.max(...b.footprint.map(p=>p.x)),Math.max(...b.footprint.map(p=>p.y))+b.height,Math.max(...b.footprint.map(p=>p.z)))));
     this.chunks.set(chunk.key, { lod: chunk.lod, meshes, bodies, lamps: chunk.lamps, buildingBounds, dispose: () => { bodies.forEach(b => b.dispose()); meshes.forEach(m => m.dispose()); } });
     this.installTimings.add(performance.now()-started);
+    this.staleChunks.delete(chunk.key);
   }
   private refreshWanted() {
-    this.wanted = desiredChunks(this.player.position, this.player.heading, this.settings.quality);
+    this.wanted = desiredChunks(this.player.position, this.player.heading, this.settings.quality,!!this.mapCoverage).filter(c=>!this.mapCoverage||tileReady(this.mapCoverage,c.key));
     const wanted = new Set(this.wanted.map(c => c.key));
-    for (const [key, chunk] of this.chunks) if (!wanted.has(key)) { chunk.dispose(); this.chunks.delete(key); }
+    for (const [key, chunk] of this.chunks) if (!wanted.has(key)) { chunk.dispose(); this.chunks.delete(key); this.staleChunks.delete(key); }
   }
   private pump() {
-    if (this.disposed || this.streamFailure || this.pending.size >= 2) return;
-    const next = this.wanted.find(c => !this.pending.has(c.key) && this.chunks.get(c.key)?.lod !== c.lod);
+    if (this.disposed || this.suspendPump || this.streamFailure || this.pending.size >= 2) return;
+    const next = this.wanted.find(c => !this.pending.has(c.key) && (this.chunks.get(c.key)?.lod !== c.lod||this.staleChunks.has(c.key)));
     if (!next) return;
     this.pending.add(next.key);
     void this.worker.chunk(next.key, next.lod,this.settings.quality==='mobile'?8:32).then(chunk => {
@@ -280,11 +293,11 @@ export class Game {
     }
     this.pump();
     const p = this.player.position, h = this.player.heading;
-    const critical = criticalChunks(p,h);
-    this.loading = critical.some(k => this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
+    const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage));
+    this.loading = this.applyingMap || critical.some(k => this.mapCoverage ? !tileReady(this.mapCoverage,k)||this.chunks.get(k)?.lod!==0||this.staleChunks.has(k) : this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
     if(this.loading)this.clearControls();
     advanceDrivingPhysics(this.scene,this.engine.getDeltaTime(),!this.paused&&!this.loading);
-    if (Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495 || p.y < -200 || p.y > 1000) this.recover();
+    if ((!this.mapCoverage&&(Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495)) || p.y < -200 || p.y > 10000) this.recover();
     const bodyForward = this.player.visual.root.getDirection(Vector3.Forward());bodyForward.y=0;bodyForward.normalize();
     if(this.camera.position.lengthSquared()<1||Vector3.Distance(this.camera.position,p)>25)this.cameraForward.copyFrom(bodyForward);
     else Vector3.LerpToRef(this.cameraForward,bodyForward,1-Math.exp(-dt*8),this.cameraForward);
@@ -319,7 +332,74 @@ export class Game {
     if (this.hudClock <= 0) { this.hudClock = .1; this.emit(); }
   }
   private emit() {
-    this.onHUD({ speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, race: this.race ? { ...this.race } : null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
+    this.onHUD({ speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.mapStream?.status, race: this.race ? { ...this.race } : null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
+  }
+  private recoverAtMapBoundary(critical:string[]){
+    if(!needsRaceRecovery(!!this.race||!!this.driveTest,this.mapCoverage,critical))return critical;
+    if(this.driveTest)this.endDriveTest();
+    this.recover();
+    this.message='Впереди район ещё не загружен. Автомобиль возвращён на трассу.';
+    return criticalChunks(this.player.position,this.player.heading,!!this.mapCoverage);
+  }
+  attachMapStream(stream:RegionStream,onWorld:(world:World)=>void){
+    this.mapStream=stream;
+    const wait=(ms:number)=>new Promise<void>(resolve=>{
+      const signal=this.streamingControl.signal;
+      const finish=()=>{clearTimeout(timer);signal.removeEventListener('abort',finish);resolve();};
+      const timer=setTimeout(finish,ms);signal.addEventListener('abort',finish,{once:true});
+      if(signal.aborted)finish();
+    });
+    const blocked=()=>!!this.race||!!this.driveTest||document.hidden;
+    void (async()=>{
+      let awaiting:RegionData|null=null;
+      while(!this.disposed){
+        if(blocked()){await wait(1000);continue;}
+        try{
+          const position=this.player.position;
+          const region:RegionData|null=awaiting??await stream.next({x:position.x,y:position.y,z:position.z},this.player.heading,()=>({position:{x:this.player.position.x,y:this.player.position.y,z:this.player.position.z},heading:this.player.heading}));
+          if(this.disposed)return;
+          if(!region){await wait(1500);continue;}
+          awaiting=region;
+          while(!this.disposed&&blocked())await wait(1000);
+          if(this.disposed)return;
+          const next=await this.worker.prepare(region);
+          while(!this.disposed&&blocked())await wait(1000);
+          if(this.disposed)return;
+          const nextCoverage=new Set(next.loadedTiles);
+          if(criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true).some(k=>!tileReady(nextCoverage,k))){awaiting=null;continue;}
+          this.suspendPump=true;
+          while(!this.disposed&&this.pending.size)await wait(20);
+          if(this.disposed)return;
+          this.applyingMap=true;
+          await this.worker.commit();
+          if(this.disposed)return;
+          const newCoverage=new Set(next.loadedTiles);
+          for(const key of changedChunks(this.world,next,this.chunks.keys()))this.staleChunks.add(key);
+          const safe=this.world.edges[this.lastSafeEdge];
+          this.traffic.replaceWorld(next);
+          this.world=next;this.mapCoverage=newCoverage;
+          this.lastSafeEdge=(safe?next.edges.find(e=>!e.blocked&&edgeKey(e)===edgeKey(safe))?.id:undefined)??next.spawnEdge;
+          this.replaceRouteMarkers();
+          this.refreshWanted();onWorld(next);awaiting=null;
+        }catch(error){
+          if(this.disposed)return;
+          this.message=error instanceof Error?error.message:'Не удалось подготовить следующий участок.';
+          await wait(30000);
+        }finally{this.suspendPump=false;this.applyingMap=false;}
+        await wait(1000);
+      }
+    })();
+  }
+  private replaceRouteMarkers(){
+    for(const marker of this.markers){marker.mesh.dispose();marker.symbol.dispose();}
+    this.markers=[];this.nearRace=null;this.routeLengths.clear();
+    this.world.routes.forEach((route,index)=>{
+      const spawn=this.world.edges[route.edges[0]];if(!spawn)return;
+      const sample=pointAt(spawn.points,pathLengths(spawn.points),Math.min(55+index*35,spawn.length*(.45+index*.2)));
+      const mesh=MeshBuilder.CreateCylinder(`marker-${route.kind}`,{diameter:8,height:.12,tessellation:40},this.scene);mesh.position.set(sample.point.x,sample.point.y+.12,sample.point.z);mesh.material=this.checkpoint.material;mesh.isPickable=false;
+      const symbol=MeshBuilder.CreateTorus('marker-symbol',{diameter:3.2,thickness:.09,tessellation:30},this.scene);symbol.rotation.x=Math.PI/2;symbol.position.copyFrom(mesh.position).addInPlace(new Vector3(0,3,0));symbol.material=this.checkpoint.material;symbol.isPickable=false;
+      this.markers.push({route,mesh,symbol});
+    });
   }
   private clearControls(){this.input.clear();this.player.nitro.interrupt();}
   setTouchControl(pointerId:number,key:DrivingKey,down:boolean){
@@ -334,11 +414,12 @@ export class Game {
     if (this.race) {
       const p = this.race.route.points[Math.max(0, this.race.checkpoint - 1)], next = this.race.route.points[this.race.checkpoint];
       this.player.teleport({ ...p, y: p.y + .88 }, Math.atan2(next.x - p.x, next.z - p.z));
-    } else this.player.reset(this.world.edges[id], this.world.drivingSide);
+    } else { const edge=this.world.edges[id];if(!edge){this.message='Поблизости пока нет загруженной дороги для возвращения.';return;}this.player.reset(edge,this.world.drivingSide); }
     this.clearControls(); this.refreshWanted(); this.streamClock = 0; this.camera.position.setAll(0);
   }
   startRace(route: Route) {
-    if (this.race || this.paused) return;
+    if (this.race || this.paused || this.suspendPump) return;
+    if(!routeHasCoverage(route.points,this.world.loadedTiles,Math.max(120,...route.edges.map(id=>this.world.edges[id].width/2+110)))){this.message='Загружаем район вдоль трассы. Заезд станет доступен после подготовки.';this.emit();return;}
     this.race = makeRace(route); this.player.reset(this.world.edges[route.edges[0]], this.world.drivingSide, 2); this.traffic.startRace(route); this.clearControls(); this.emit();
   }
   finishRace() { this.race = null; this.traffic.clearRacers(); this.emit(); }
@@ -348,16 +429,18 @@ export class Game {
   }
   setSettings(settings: Settings) { this.settings = settings; this.traffic.setDensity(settings.traffic || 'city');this.traffic.setMobile(settings.quality==='mobile'); this.engine.setHardwareScalingLevel(resolutionScale(settings.quality,this.canvas.clientWidth,this.canvas.clientHeight)); this.scene.fogDensity = settings.quality === 'high' ? .00095 : .00135; this.configureGlow(settings.quality); this.refreshWanted(); }
   performanceReport(){
+    const memory=(performance as Performance & {memory?:{usedJSHeapSize:number}}).memory;
     const planes=Frustum.GetPlanes(this.camera.getTransformationMatrix()),bounds=[...this.chunks.values()].flatMap(c=>c.buildingBounds),gpu=this.engineStats.gpuFrameTimeCounter;
-    return {...this.frameTimings.summary(),quality:this.settings.quality,loadedBuildings:bounds.length,visibleBuildings:bounds.filter(b=>b.isInFrustum(planes)).length,activeMeshes:this.scene.getActiveMeshes().length,triangles:Math.round(this.scene.getActiveIndices()/3),drawCalls:this.sceneStats.drawCallsCounter.current,gpuFrameMs:gpu?.count&&gpu.current>0?gpu.current/1e6:null,chunkInstallP95Ms:this.installTimings.summary().p95FrameMs,physicsSurfaces:[...this.chunks.values()].reduce((sum,c)=>sum+c.bodies.length,0),resolution:{width:this.engine.getRenderWidth(),height:this.engine.getRenderHeight()}};
+    return {...this.frameTimings.summary(),mainThreadHeapMiB:memory?Math.round(memory.usedJSHeapSize/1048576):null,quality:this.settings.quality,loadedBuildings:bounds.length,visibleBuildings:bounds.filter(b=>b.isInFrustum(planes)).length,activeMeshes:this.scene.getActiveMeshes().length,triangles:Math.round(this.scene.getActiveIndices()/3),drawCalls:this.sceneStats.drawCallsCounter.current,gpuFrameMs:gpu?.count&&gpu.current>0?gpu.current/1e6:null,chunkInstallP95Ms:this.installTimings.summary().p95FrameMs,physicsSurfaces:[...this.chunks.values()].reduce((sum,c)=>sum+c.bodies.length,0),resolution:{width:this.engine.getRenderWidth(),height:this.engine.getRenderHeight()}};
   }
   resetPerformance(){this.frameTimings.reset();this.installTimings.reset();}
   exportPerformance(){
-    const data={recordedAt:new Date().toISOString(),center:this.world.center,settings:this.settings,device:navigator.userAgent,performance:this.performanceReport(),diagnostics:this.diagnostics()};
+    const data={recordedAt:new Date().toISOString(),center:this.world.center,settings:this.settings,device:navigator.userAgent,performance:this.performanceReport(),diagnostics:this.diagnostics(),map:mapDiagnostics(this.world,this.player.position),sceneChunks:{installed:[...this.chunks].map(([key,c])=>({key,lod:c.lod})),pending:[...this.pending]}};
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='street-racer-performance.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
-  diagnostics() { return { performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
+  diagnostics() { return { streaming:this.mapStream?.diagnostics(), performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
   startDriveTest() {
+    if(this.suspendPump)return;
     if (this.driveTest) { this.endDriveTest(); return; }
     const route = this.world.routes.find(r => r.kind === 'sprint') || this.world.routes[0];
     if (!route) { this.message = 'Нет маршрута для испытания.'; return; }
@@ -384,6 +467,7 @@ export class Game {
     this.driveTest = null; this.clearControls(); this.paused = true; this.emit();
   }
   visitStructure(kind: 'bridge' | 'tunnel') {
+    if(this.suspendPump)return;
     const candidates = this.world.edges.filter(e => e[kind] && !e.blocked).sort((a, b) => b.length - a.length);
     if (!candidates.length) { this.message = 'В этом районе нет доступных сооружений этого типа.'; return; }
     this.driveTest = null; this.race = null; this.traffic.clearRacers(); const edge = candidates[0]; this.lastSafeEdge = edge.id; this.player.reset(edge, this.world.drivingSide); this.paused = false; this.refreshWanted(); this.streamClock = 0; this.camera.position.setAll(0);
@@ -394,6 +478,7 @@ export class Game {
   }
   dispose() {
     if (this.disposed) return; this.disposed = true; this.running = false;
+    this.streamingControl.abort();this.mapStream?.dispose();this.worker.dispose();
       window.removeEventListener('keydown', this.onKeyDown); window.removeEventListener('keyup', this.onKeyUp); window.removeEventListener('blur', this.onBlur); window.removeEventListener('resize', this.resize);
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.engine.stopRenderLoop(); this.engineStats.dispose();this.sceneStats.dispose();this.clearControls(); this.vehicleLighting.dispose();this.atmosphere.dispose(); this.sound.dispose(); this.traffic.dispose(); this.player.dispose(); this.chunks.forEach(c => c.dispose()); this.chunks.clear(); this.scene.dispose(); this.engine.dispose();

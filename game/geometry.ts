@@ -10,20 +10,40 @@ export const overlaps = (a: Bounds, b: Bounds) =>
   a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ;
 export class SpatialGrid<T> {
   private cells = new Map<string, { item: T; bounds: Bounds }[]>();
-  constructor(private size = 32) {}
+  constructor(
+    private size = 32,
+    private coverage?: Bounds[],
+  ) {}
+  get cellCount() {
+    return this.cells.size;
+  }
   private keys(b: Bounds) {
-    const keys: string[] = [];
-    for (
-      let x = Math.floor(b.minX / this.size);
-      x <= Math.floor(b.maxX / this.size);
-      x++
-    )
+    const keys = new Set<string>();
+    // Ограничиваем и вставку, и запрос: большая геометрия остаётся целой,
+    // но индекс не разрастается за пределами текущего района.
+    const regions = this.coverage
+      ? this.coverage
+          .filter((c) => overlaps(c, b))
+          .map((c) => ({
+            minX: Math.max(c.minX, b.minX),
+            maxX: Math.min(c.maxX, b.maxX),
+            minZ: Math.max(c.minZ, b.minZ),
+            maxZ: Math.min(c.maxZ, b.maxZ),
+          }))
+      : [b];
+    for (const b of regions) {
       for (
-        let z = Math.floor(b.minZ / this.size);
-        z <= Math.floor(b.maxZ / this.size);
-        z++
+        let x = Math.floor(b.minX / this.size);
+        x <= Math.floor(b.maxX / this.size);
+        x++
       )
-        keys.push(`${x},${z}`);
+        for (
+          let z = Math.floor(b.minZ / this.size);
+          z <= Math.floor(b.maxZ / this.size);
+          z++
+        )
+          keys.add(`${x},${z}`);
+    }
     return keys;
   }
   add(item: T, bounds: Bounds) {

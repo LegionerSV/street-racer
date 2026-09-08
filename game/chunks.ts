@@ -1,4 +1,5 @@
 import earcut from 'earcut';
+import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
 import { SpatialGrid,boundsOf,roadPrism,footprintPrism,subtractPrisms,type Prism } from './geometry';
@@ -18,11 +19,12 @@ export class ChunkBudget<T> {
   get(key: string) { const item = this.entries.get(key); if (item !== undefined) this.touch(key, item); return item; }
   touch(key: string, value: T) { this.entries.delete(key); this.entries.set(key, value); while (this.entries.size > this.limit) this.entries.delete(this.entries.keys().next().value!); }
 }
-export function desiredChunks(p: Point, heading: number, quality: Settings['quality']) {
+export function desiredChunks(p: Point, heading: number, quality: Settings['quality'], streaming = false) {
   const mobile=quality==='mobile',detail=mobile?250:500;
   const far = mobile ? 650 : quality === 'high' ? 1500 : quality === 'medium' ? 1100 : 800;
   const result: { key: string; lod: number; priority: number }[] = [];
-  for (let x = -10; x < 10; x++) for (let z = -10; z < 10; z++) {
+  const reach = Math.ceil((far + 177) / CHUNK_SIZE), cx = Math.floor(p.x/CHUNK_SIZE), cz = Math.floor(p.z/CHUNK_SIZE);
+  for (let x = streaming ? cx-reach : -10; x < (streaming ? cx+reach+1 : 10); x++) for (let z = streaming ? cz-reach : -10; z < (streaming ? cz+reach+1 : 10); z++) {
     const center = { x: (x + .5) * CHUNK_SIZE, y: 0, z: (z + .5) * CHUNK_SIZE }, d = distance2(center, p);
     if (d > far + 177) continue;
     const forward = ((center.x - p.x) * Math.sin(heading) + (center.z - p.z) * Math.cos(heading)) / (d || 1);
@@ -33,11 +35,11 @@ export function desiredChunks(p: Point, heading: number, quality: Settings['qual
 
 // До начала движения нужны коллизии под машиной и впереди, включая запас
 // у границы квартала; остальной район подгружается уже во время поездки.
-export function criticalChunks(p:Point,heading:number){
+export function criticalChunks(p:Point,heading:number,streaming=false){
   const keys=new Set<string>();
   for(const ahead of [0,70])for(const dx of [-20,20])for(const dz of [-20,20]){
     const x=Math.floor((p.x+Math.sin(heading)*ahead+dx)/CHUNK_SIZE),z=Math.floor((p.z+Math.cos(heading)*ahead+dz)/CHUNK_SIZE);
-    if(x>=-10&&x<10&&z>=-10&&z<10)keys.add(`${x},${z}`);
+    if(streaming||(x>=-10&&x<10&&z>=-10&&z<10))keys.add(`${x},${z}`);
   }
   return [...keys];
 }
@@ -92,7 +94,8 @@ function clipToChunk(polygon: Point[], x0: number, z0: number): Point[] {
 }
 export function indexWorld(world: World): Index {
   const existing = worldIndices.get(world); if (existing) return existing;
-  const index: Index = { segments: new Map(), owned: new Map(), buildings: new Map(), junctions: new Set(), spatial:new SpatialGrid(),paving:new SpatialGrid(),cavities:new SpatialGrid(),ground:new Map(),waters:new SpatialGrid(250) }, seen = new Set<string>();
+  const coverage=coverageBounds(world.loadedTiles);
+  const index: Index = { segments: new Map(), owned: new Map(), buildings: new Map(), junctions: new Set(), spatial:new SpatialGrid(32,coverage),paving:new SpatialGrid(32,coverage),cavities:new SpatialGrid(32,coverage),ground:new Map(),waters:new SpatialGrid(250,coverage) }, seen = new Set<string>();
   const links = new Map<number, Set<number>>(), normals = new Map<string, { x: number; z: number; count: number }>();
   const endpoints = new Map<number, { normal: { x: number; z: number }; x: number; z: number; sign: number }[]>();
   const normalAt = (edge: Edge, p: Point, x: number, z: number) => { const key = `${edge.way}/${p.x.toFixed(3)}/${p.y.toFixed(3)}/${p.z.toFixed(3)}`, normal = normals.get(key) || { x: 0, z: 0, count: 0 }; normal.x += x; normal.z += z; normal.count++; normals.set(key, normal); return normal; };
@@ -269,7 +272,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       ribbon(result.structures, a, b, -outer-.2, outer+.2, 5.7, [.25, .28, .27]);
       if (lod === 0) for (const [start, end] of dashSpans(s.station, length, edge.laneProfile?.direction || 1, 30, 3)) ribbon(result.windows, mixPoint(a, b, start / length), mixPoint(a, b, end / length), w - .4, w - .1, 5.6, [.7, .85, .85]);
     }
-    if (edge.blocked && s.index === 0 && Math.abs(a.x) < 2490 && Math.abs(a.z) < 2490) {
+    if (edge.blocked && !edge.unloaded && s.index === 0 && (world.loadedTiles || (Math.abs(a.x) < 2490 && Math.abs(a.z) < 2490))) {
       const length = distance2(a, b), nx = (b.z - a.z) / length, nz = -(b.x - a.x) / length;
       for (let k = -Math.floor(w / 1.4); k <= Math.floor(w / 1.4); k++) box(result.structures, { x: a.x + nx * k * 1.4, y: a.y, z: a.z + nz * k * 1.4 }, 1.3, .9, 1.3, k % 2 ? [.8, .33, .12] : [.67, .68, .58]);
     }

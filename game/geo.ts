@@ -19,23 +19,60 @@ export function bounds(center: Center, half = 2800) {
   const sw = toGeo({ x: -half, y: 0, z: -half }, center), ne = toGeo({ x: half, y: 0, z: half }, center);
   return { south: sw.lat, west: sw.lon, north: ne.lat, east: ne.lon };
 }
+const patchIndices = new WeakMap<ElevationGrid, Map<string, ElevationGrid>>();
+function elevationPatch(grid: ElevationGrid, x: number, z: number): ElevationGrid {
+  if (!grid.patches?.length) return grid;
+  let index = patchIndices.get(grid);
+  if (!index) { index = new Map(grid.patches.map(p => [`${Math.floor((p.offsetX || 0) / 1000)},${Math.floor((p.offsetZ || 0) / 1000)}`, p])); patchIndices.set(grid, index); }
+  return index.get(`${Math.floor(x / 1000)},${Math.floor(z / 1000)}`) || grid.patches.reduce((a,b) => Math.hypot(x-(a.offsetX||0),z-(a.offsetZ||0)) <= Math.hypot(x-(b.offsetX||0),z-(b.offsetZ||0)) ? a : b);
+}
+export function offsetElevation(grid: ElevationGrid, datum: number): ElevationGrid {
+  return { ...grid, values: Float32Array.from(grid.values, h => h - datum), patches: grid.patches?.map(p => offsetElevation(p, datum)) };
+}
 export function sampleElevation(grid: ElevationGrid, x: number, z: number): number {
-  const gx = clamp((x / grid.size + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp((z / grid.size + .5) * (grid.width - 1), 0, grid.width - 1);
+  grid = elevationPatch(grid, x, z);
+  const gx = clamp(((x-(grid.offsetX||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp(((z-(grid.offsetZ||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1);
   const ix = Math.min(grid.width - 2, Math.floor(gx)), iz = Math.min(grid.width - 2, Math.floor(gz));
   const tx = gx - ix, tz = gz - iz, a = iz * grid.width + ix;
   return lerp(lerp(grid.values[a], grid.values[a + 1], tx), lerp(grid.values[a + grid.width], grid.values[a + grid.width + 1], tx), tz);
 }
 export function smoothElevation(grid: ElevationGrid): ElevationGrid {
+  if (grid.patches) return { ...grid, patches: grid.patches.map(smoothElevation) };
   // DEM содержит локальные пики, которые не должны становиться трамплинами.
   const { width, size } = grid;
   if (width < 3) return { ...grid, values: grid.values.slice() };
   const radius = Math.max(1, Math.min(5, Math.round(65 / (size / (width - 1)))));
+  // Морфологическое открытие убирает положительные выбросы размером в квартал.
+  // Это приближённая игровая поверхность: небольшие настоящие холмы тоже
+  // сглаживаются. Протяжённые склоны сохраняют масштаб, в отличие от сжатия Y.
+  const openingRadius=Math.max(1,Math.round(250/(size/(width-1))));
+  let opened=grid.values.slice();
+  for(const minimum of [true,false]) for(const axis of [0,1]) {
+    const next=new Float32Array(opened.length);
+    for(let z=0;z<width;z++) for(let x=0;x<width;x++) {
+      let value=minimum?Infinity:-Infinity;
+      for(let d=-openingRadius;d<=openingRadius;d++) {
+        const at=(axis?z:x)+d, bounded=clamp(at,0,width-1);
+        const index=axis?bounded*width+x:z*width+bounded;
+        let h=opened[index];
+        // Продолжение краевого уклона не превращает плоскость в ступени.
+        if(at!==bounded) {
+          const inward=bounded===0?1:-1;
+          const neighbour=axis?index+inward*width:index+inward;
+          h+=(at-bounded)*(opened[neighbour]-h)/inward;
+        }
+        value=minimum?Math.min(value,h):Math.max(value,h);
+      }
+      next[z*width+x]=value;
+    }
+    opened=next;
+  }
   // Медиана удаляет одиночные выбросы до размытия: иначе пик превращается в широкий холм.
   // Симметричное окно сохраняет высоты плоскости и масштаб протяжённых склонов.
   let values = new Float32Array(grid.values.length);
   for (let z = 0; z < width; z++) for (let x = 0; x < width; x++) {
     const neighbours: number[] = [];
-    for (let dz = -radius; dz <= radius; dz++) for (let dx = -radius; dx <= radius; dx++) neighbours.push(grid.values[clamp(z + dz, 0, width - 1) * width + clamp(x + dx, 0, width - 1)]);
+    for (let dz = -radius; dz <= radius; dz++) for (let dx = -radius; dx <= radius; dx++) neighbours.push(opened[clamp(z + dz, 0, width - 1) * width + clamp(x + dx, 0, width - 1)]);
     neighbours.sort((a, b) => a - b);
     values[z * width + x] = neighbours[Math.floor(neighbours.length / 2)];
   }
@@ -53,7 +90,8 @@ export function smoothElevation(grid: ElevationGrid): ElevationGrid {
 export const decodeTerrarium = (r: number, g: number, b: number) => r * 256 + g + b / 256 - 32768;
 // Монотонная кубическая интерполяция сглаживает переломы между ячейками DEM без новых пиков.
 export function sampleRoadElevation(grid: ElevationGrid, x: number, z: number): number {
-  const gx = clamp((x / grid.size + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp((z / grid.size + .5) * (grid.width - 1), 0, grid.width - 1);
+  grid = elevationPatch(grid, x, z);
+  const gx = clamp(((x-(grid.offsetX||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp(((z-(grid.offsetZ||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1);
   const ix = Math.min(grid.width - 2, Math.floor(gx)), iz = Math.min(grid.width - 2, Math.floor(gz));
   const cubic = (a: number, b: number, c: number, d: number, t: number) => {
     const slope = (u: number, v: number) => u * v <= 0 ? 0 : 2 * u * v / (u + v);
