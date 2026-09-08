@@ -1,4 +1,5 @@
 import earcut from 'earcut';
+import { bridgeRailingSpans } from './bridge-railings';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
@@ -261,7 +262,8 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       for (const side of [-1, 1]) {
         const length = distance2(a, b), nx = (b.z - a.z) / length, nz = -(b.x - a.x) / length;
         const aa = { x: a.x + (s.na?.x??nx) * outer * side, y: a.y, z: a.z + (s.na?.z??nz) * outer * side }, bb = { x: b.x + (s.nb?.x??nx) * outer * side, y: b.y, z: b.z + (s.nb?.z??nz) * outer * side };
-        quad(result.structures, aa, bb, { ...bb, y: bb.y + 1.1 }, { ...aa, y: aa.y + 1.1 }, [.37, .41, .41]);
+        for(const rail of bridgeRailingSpans(aa,bb,edge,index.spatial.query(boundsOf([aa,bb],.2))))
+          quad(result.structures, rail.a, rail.b, { ...rail.b, y: rail.b.y + 1.1 }, { ...rail.a, y: rail.a.y + 1.1 }, [.37, .41, .41]);
       }
       for (const d of periodicOffsets(s.station, distance2(a, b), edge.laneProfile?.direction || 1, 70, 35)) { const p = mixPoint(a, b, d / distance2(a, b)), base = sampleElevation(world.elevation, p.x, p.z); const free=segments.every(other=>other.edge.layer>=edge.layer||projectOnSegment(p,other.a,other.b).distance>other.edge.width/2+SIDEWALK_WIDTH+1); if (free&&p.y - base > 2) box(result.structures, { ...p, y: base }, 1.4, p.y - base - BRIDGE_DECK_THICKNESS, 1.4, [.23, .27, .28]); }
     }
