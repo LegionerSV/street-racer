@@ -44,10 +44,14 @@ export function createCar(scene: Scene, color: string, name: string,kind:CarKind
   const glass=new PBRMaterial(name+'-glass',scene);glass.albedoColor=new Color3(.035,.065,.085);glass.metallic=.35;glass.roughness=.13;glass.backFaceCulling=false;glass.twoSidedLighting=true;
   const dark=material(scene,name+'-rubber','#101419'),alloy=material(scene,name+'-alloy','#b9c6cd'),rear=material(scene,name+'-rear','#b81728',true),front=material(scene,name+'-front','#d3edff',true),brake=material(scene,name+'-brake','#ff3048',true),amber=material(scene,name+'-indicator','#ffb22d',true);
   const materials:Material[]=[paint,glass,dark,alloy,rear,front,brake,amber];
+  for(const mat of [paint,glass,dark,alloy,rear,front,brake,amber]){mat.transparencyMode=Material.MATERIAL_OPAQUE;mat.alpha=1;mat.disableDepthWrite=false;mat.maxSimultaneousLights=8;}
   const makeBox=(id:string,x:number,y:number,z:number,w:number,h:number,d:number,mat:Material)=>{
     const mesh=MeshBuilder.CreateBox(name+'-'+id,{width:w,height:h,depth:d*stretch},scene);mesh.parent=root;mesh.position.set(x,y,z*stretch);mesh.material=mat;mesh.isPickable=false;return mesh;
   };
   function surface(id:string,points:number[],indices:number[],mat:Material) {
+    // Babylon использует обход лицевой стороны по часовой стрелке: наружу,
+    // иначе видна внутренняя стенка и кузов выглядит прозрачным.
+    indices=indices.flatMap((_,i)=>i%3===0?[indices[i],indices[i+2],indices[i+1]]:[]);
     const mesh=new Mesh(name+'-'+id,scene),data=new VertexData(),normals:number[]=[];const scaled=points.map((v,i)=>i%3===2?v*stretch:v);data.positions=scaled;data.indices=indices;VertexData.ComputeNormals(scaled,indices,normals);data.normals=normals;data.uvs=Array.from({length:points.length/3*2},()=>0);data.applyToMesh(mesh);mesh.parent=root;mesh.material=mat;mesh.isPickable=false;return mesh;
   }
   // Симметричные сечения: фаски на плечах кузова, низкий нос и широкие задние крылья.
@@ -82,12 +86,12 @@ export function createCar(scene: Scene, color: string, name: string,kind:CarKind
   if(kind==='van')for(const x of [-.74,.74])makeBox('rear-hinge',x,.94,-2.05,.06,.9,.07,dark);
   const lamps:AbstractMesh[]=[],brakeLights:AbstractMesh[]=[],indicators:[AbstractMesh[],AbstractMesh[]]=[[],[]];
   for(const x of [-.57,.57]){
-    lamps.push(makeBox('headlight',x,.045,2.065,.45,.045,.09,front),makeBox('taillight',x,.095,-2.17,.49,.055,.045,rear));
-    brakeLights.push(makeBox('brake-light',x,.095,-2.196,.49,.065,.014,brake));
-    for(const z of [-2.17,2.06])indicators[x<0?0:1].push(makeBox('turn-light',Math.sign(x)*.8,.095,z,.11,.075,.065,amber));
+    lamps.push(makeBox('headlight',x,.045+(sport?0:shape.belt-.17),2.185,.45,.065,.05,front),makeBox('taillight',x,.095+(sport?0:shape.belt-.17),-2.19,.49,.055,.045,rear));
+    brakeLights.push(makeBox('brake-light',x,.095+(sport?0:shape.belt-.17),-2.216,.49,.065,.014,brake));
+    for(const z of [-2.2,2.185])indicators[x<0?0:1].push(makeBox('turn-light',Math.sign(x)*.73,.095+(sport?0:shape.belt-.17),z,.11,.075,.065,amber));
     if(sport||x<0)makeBox('exhaust',x,-.23,-2.22,.16,.105,.1,alloy);
   }
-  brakeLights.push(makeBox('third-brake',0,.32,-1.82,.43,.025,.025,brake));
+  brakeLights.push(makeBox('third-brake',0,shape.belt+.12,shape.rear-.04,.43,.025,.025,brake));
   const wheels:TransformNode[]=[];
   for(const z of [1.35,-1.4])for(const x of [-.89,.89]){
     const pivot=new TransformNode(name+'-wheel-pivot',scene);pivot.parent=root;pivot.position.set(x,-.42,z*stretch);
@@ -101,7 +105,7 @@ export function createCar(scene: Scene, color: string, name: string,kind:CarKind
   }
   const lightSet=new Set([...lamps,...brakeLights,...indicators.flat()]);
   for(const mat of [paint,glass,dark,alloy]){const parts=root.getChildMeshes().filter(m=>m.parent===root&&m.material===mat&&!lightSet.has(m)) as Mesh[];if(parts.length>1){const merged=Mesh.MergeMeshes(parts,true,true);if(merged){merged.parent=root;merged.name=name+'-trim-'+mat.name;merged.isPickable=false;}}}
-  root.getChildMeshes().forEach(m=>m.isPickable=false);
+  root.getChildMeshes().forEach(m=>{m.isPickable=false;m.receiveShadows=true;m.metadata={...m.metadata,vehicle:true};});
   const car={root,wheels,lamps,brakeLights,indicators,materials,dispose:()=>{root.dispose();materials.forEach(m=>m.dispose());}};
   setCarLights(car,false,0,0);return car;
 }
@@ -118,7 +122,7 @@ export function createTrafficCar(scene:Scene,color:string,name:string,kind:CarKi
       if(!(child instanceof TransformNode))continue;
       const instance=child instanceof Mesh?child.createInstance(name+'-'+child.name):new TransformNode(name+'-'+child.name,scene);
       instance.parent=target;instance.position.copyFrom(child.position);instance.rotation.copyFrom(child.rotation);instance.scaling.copyFrom(child.scaling);instance.rotationQuaternion=child.rotationQuaternion?.clone()||null;
-      if(child instanceof Mesh){const m=instance as AbstractMesh;m.isVisible=true;m.isPickable=false;if(source!.lamps.includes(child))lamps.push(m);if(source!.brakeLights.includes(child))brakeLights.push(m);for(let i=0;i<2;i++)if(source!.indicators[i].includes(child))indicators[i].push(m);}
+      if(child instanceof Mesh){const m=instance as AbstractMesh;m.isVisible=true;m.isPickable=false;m.receiveShadows=true;m.metadata={vehicle:true};if(source!.lamps.includes(child))lamps.push(m);if(source!.brakeLights.includes(child))brakeLights.push(m);for(let i=0;i<2;i++)if(source!.indicators[i].includes(child))indicators[i].push(m);}
       if(source!.wheels.includes(child))wheels.push(instance);copy(child,instance);
     }
   }

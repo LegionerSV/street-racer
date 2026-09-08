@@ -15,13 +15,10 @@ if not exist node_modules (
     exit /b 1
   )
 )
-if not exist out\index.html (
-  echo Подготавливаем игру для телефона.
-  call npm.cmd run build:pages
-  if errorlevel 1 (
-    pause
-    exit /b 1
-  )
+node scripts\ensure-build.mjs pages
+if errorlevel 1 (
+  pause
+  exit /b 1
 )
 echo Подключите телефон и компьютер к одной домашней сети Wi-Fi.
 echo Откройте на телефоне адрес из строки Network ниже, включая /street-racer/.

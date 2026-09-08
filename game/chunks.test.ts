@@ -1,8 +1,39 @@
 import { describe, it, expect } from 'vitest';
-import { desiredChunks, ChunkBudget, buildChunk } from './chunks';
+import { desiredChunks, criticalChunks, ChunkBudget, buildChunk } from './chunks';
 import type { World } from './types';
+import { polygonContains } from './geo';
 
 describe('Подготовка кварталов', () => {
+  it('ждёт только стартовую зону и путь на 70 м вперёд с запасом у границ',()=>{
+    // Arrange / Act / Assert
+    expect(criticalChunks({x:125,y:0,z:125},0)).toEqual(['0,0']);
+    expect(new Set(criticalChunks({x:0,y:0,z:0},0))).toEqual(new Set(['-1,-1','-1,0','0,-1','0,0']));
+    expect(new Set(criticalChunks({x:125,y:0,z:220},0))).toEqual(new Set(['0,0','0,1']));
+    expect(criticalChunks({x:2490,y:0,z:2490},0)).toEqual(['9,9']);
+  });
+  it('тротуар не пересекает проезжую часть на перекрёстке',()=>{
+    // Arrange
+    const edge={id:0,way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Улица',bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:0,z:120}],blocked:false};
+    const world={center:{lat:0,lon:0},nodes:[],edges:[edge,{...edge,id:1,way:2,from:3,to:4,points:[{x:50,y:0,z:70},{x:150,y:0,z:70}]}],restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:0,routes:[]} as World;
+    // Act
+    const mesh=buildChunk(world,'0,0',0).sidewalks!;
+    // Assert
+    for(let i=0;i<mesh.indices.length;i+=3){const points=mesh.indices.slice(i,i+3).map(j=>({x:mesh.positions[j*3],y:mesh.positions[j*3+1],z:mesh.positions[j*3+2]}));
+      for(const p of [{x:104,y:0,z:70},{x:96,y:0,z:70},{x:100,y:0,z:74},{x:100,y:0,z:66}])expect(polygonContains(p,points)).toBe(false);
+    }
+  });
+  it.each(['road','bridge','tunnel'])('строит тротуары шириной 2 м и поребрики высотой 15 см: %s',kind=>{
+    // Arrange
+    const world={center:{lat:0,lon:0},nodes:[],edges:[{id:0,way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Улица',bridge:kind==='bridge',tunnel:kind==='tunnel',layer:kind==='bridge'?1:0,points:[{x:100,y:1,z:20},{x:100,y:3,z:120}],blocked:false}],restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:0,routes:[]} as World;
+    // Act
+    const mesh=buildChunk(world,'0,0',0).sidewalks;
+    // Assert
+    expect(mesh?.indices.length).toBeGreaterThan(0);
+    const positions=mesh!.positions,points=Array.from({length:positions.length/3},(_,i)=>positions.slice(i*3,i*3+3));
+    for(const side of [-1,1])for(const offset of [3.5,3.7,5.7])expect(points.some(p=>Math.abs(p[0]-(100+side*offset))<1e-6)).toBe(true);
+    for(const p of points)expect(p[1]-(1+(p[2]-20)*.02)).toBeLessThanOrEqual(.150001);
+    expect(points.some(p=>Math.abs(p[1]-(1+(p[2]-20)*.02)-.15)<1e-6)).toBe(true);
+  });
   it('сохраняет ограниченный набор кварталов при длительной езде', () => {
     // Arrange
     const budget = new ChunkBudget(64);

@@ -67,3 +67,4 @@
 @media(max-height:360px) and (orientation:landscape){
  .touch-layout .speedometer{top:56px}.touch-layout .drift-label{display:none}
 }
+.loading-actions { display: flex; flex-wrap: wrap; gap: .75rem; }

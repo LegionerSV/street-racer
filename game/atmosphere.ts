@@ -14,7 +14,7 @@ export class Atmosphere {
     makeEnvironment(scene);
     this.sun=new DirectionalLight('sun',new Vector3(-.5,-.8,.2),scene);this.sun.shadowMinZ=1;this.sun.shadowMaxZ=400;this.sun.shadowFrustumSize=180;
     this.ambient=new HemisphericLight('sky-fill',Vector3.Up(),scene);this.ambient.groundColor=new Color3(.18,.19,.22);
-    this.shadows=isLightQuality(quality)?null:this.makeShadows(quality);this.scene.shadowsEnabled=!isLightQuality(quality);
+    this.shadows=isLightQuality(quality)?null:this.makeShadows(quality);this.scene.shadowsEnabled=true;
     this.quality=quality;this.pipeline=this.makePipeline(quality);
     Effect.ShadersStore.streetSkyVertexShader=`precision highp float;attribute vec3 position;uniform mat4 worldViewProjection;varying vec3 direction;void main(){direction=position;gl_Position=worldViewProjection*vec4(position,1.0);}`;
     Effect.ShadersStore.streetSkyFragmentShader=`precision highp float;varying vec3 direction;uniform vec3 sunDirection;uniform float daylight;uniform float cloudCover;uniform float clock;
@@ -73,7 +73,7 @@ export class Atmosphere {
       this.quality=quality;this.pipeline?.dispose();this.pipeline=this.makePipeline(quality);
       if(isLightQuality(quality)){this.shadows?.dispose();this.shadows=null;}
       else{this.shadows??=this.makeShadows(quality);this.shadows.mapSize=quality==='high'?2048:1024;}
-      this.scene.shadowsEnabled=!isLightQuality(quality);
+      this.scene.shadowsEnabled=true;
       if(this.drops.length!==(quality==='mobile'?96:quality==='low'?160:420)){this.rain.dispose();this.rain=this.makeRain(quality);}
     }
     const s=this.state=weatherAt(seconds,options),angle=(s.hour-6)/24*Math.PI*2,dir=new Vector3(Math.cos(angle),Math.sin(angle),.35).normalize();
@@ -86,6 +86,7 @@ export class Atmosphere {
     this.scene.fogColor=Color3.Lerp(new Color3(.045,.065,.11),new Color3(.55,.64,.70),s.daylight);
     this.scene.clearColor=Color4.FromColor3(this.scene.fogColor,1);
     this.scene.fogDensity=(quality==='mobile'?.0022:quality==='high'?.00065:.001)+(s.rain*.0012);
+    for(const role of ['facade0','facade1','facade2'])this.materials[role]?.emissiveColor.setAll((1-s.daylight)*.65);
     this.materials.windows.emissiveColor.setAll(.12+(1-s.daylight)*.8);this.materials.windows.diffuseColor.setAll(.22+s.daylight*.25);
     this.materials.road.specularColor.setAll(.12+s.wetness*.7);this.materials.road.specularPower=32+s.wetness*160;
     this.materials.road.reflectionFresnelParameters!.leftColor.setAll(.04+s.wetness*.35);
@@ -99,7 +100,7 @@ export class Atmosphere {
     }
     this.shadowClock-=dt;
     if(this.shadowClock<=0){
-      this.shadowClock=.5;const map=this.shadows?.getShadowMap();if(map)map.renderList=isLightQuality(quality)?[]:this.scene.meshes.filter(m=>m.isVisible&&m.name!=='sky-dome'&&!m.name.includes('window')&&!m.name.includes('light')&&(m.name.includes('player')||m.name.endsWith(':buildings')&&m.getBoundingInfo().boundingBox.centerWorld.subtract(position).length()<230));
+      this.shadowClock=.5;const map=this.shadows?.getShadowMap();if(map)map.renderList=isLightQuality(quality)?[]:this.scene.meshes.filter(m=>m.isVisible&&m.name!=='sky-dome'&&!m.name.includes('window')&&!m.name.includes('light')&&(m.metadata?.vehicle&&m.getBoundingInfo().boundingBox.centerWorld.subtract(position).length()<65||(m.name.endsWith(':buildings')||/:facade[0-2]$/.test(m.name)||m.name.endsWith(':structures'))&&m.getBoundingInfo().boundingBox.centerWorld.subtract(position).length()<180));
     }
   }
   dispose(){this.pipeline?.dispose();this.shadows?.dispose();this.rain.dispose();this.sky.dispose();this.skyMaterial.dispose();}

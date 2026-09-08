@@ -71,7 +71,7 @@ it('освещение и дождь создаются и освобождаю�
   }finally{system.dispose();scene.dispose();engine.dispose();}
 });
 
-it('мобильное качество освобождает тени и сокращает дождь после переключения',()=>{
+it('мобильное качество освобождает солнечные тени и сокращает дождь, сохраняя возможность теней фар',()=>{
   // Arrange
   const engine=new NullEngine(),scene=new Scene(engine),camera=new FreeCamera('camera',new Vector3(0,3,-8),scene);
   const materials=Object.fromEntries(['road','water','windows'].map(key=>[key,material(scene,key,'#ffffff')]));
@@ -80,9 +80,9 @@ it('мобильное качество освобождает тени и со�
     // Act
     system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'rain'},'mobile');scene.render();
     // Assert
-    expect(scene.shadowsEnabled).toBe(false);expect(scene.getMeshByName('rain')!.getTotalVertices()).toBe(192);expect(system.state.wetness).toBe(1);
+    expect(scene.shadowsEnabled).toBe(true);expect(scene.getLightByName('sun')!.getShadowGenerator()).toBeNull();expect(scene.getMeshByName('rain')!.getTotalVertices()).toBe(192);expect(system.state.wetness).toBe(1);
     system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'clear'},'high');expect(scene.shadowsEnabled).toBe(true);
-    system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'rain'},'mobile');expect(scene.shadowsEnabled).toBe(false);expect(scene.getMeshByName('rain')!.getTotalVertices()).toBe(192);
+    system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'rain'},'mobile');expect(scene.shadowsEnabled).toBe(true);expect(scene.getLightByName('sun')!.getShadowGenerator()).toBeNull();expect(scene.getMeshByName('rain')!.getTotalVertices()).toBe(192);
   }finally{system.dispose();scene.dispose();engine.dispose();}
 });
 

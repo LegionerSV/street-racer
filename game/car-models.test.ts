@@ -1,6 +1,32 @@
 import { expect,it } from 'vitest';
-import { NullEngine,Scene } from '@babylonjs/core';
+import { NullEngine,Scene,VertexBuffer,Vector3,Ray,Mesh } from '@babylonjs/core';
 import { createCar,createTrafficCar,type CarKind } from './visuals';
+it.each(['sport','sedan','hatch','suv','van'] as CarKind[])('кузов %s закрыт снаружи, фары расположены перед ним',kind=>{
+  // Arrange
+  const engine=new NullEngine(),scene=new Scene(engine),car=createCar(scene,'#447788',kind,kind);
+  try{
+    // Act — луч снаружи отбирает только лицевые стороны: тот же отсев, что при отрисовке.
+    const paint=car.root.getChildMeshes().find(m=>m.name.includes('trim-')&&m.material?.name.endsWith('-paint'))! as Mesh;
+    paint.computeWorldMatrix(true);
+    const frontFace=(a:Vector3,b:Vector3,c:Vector3,ray:Ray)=>Vector3.Dot(Vector3.Cross(a.subtract(b),c.subtract(b)),ray.direction)<0;
+    const front=new Ray(new Vector3(0,-.1,8),new Vector3(0,0,-1));
+    const rear=new Ray(new Vector3(0,-.1,-8),new Vector3(0,0,1));
+    const top=new Ray(new Vector3(0,4,-.3),new Vector3(0,-1,0));
+    // Assert
+    for(const ray of [front,rear,top])expect(paint.intersects(ray,false,frontFace).hit).toBe(true);
+    expect(paint.intersects(front,false,frontFace).pickedPoint!.z).toBeGreaterThan(1.8);
+    expect(paint.intersects(rear,false,frontFace).pickedPoint!.z).toBeLessThan(-1.8);
+    expect(paint.intersects(top,false,frontFace).pickedPoint!.y).toBeGreaterThan(.7);
+    expect(paint.material!.needAlphaBlendingForMesh(paint)).toBe(false);
+    expect(paint.material!.disableDepthWrite).toBe(false);
+    expect(paint.getVerticesData(VertexBuffer.NormalKind)!.every(Number.isFinite)).toBe(true);
+    for(const lamp of car.lamps.filter(m=>m.name.includes('headlight'))){
+      lamp.computeWorldMatrix(true);const pos=lamp.getAbsolutePosition();
+      const hit=paint.intersects(new Ray(new Vector3(pos.x,pos.y,8),new Vector3(0,0,-1)),false);
+      expect(hit.hit&&hit.pickedPoint!.z>pos.z).toBe(false);
+    }
+  }finally{car.dispose();scene.dispose();engine.dispose();}
+});
 it('пять типов кузова имеют разные пропорции и реальные размеры в метрах',()=>{
   // Arrange
   const engine=new NullEngine(),scene=new Scene(engine),kinds:CarKind[]=['sport','sedan','hatch','suv','van'];

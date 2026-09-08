@@ -1,13 +1,13 @@
 import {
   Color3, Color4, Engine, Scene, Vector3, FreeCamera,
   Mesh, MeshBuilder, VertexData, StandardMaterial, PhysicsAggregate, PhysicsShapeType, HavokPlugin,
-  GlowLayer, SpotLight, PointLight, Ray, TransformNode,
+  GlowLayer, PointLight, Ray, TransformNode, EngineInstrumentation, SceneInstrumentation, BoundingBox, Frustum,
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import havokWasm from '@babylonjs/havok/lib/esm/HavokPhysics.wasm?url';
 import type { ChunkData, HUD, MeshData, Point, RaceState, Route, Settings, World } from './types';
 import { WorldWorker } from './worker-client';
-import { desiredChunks } from './chunks';
+import { desiredChunks,criticalChunks } from './chunks';
 import { distance2, pathLengths, pointAt, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
 import { DrivingInput,drivingKeys,type DrivingKey } from './input';
@@ -20,8 +20,14 @@ import { EngineSound } from './audio';
 import { Atmosphere } from './atmosphere';
 import { indexWorld } from './chunks';
 import {isLightQuality,resolutionScale} from './quality';
+import { streetMaterials } from './street-materials';
+import { FrameTimings } from './performance';
+import { VehicleLighting } from './vehicle-lighting';
+import { worldLandmarks } from './landmarks';
+import {advanceDrivingPhysics,ChasePosition} from './driving-frame';
+import type {LoadingLog} from './loading-log';
 
-type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; lamps: Point[]; dispose: () => void };
+type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; lamps: Point[]; buildingBounds:BoundingBox[]; dispose: () => void };
 export class Game {
   readonly engine: Engine;
   readonly scene: Scene;
@@ -33,9 +39,16 @@ export class Game {
   private wanted: ReturnType<typeof desiredChunks> = [];
   private materials: Record<string, StandardMaterial>;
   private atmosphere: Atmosphere;
+  private facadeMaterials:StandardMaterial[];
+  private vehicleLighting:VehicleLighting;
+  private engineStats:EngineInstrumentation;
+  private sceneStats:SceneInstrumentation;
+  private frameTimings=new FrameTimings();
+  private installTimings=new FrameTimings(120);
   private odometer = 0;
   private lookTarget = Vector3.Zero();
   private cameraForward = Vector3.Forward();
+  private chasePosition=new ChasePosition();
   private input=new DrivingInput();
   private keys=this.input.keys;
   private disposed = false;
@@ -77,18 +90,25 @@ export class Game {
   private readonly onBlur = () => { this.clearControls(); if (this.running) { this.paused = true; this.emit(); } };
   private readonly resize = () => {this.engine.setHardwareScalingLevel(resolutionScale(this.settings.quality,this.canvas.clientWidth,this.canvas.clientHeight));this.engine.resize();};
   private readonly onVisibility = () => { if (document.hidden) this.onBlur(); };
-  static async create(canvas: HTMLCanvasElement, world: World, worker: WorldWorker, settings: Settings, onHUD: (hud: HUD) => void, progress: (text: string, n: number) => void, signal: AbortSignal) {
+  static async create(canvas: HTMLCanvasElement, world: World, worker: WorldWorker, settings: Settings, onHUD: (hud: HUD) => void, progress: (text: string, n: number) => void, signal: AbortSignal,log?:LoadingLog) {
     signal.throwIfAborted();
-    const havok = await HavokPhysics({ locateFile: () => havokWasm }); signal.throwIfAborted();
-    const game = new Game(canvas, world, worker, settings, onHUD, havok);
+    progress('Загружаем физику автомобиля',85);
+    const loadHavok=()=>HavokPhysics({locateFile:()=>havokWasm});
+    const havok = await (log?log.measure('Загрузка и запуск Havok',loadHavok):loadHavok()); signal.throwIfAborted();
+    const createScene=()=>new Game(canvas,world,worker,settings,onHUD,havok);
+    const game = await (log?log.measure('Создание игровой сцены',createScene):createScene());
     const abort = () => game.dispose(); signal.addEventListener('abort', abort, { once: true });
     try {
       const spawn = world.edges[world.spawnEdge]; if (!spawn) throw new Error('В этом участке нет дорог для машины. Выберите другой район.');
       game.player.reset(spawn, world.drivingSide);
       game.refreshWanted();
-      const first = game.wanted.filter(c => c.priority < 440 && c.lod === 0);
+      const critical=new Set(criticalChunks(game.player.position,game.player.heading));
+      const first = game.wanted.filter(c => critical.has(c.key) && c.lod === 0);
       for (let i = 0; i < first.length; i++) {
-        signal.throwIfAborted(); const chunk = await worker.chunk(first[i].key, 0,settings.quality==='mobile'?8:32); signal.throwIfAborted(); game.install(chunk);
+        signal.throwIfAborted();
+        const prepare=()=>worker.chunk(first[i].key,0,settings.quality==='mobile'?8:32);
+        const chunk=await(log?log.measure('Стартовый квартал / подготовка',prepare,{key:first[i].key}):prepare());signal.throwIfAborted();
+        if(log)await log.measure('Стартовый квартал / установка',()=>game.install(chunk),{key:chunk.key});else game.install(chunk);
         progress(`Готовим улицы рядом с машиной · ${i + 1}/${first.length}`, 87 + (i + 1) / first.length * 12);
         await new Promise(resolve => setTimeout(resolve, 0));
       }
@@ -102,6 +122,8 @@ export class Game {
     this.engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
     this.engine.setHardwareScalingLevel(resolutionScale(settings.quality,canvas.clientWidth,canvas.clientHeight));
     this.scene = new Scene(this.engine); this.scene.clearColor = new Color4(.105, .15, .2, 1);
+    this.engineStats=new EngineInstrumentation(this.engine);this.engineStats.captureGPUFrameTime=true;
+    this.sceneStats=new SceneInstrumentation(this.scene);
     // После фонового ограничения браузера не выполняем секунду физики за один кадр.
     Scene.MaxDeltaTime = 100;
     this.scene.fogMode = Scene.FOGMODE_EXP2; this.scene.fogDensity = settings.quality === 'high' ? .00095 : .00135; this.scene.fogColor = new Color3(.13, .2, .24);
@@ -114,7 +136,9 @@ export class Game {
       structures: material(this.scene, 'structures', '#ffffff'), buildings: material(this.scene, 'buildings', '#ffffff'), windows: material(this.scene, 'windows', '#ffffff', true),
       water: material(this.scene, 'water', '#326b80'), tree: material(this.scene, 'foliage', '#214238'), trunk: material(this.scene, 'trunk', '#3b3c34'),
     };
-    Object.values(this.materials).forEach(m => { m.backFaceCulling = false; m.maxSimultaneousLights = 8; });
+    const street=streetMaterials(this.scene);this.facadeMaterials=street.facades;this.materials.sidewalks=street.sidewalks;this.materials.landmarks=this.materials.structures;
+    this.facadeMaterials.forEach((m,i)=>this.materials['facade'+i]=m);
+    Object.values(this.materials).forEach(m => { m.backFaceCulling = false; m.twoSidedLighting=true; m.maxSimultaneousLights = 8; });
     this.materials.terrain.emissiveColor = new Color3(.025, .03, .035);
     this.materials.road.emissiveColor = new Color3(.015, .018, .025);
     this.materials.buildings.emissiveColor = new Color3(.035, .04, .05);
@@ -127,9 +151,7 @@ export class Game {
     this.glow = null; this.configureGlow(settings.quality);
     this.signalMaterials = [material(this.scene, 'red-on', '#ff4938', true), material(this.scene, 'yellow-on', '#ffca57', true), material(this.scene, 'green-on', '#80efb2', true), material(this.scene, 'signal-off', '#15212a')];
     for (let i = 0; i < 4; i++) { const light = new PointLight(`streetlight-${i}`, Vector3.Zero(), this.scene); light.diffuse = new Color3(1, .78, .45); light.range = 20; light.intensity = 0; this.lampLights.push(light); }
-    for (const x of [-.56, .56]) {
-      const light = new SpotLight('headlight', new Vector3(x, .03, 2.1), new Vector3(0, -.08, 1), .65, 3, this.scene); light.parent = this.player.visual.root; light.diffuse = new Color3(.73, .88, 1); light.intensity = 8; light.range = 65;
-    }
+    this.vehicleLighting=new VehicleLighting(this.scene);
     const nitroMat=material(this.scene,'nitro-flame','#6eefff',true);
     for(const x of [-.57,.57]){
       const jet=MeshBuilder.CreateCylinder('player-nitro-jet',{height:.9,diameterTop:0,diameterBottom:.21,tessellation:8},this.scene);
@@ -171,17 +193,22 @@ export class Game {
     const mesh = new Mesh(name, this.scene), vertices = new VertexData(), normals: number[] = [];
     vertices.positions = data.positions; vertices.indices = data.indices; VertexData.ComputeNormals(data.positions, data.indices, normals); vertices.normals = normals;
     if (data.colors?.length === data.positions.length / 3 * 4) vertices.colors = data.colors;
-    vertices.uvs = []; for (let i=0;i<data.positions.length;i+=3) vertices.uvs.push(data.positions[i] * .18, data.positions[i+2] * .18);
+    vertices.uvs = data.uvs?.length===data.positions.length/3*2?data.uvs:[];
+    if(!vertices.uvs.length)for (let i=0;i<data.positions.length;i+=3) vertices.uvs.push(data.positions[i] * .5, data.positions[i+2] * .5);
     vertices.applyToMesh(mesh); mesh.material = mat; mesh.receiveShadows = true; mesh.freezeWorldMatrix(); mesh.isPickable = false; return mesh;
   }
   private install(chunk: ChunkData) {
     if (this.disposed) return;
+    const started=performance.now();
     const meshes: Mesh[] = [], bodies: PhysicsAggregate[] = [];
-    for (const role of ['terrain', 'shoulders', 'road', 'markings', 'structures', 'buildings', 'windows', 'water'] as const) {
-      const mesh = this.makeMesh(`${chunk.key}:${role}`, chunk[role], this.materials[role]); if (!mesh) continue;
+    const surfaces:[string,MeshData|undefined,StandardMaterial][]=['terrain','shoulders','sidewalks','road','markings','structures','buildings','landmarks','windows','water'].map(role=>[role,chunk[role as keyof ChunkData] as MeshData|undefined,this.materials[role]]);
+    chunk.facades?.forEach((data,i)=>surfaces.push(['facade'+i,data,this.facadeMaterials[i]]));
+    for (const [role,data,mat] of surfaces) {
+      if(!data)continue;
+      const mesh = this.makeMesh(`${chunk.key}:${role}`, data, mat); if (!mesh) continue;
       meshes.push(mesh);
-      if (chunk.lod === 0 && ['terrain', 'shoulders', 'road', 'structures', 'buildings'].includes(role)) {
-        mesh.isPickable = role === 'structures' || role === 'buildings';
+      if (chunk.lod === 0 && (['terrain', 'shoulders', 'sidewalks', 'road', 'structures', 'buildings', 'landmarks'].includes(role)||role.startsWith('facade'))) {
+        mesh.isPickable = role === 'structures' || role === 'buildings'||role==='landmarks'||role.startsWith('facade');
         bodies.push(new PhysicsAggregate(mesh, PhysicsShapeType.MESH, { mass: 0, friction: .65, restitution: .02 }, this.scene));
       }
     }
@@ -193,7 +220,9 @@ export class Game {
       trunk.thinInstanceSetBuffer('matrix', matrices, 16); foliage.thinInstanceSetBuffer('matrix', leaves, 16); trunk.isPickable = foliage.isPickable = false; meshes.push(trunk, foliage);
     }
     this.chunks.get(chunk.key)?.dispose();
-    this.chunks.set(chunk.key, { lod: chunk.lod, meshes, bodies, lamps: chunk.lamps, dispose: () => { bodies.forEach(b => b.dispose()); meshes.forEach(m => m.dispose()); } });
+    const buildingBounds=(indexWorld(this.world).buildings.get(chunk.key)||[]).map(b=>new BoundingBox(new Vector3(Math.min(...b.footprint.map(p=>p.x)),Math.min(...b.footprint.map(p=>p.y))+(b.minHeight||0),Math.min(...b.footprint.map(p=>p.z))),new Vector3(Math.max(...b.footprint.map(p=>p.x)),Math.max(...b.footprint.map(p=>p.y))+b.height,Math.max(...b.footprint.map(p=>p.z)))));
+    this.chunks.set(chunk.key, { lod: chunk.lod, meshes, bodies, lamps: chunk.lamps, buildingBounds, dispose: () => { bodies.forEach(b => b.dispose()); meshes.forEach(m => m.dispose()); } });
+    this.installTimings.add(performance.now()-started);
   }
   private refreshWanted() {
     this.wanted = desiredChunks(this.player.position, this.player.heading, this.settings.quality);
@@ -236,8 +265,9 @@ export class Game {
   }
   private frame() {
     if (this.disposed) return;
-    const dt = Math.min(.1, this.engine.getDeltaTime() / 1000);
-    if (this.driveTest && !this.loading && !this.paused) { this.driveTest.frames.push(this.engine.getDeltaTime()); this.driveTest.maxMeshes = Math.max(this.driveTest.maxMeshes, this.scene.meshes.length); this.driveTest.maxSpeed = Math.max(this.driveTest.maxSpeed, this.player.groundSpeed * 3.6); }
+    if(!this.paused&&!document.hidden)this.frameTimings.add(this.engine.getDeltaTime(),this.loading||this.pending.size>0);
+    const dt = Math.min(.25, this.engine.getDeltaTime() / 1000);
+    if (this.driveTest && !this.paused) { this.driveTest.frames.push(this.engine.getDeltaTime()); this.driveTest.maxMeshes = Math.max(this.driveTest.maxMeshes, this.scene.meshes.length); this.driveTest.maxSpeed = Math.max(this.driveTest.maxSpeed, this.player.groundSpeed * 3.6); }
     this.streamClock -= dt; this.hudClock -= dt;
     if (this.streamClock <= 0) {
       this.streamClock = .5; this.refreshWanted(); this.updateSignals();
@@ -250,10 +280,10 @@ export class Game {
     }
     this.pump();
     const p = this.player.position, h = this.player.heading;
-    const critical = [tileKey(p.x, p.z), tileKey(p.x + Math.sin(h) * 70, p.z + Math.cos(h) * 70)];
+    const critical = criticalChunks(p,h);
     this.loading = critical.some(k => this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
     if(this.loading)this.clearControls();
-    this.scene.physicsEnabled = !this.paused && !this.loading;
+    advanceDrivingPhysics(this.scene,this.engine.getDeltaTime(),!this.paused&&!this.loading);
     if (Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495 || p.y < -200 || p.y > 1000) this.recover();
     const bodyForward = this.player.visual.root.getDirection(Vector3.Forward());bodyForward.y=0;bodyForward.normalize();
     if(this.camera.position.lengthSquared()<1||Vector3.Distance(this.camera.position,p)>25)this.cameraForward.copyFrom(bodyForward);
@@ -263,12 +293,12 @@ export class Game {
     const cameraRay = new Ray(target, desired.subtract(target).normalize(), Vector3.Distance(target, desired));
     const collision = this.scene.pickWithRay(cameraRay, mesh => mesh.isPickable);
     if (collision?.hit && collision.pickedPoint) desired.copyFrom(collision.pickedPoint.add(cameraRay.direction.scale(-.45)));
-    if (this.camera.position.lengthSquared() < 1 || Vector3.Distance(this.camera.position, desired) > 25) this.camera.position.copyFrom(desired);
-    else Vector3.LerpToRef(this.camera.position, desired, 1 - Math.exp(-dt * 7), this.camera.position);
-    const look=target.add(forward.scale(3)); if(this.lookTarget.lengthSquared()<1||Vector3.Distance(this.lookTarget,look)>25)this.lookTarget.copyFrom(look);else Vector3.LerpToRef(this.lookTarget,look,1-Math.exp(-dt*12),this.lookTarget);
+    const look=target.add(forward.scale(3));
+    this.chasePosition.update(p,desired,look,this.camera.position,this.lookTarget,dt,!!collision?.hit);
     this.camera.setTarget(this.lookTarget);this.camera.fov+=(.94+Math.min(.14,this.player.groundSpeed*.002)+(this.player.nitro.active?.06:0)-this.camera.fov)*(1-Math.exp(-dt*7));
     this.nitroJets.forEach((jet,i)=>{jet.setEnabled(this.player.nitro.active&&!this.paused&&!this.loading);jet.scaling.y=.9+.12*Math.sin(this.time*40+i);});
     this.atmosphere.update(this.time,this.paused||this.loading?0:dt,p,this.settings,this.settings.quality);
+    this.vehicleLighting.update(dt,this.player.visual,this.traffic.agents.flatMap(a=>a.visual?[a.visual]:[]),this.settings.quality,this.atmosphere.state.daylight);
     const sheltered=(indexWorld(this.world).segments.get(tileKey(p.x,p.z))||[]).some(s=>s.edge.tunnel&&projectOnSegment(p,s.a,s.b).distance<s.edge.width/2+1&&Math.abs(projectOnSegment(p,s.a,s.b).point.y-p.y)<3);
     this.scene.getMeshByName('rain')?.setEnabled(!sheltered&&this.atmosphere.state.rain>.02);
     this.nearRace = null;
@@ -317,13 +347,22 @@ export class Game {
     if(!this.glow){this.glow=new GlowLayer('lights-glow',this.scene,{blurKernelSize:32,mainTextureRatio:.35});this.glow.intensity=.32;}
   }
   setSettings(settings: Settings) { this.settings = settings; this.traffic.setDensity(settings.traffic || 'city');this.traffic.setMobile(settings.quality==='mobile'); this.engine.setHardwareScalingLevel(resolutionScale(settings.quality,this.canvas.clientWidth,this.canvas.clientHeight)); this.scene.fogDensity = settings.quality === 'high' ? .00095 : .00135; this.configureGlow(settings.quality); this.refreshWanted(); }
-  diagnostics() { return { simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
+  performanceReport(){
+    const planes=Frustum.GetPlanes(this.camera.getTransformationMatrix()),bounds=[...this.chunks.values()].flatMap(c=>c.buildingBounds),gpu=this.engineStats.gpuFrameTimeCounter;
+    return {...this.frameTimings.summary(),quality:this.settings.quality,loadedBuildings:bounds.length,visibleBuildings:bounds.filter(b=>b.isInFrustum(planes)).length,activeMeshes:this.scene.getActiveMeshes().length,triangles:Math.round(this.scene.getActiveIndices()/3),drawCalls:this.sceneStats.drawCallsCounter.current,gpuFrameMs:gpu?.count&&gpu.current>0?gpu.current/1e6:null,chunkInstallP95Ms:this.installTimings.summary().p95FrameMs,physicsSurfaces:[...this.chunks.values()].reduce((sum,c)=>sum+c.bodies.length,0),resolution:{width:this.engine.getRenderWidth(),height:this.engine.getRenderHeight()}};
+  }
+  resetPerformance(){this.frameTimings.reset();this.installTimings.reset();}
+  exportPerformance(){
+    const data={recordedAt:new Date().toISOString(),center:this.world.center,settings:this.settings,device:navigator.userAgent,performance:this.performanceReport(),diagnostics:this.diagnostics()};
+    const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='street-racer-performance.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+  diagnostics() { return { performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
   startDriveTest() {
     if (this.driveTest) { this.endDriveTest(); return; }
     const route = this.world.routes.find(r => r.kind === 'sprint') || this.world.routes[0];
     if (!route) { this.message = 'Нет маршрута для испытания.'; return; }
     this.race = null; this.traffic.clearRacers(); this.player.reset(this.world.edges[route.edges[0]], this.world.drivingSide, 2);
-    this.paused = false; this.clearControls(); this.testReport = null;
+    this.paused = false; this.clearControls(); this.resetPerformance();this.testReport = null;
     this.driveTest = { route, target: 1, elapsed: 0, distance: 0, last: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, frames: [], maxMeshes: 0, maxSpeed: 0, samples: [] };
     this.refreshWanted();
   }
@@ -341,7 +380,7 @@ export class Game {
   private endDriveTest() {
     if (!this.driveTest) return;
     const test = this.driveTest, sorted = [...test.frames].sort((a, b) => a - b), total = test.frames.reduce((a, b) => a + b, 0);
-    this.testReport = { elapsed: Math.round(test.elapsed), distanceMeters: Math.round(test.distance), maxSpeedKmh: Math.round(test.maxSpeed), averageFps: Math.round(test.frames.length / (total / 1000 || 1)), p95FrameMs: Math.round(sorted[Math.floor(sorted.length * .95)] || 0), maxMeshes: test.maxMeshes, finalMeshes: this.scene.meshes.length, finalChunks: this.chunks.size, finalGrounded: this.player.grounded };
+    this.testReport = { performance:this.performanceReport(), elapsed: Math.round(test.elapsed), distanceMeters: Math.round(test.distance), maxSpeedKmh: Math.round(test.maxSpeed), averageFps: Math.round(test.frames.length / (total / 1000 || 1)), p95FrameMs: Math.round(sorted[Math.max(0,Math.ceil(sorted.length * .95)-1)] || 0), maxMeshes: test.maxMeshes, finalMeshes: this.scene.meshes.length, finalChunks: this.chunks.size, finalGrounded: this.player.grounded };
     this.driveTest = null; this.clearControls(); this.paused = true; this.emit();
   }
   visitStructure(kind: 'bridge' | 'tunnel') {
@@ -357,6 +396,6 @@ export class Game {
     if (this.disposed) return; this.disposed = true; this.running = false;
       window.removeEventListener('keydown', this.onKeyDown); window.removeEventListener('keyup', this.onKeyUp); window.removeEventListener('blur', this.onBlur); window.removeEventListener('resize', this.resize);
     document.removeEventListener('visibilitychange', this.onVisibility);
-    this.engine.stopRenderLoop(); this.clearControls(); this.atmosphere.dispose(); this.sound.dispose(); this.traffic.dispose(); this.player.dispose(); this.chunks.forEach(c => c.dispose()); this.chunks.clear(); this.scene.dispose(); this.engine.dispose();
+    this.engine.stopRenderLoop(); this.engineStats.dispose();this.sceneStats.dispose();this.clearControls(); this.vehicleLighting.dispose();this.atmosphere.dispose(); this.sound.dispose(); this.traffic.dispose(); this.player.dispose(); this.chunks.forEach(c => c.dispose()); this.chunks.clear(); this.scene.dispose(); this.engine.dispose();
   }
 }

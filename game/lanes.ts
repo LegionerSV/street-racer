@@ -1,5 +1,6 @@
 import type { Tags, LaneProfile, Edge } from './types';
 import { clamp } from './geo';
+export const roadTypes = new Set(['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'residential', 'unclassified', 'living_street', 'service', 'road']);
 export type RoadLayout = { width:number; total:number; forward:number; backward:number; bothWays:number; shared:boolean; oneWay:-1|0|1; source:'osm'|'estimated'; forwardTurns:string[][]; backwardTurns:string[][] };
 const count=(value:string|undefined)=>value&&/^\d+$/.test(value.trim())?clamp(Number(value),0,12):undefined;
 const turns=(value:string|undefined)=>value?.split('|').map(lane=>lane.split(';').map(s=>s.trim()).filter(Boolean))||[];

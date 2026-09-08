@@ -32,7 +32,7 @@ it('надземный проезд под зданием сохраняет у�
   expect(w.buildings[0].minHeight).toBe(6);
 });
 
-it('обратный обход контура не прячет окна в стену, а дальний квартал сохраняет их',()=>{
+it('обратный обход контура сохраняет фасадные UV, вдали остаётся силуэт',()=>{
   // Arrange
   const outline=[{x:20,y:0,z:20},{x:70,y:0,z:20},{x:70,y:0,z:70},{x:20,y:0,z:70}];
   for(const footprint of [outline,[...outline].reverse()]){
@@ -40,8 +40,13 @@ it('обратный обход контура не прячет окна в с�
     // Act
     const close=buildChunk(w,'0,0',0),far=buildChunk(w,'0,0',1);
     // Assert
-    expect(close.windows.positions.length).toBeGreaterThan(0);expect(far.windows.positions).toEqual(close.windows.positions);
-    for(let i=0;i<close.windows.positions.length;i+=3){const x=close.windows.positions[i],z=close.windows.positions[i+2];expect(x<20||x>70||z<20||z>70).toBe(true);}
+    const facade=close.facades!.find(m=>m.positions.length)!;
+    expect(facade.positions.length).toBeGreaterThan(0);
+    expect(facade.uvs!.length).toBe(facade.positions.length/3*2);
+    expect(close.windows.positions).toHaveLength(0);
+    expect(far.facades!.every(m=>m.positions.length===0)).toBe(true);
+    expect(far.buildings.positions.length).toBeGreaterThan(0);
+    for(let i=0;i<facade.positions.length;i+=3){const x=facade.positions[i],z=facade.positions[i+2];expect(x===20||x===70||z===20||z===70).toBe(true);}
   }
 });
 it('не оставляет узкую стену поперёк дороги между её узлами',()=>{
@@ -51,5 +56,10 @@ it('не оставляет узкую стену поперёк дороги м
   // Act
   const w=buildWorld(region(data));
   // Assert
-  expect(w.buildings).toHaveLength(0);
+  expect(w.buildings).toHaveLength(1);
+  const mesh=buildChunk(w,'0,0',0).facades!.find(m=>m.positions.length)!;
+  for(let i=0;i<mesh.indices.length;i+=3){
+    const ids=mesh.indices.slice(i,i+3),z=ids.reduce((sum,j)=>sum+mesh.positions[j*3+2],0)/3,y=ids.reduce((sum,j)=>sum+mesh.positions[j*3+1],0)/3;
+    if(Math.abs(z)<w.edges[0].width/2)expect(y).toBeGreaterThan(4.5);
+  }
 });

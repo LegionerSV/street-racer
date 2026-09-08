@@ -15,13 +15,10 @@ if not exist node_modules (
     exit /b 1
   )
 )
-if not exist dist\server\wrangler.json (
-  echo Подготавливаем игру. Это займёт около минуты.
-  call npm.cmd run build
-  if errorlevel 1 (
-    pause
-    exit /b 1
-  )
+node scripts\ensure-build.mjs server
+if errorlevel 1 (
+  pause
+  exit /b 1
 )
 echo Street Racer: откройте http://localhost:3000 в браузере.
 echo Оставьте это окно открытым. Для остановки сервера нажмите Ctrl+C.

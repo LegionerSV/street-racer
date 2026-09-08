@@ -1,8 +1,10 @@
 import type { Area, Building, Edge, OSMElement, Point, RegionData, Restriction, RoadNode, Route, World } from './types';
 import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, sampleRoadElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment } from './geo';
 import { structureProfiles } from './elevation';
-import { validateClearance } from './clearance';
-import { roadLayout, directedLanes } from './lanes';
+import { fitBridgeClearance, validateClearance } from './clearance';
+import { roadLayout, directedLanes,roadTypes } from './lanes';
+import {buildingCoveredByParts} from './buildings';
+import {SpatialGrid,boundsOf} from './geometry';
 
 const adjacencyCache = new WeakMap<World, Map<number, Edge[]>>();
 export function outgoing(world: World, id: number): Edge[] {
@@ -41,7 +43,6 @@ export function allowedTurn(world: World, from: Edge, to: Edge, history: number[
   }
   return true;
 }
-const roadTypes = new Set(['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'residential', 'unclassified', 'living_street', 'service', 'road']);
 
 export function buildWorld(region: RegionData): World {
   const sourceNodes = new Map(region.elements.filter(e => e.type === 'node').map(e => [e.id, e]));
@@ -122,7 +123,7 @@ export function buildWorld(region: RegionData): World {
     if (t.building || t['building:part']) {
       const fallback = ['house', 'detached', 'garage', 'garages'].includes(t.building) ? 6 : 10 + Math.floor(seeded(e.id) * 6) * 3;
       const height = clamp(tagsNumber(t.height, tagsNumber(t['building:levels'], fallback / 3) * 3), 2.5, 260);
-      buildings.push({ id: e.id, footprint, holes, height, minHeight: clamp(tagsNumber(t.min_height, tagsNumber(t['building:min_level'], 0) * 3), 0, height - 1), part: !!t['building:part'], colour: seeded(e.id), roof: t['roof:shape'] || 'flat' });
+      buildings.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', footprint, holes, height, minHeight: clamp(tagsNumber(t.min_height, tagsNumber(t['building:min_level'], 0) * 3), 0, height - 1), part: !!t['building:part'], colour: seeded(e.id), roof: t['roof:shape'] || 'flat', material:t['building:material'],facadeColour:t['building:colour'],levels:tagsNumber(t['building:levels'],Math.max(1,Math.round(height/3))),kind:t.building,roofHeight:t['roof:height']?Math.max(0,tagsNumber(t['roof:height'],0)):undefined,roofDirection:t['roof:direction']?tagsNumber(t['roof:direction'],0):undefined,roofOrientation:t['roof:orientation'] });
     } else if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir') areas.push({ id: e.id, points: footprint, holes, kind: 'water' });
     else if (['grass', 'forest', 'recreation_ground', 'meadow'].includes(t.landuse) || t.leisure === 'park' || t.natural === 'wood') areas.push({ id: e.id, points: footprint, holes, kind: 'park' });
   }
@@ -135,40 +136,18 @@ export function buildWorld(region: RegionData): World {
     if (e.type === 'way' && e.nodes && !relationWays.has(e.id) && e.nodes[0] === e.nodes.at(-1)) { const footprint = e.nodes.slice(0, -1).map(local); if (footprint.every(Boolean)) addObject(e, footprint as Point[]); }
     if (e.type === 'node' && e.tags?.natural === 'tree') { const p = local(e.id); if (p) trees.push(p); }
   }
-  // Части здания заменяют общую оболочку: совпадающие фасады не рисуются дважды.
-  const parts = buildings.filter(b => b.part);
-  const polygonArea = (ring:Point[]) => Math.abs(ring.reduce((sum,p,i)=>sum+p.x*ring[(i+1)%ring.length].z-ring[(i+1)%ring.length].x*p.z,0)/2);
+  // Части здания заменяют общую оболочку только при полном покрытии у земли.
+  // Надземные и перекрывающиеся части не должны удалять оставшиеся этажи/крылья.
+  const parts=new SpatialGrid<Building>(250);
+  for(const b of buildings)if(b.part&&(b.minHeight||0)<=.3)parts.add(b,boundsOf(b.footprint));
   const filteredBuildings = buildings.filter(b => {
     if(b.part)return true;
-    const contained=parts.filter(part=>part.id!==b.id&&part.footprint.every(p=>polygonContains(p,b.footprint)||b.footprint.some((a,i)=>projectOnSegment(p,a,b.footprint[(i+1)%b.footprint.length]).distance<.2)));
-    return contained.reduce((sum,part)=>sum+polygonArea(part.footprint),0)<polygonArea(b.footprint)*.8;
+    const contained=parts.query(boundsOf(b.footprint)).filter(part=>part.id!==b.id&&part.footprint.every(p=>polygonContains(p,b.footprint)||b.footprint.some((a,i)=>projectOnSegment(p,a,b.footprint[(i+1)%b.footprint.length]).distance<.2)));
+    return !buildingCoveredByParts(b,contained);
   });
-  // Отбрасываем только повреждённые контуры, которые физически перегораживают наземную дорогу.
-  const roadCells = new Map<string, Edge[]>();
-  for (const e of edges) if (!e.bridge && !e.tunnel) {
-    for (const p of e.points) { const key = `${Math.floor(p.x / 100)},${Math.floor(p.z / 100)}`; const list = roadCells.get(key) || []; if (list.at(-1) !== e) list.push(e); roadCells.set(key, list); }
-  }
-  const validBuildings = filteredBuildings.filter(b => {
-    const minX = Math.min(...b.footprint.map(p => p.x)), maxX = Math.max(...b.footprint.map(p => p.x)), minZ = Math.min(...b.footprint.map(p => p.z)), maxZ = Math.max(...b.footprint.map(p => p.z));
-    const candidates = new Set<Edge>();
-    for (let x = Math.floor(minX / 100) - 1; x <= Math.floor(maxX / 100) + 1; x++) for (let z = Math.floor(minZ / 100) - 1; z <= Math.floor(maxZ / 100) + 1; z++) for (const e of roadCells.get(`${x},${z}`) || []) candidates.add(e);
-    for (const e of candidates) for (let i = 1; i < e.points.length; i++) {
-      const a = e.points[i - 1], c = e.points[i], mid = { x: (a.x + c.x) / 2, y: (a.y + c.y) / 2, z: (a.z + c.z) / 2 };
-      const floor = Math.min(...b.footprint.map(p => p.y)) + (b.minHeight || 0);
-      if (floor > mid.y + 4.5) continue;
-      const inside = polygonContains(mid, b.footprint) && !(b.holes || []).some(h => polygonContains(mid, h));
-      const crosses = b.footprint.some((p,j) => {
-        const q=b.footprint[(j+1)%b.footprint.length],rx=c.x-a.x,rz=c.z-a.z,sx=q.x-p.x,sz=q.z-p.z,cross=rx*sz-rz*sx;
-        const t=Math.abs(cross)>.00001?((p.x-a.x)*sz-(p.z-a.z)*sx)/cross:-1,u=Math.abs(cross)>.00001?((p.x-a.x)*rz-(p.z-a.z)*rx)/cross:-1;
-        return t>=0&&t<=1&&u>=0&&u<=1 || projectOnSegment(p,a,c).distance<e.width/2-.25;
-      }) && !(b.holes || []).some(h => polygonContains(mid, h));
-      if (inside || crosses) { if (e.passage) { b.minHeight = Math.max(b.minHeight || 0, 5.5); b.height = Math.max(b.height,b.minHeight+2.5); } else return false; }
-    }
-    return true;
-  });
-  const omitted = filteredBuildings.length - validBuildings.length;
-  if (omitted) warnings.push(`${omitted} конфликтующих контуров зданий пропущено для свободного проезда.`);
-  buildings.splice(0, buildings.length, ...validBuildings);
+  // Пересечение дороги вырезается локально при построении геометрии здания.
+  // Поднимать или удалять целый дом ради одной арки нельзя.
+  buildings.splice(0,buildings.length,...filteredBuildings);
   const nodes = [...roadNodes.values()];
   const neighbours = new Map<number, Set<number>>();
   for (const edge of edges) for (const [a, b] of [[edge.from, edge.to], [edge.to, edge.from]]) { const list = neighbours.get(a) || new Set<number>(); list.add(b); neighbours.set(a, list); }
@@ -180,6 +159,11 @@ export function buildWorld(region: RegionData): World {
     edge.points = edge.points.map((p, i) => { let y = p.y; if (flattenStart && distances[i] < 16) y = start.y + (y - start.y) * smooth(distances[i] / 16); if (flattenEnd && total - distances[i] < 16) y = end.y + (y - end.y) * smooth((total - distances[i]) / 16); return { ...p, y }; });
     edge.length = pathLengths(edge.points).at(-1)!;
     if (edge.points.slice(1).some((p, i) => Math.abs(p.y - edge.points[i].y) / (distance2(p, edge.points[i]) || 1) > .38)) edge.blocked = true;
+  }
+  fitBridgeClearance(edges);
+  for(const edge of edges){
+    edge.length=pathLengths(edge.points).at(-1)!;
+    for(const [id,p] of [[edge.from,edge.points[0]],[edge.to,edge.points.at(-1)!]] as [number,Point][])Object.assign(roadNodes.get(id)!,p);
   }
   warnings.push(...validateClearance(edges));
   const usable = edges.filter(e => !e.blocked);

@@ -4,6 +4,7 @@ import { distance2, sampleElevation, sampleRoadElevation, smoothElevation, toLoc
 import bridgeDEM from './fixtures/bolsheokhtinsky-elevation.json';
 import { buildChunk, indexWorld } from './chunks';
 import type { OSMElement, RegionData } from './types';
+import { crossingClearance,roadCrossings } from './clearance';
 
 const node = (id: number, x: number): OSMElement => ({ type: 'node', id, lat: 0, lon: x / 111320 });
 const way = (id: number, nodes: number[], tags = {}): OSMElement => ({ type: 'way', id, nodes, tags: { highway: 'primary', bridge: 'yes', ...tags } });
@@ -11,6 +12,45 @@ const region = (elements: OSMElement[]): RegionData => ({ center: { lat: 0, lon:
 const grade = (points: { x: number; y: number; z: number }[]) => Math.max(...points.slice(1).map((p, i) => Math.abs(p.y - points[i].y) / distance2(p, points[i])));
 
 describe('Профили высот дорог', () => {
+  it('не оставляет ступень, если короткий подход переходит в другое сооружение',()=>{
+    // Arrange
+    const input=region([node(1,-450),node(2,-150),node(3,150),node(4,180),node(5,480),{...node(6,-130),lat:-100/111320},{...node(7,-130),lat:100/111320},way(10,[2,3]),way(11,[1,2],{bridge:'no'}),way(12,[3,4],{bridge:'no'}),way(13,[4,5],{bridge:'no',tunnel:'yes'}),way(14,[6,7],{bridge:'no'})]);
+    // Act
+    const world=buildWorld(input);
+    // Assert
+    for(const n of world.nodes)for(const e of world.edges){if(e.from===n.id)expect(e.points[0].y).toBeCloseTo(n.y,6);if(e.to===n.id)expect(e.points.at(-1)!.y).toBeCloseTo(n.y,6);}
+  });
+  it('обеспечивает просвет на реальном DEM Большеохтинского с двумя контрольными набережными',()=>{
+    // Arrange — топология дорог синтетическая, координатная привязка и DEM реальные.
+    const center=bridgeDEM.center;
+    const nodeAt=(id:number,x:number,z:number):OSMElement=>({type:'node',id,lat:center.lat+z/111320,lon:center.lon+x/(111320*Math.cos(center.lat*Math.PI/180))});
+    const elements=[nodeAt(1,-550,0),nodeAt(2,-230,0),nodeAt(3,230,0),nodeAt(4,550,0),nodeAt(5,-200,-200),nodeAt(6,-200,200),nodeAt(7,200,-200),nodeAt(8,200,200),way(10,[2,3]),way(11,[1,2],{bridge:'no'}),way(12,[3,4],{bridge:'no'}),way(13,[5,6],{bridge:'no',width:'14'}),way(14,[7,8],{bridge:'no',width:'14'})];
+    // Act
+    const world=buildWorld({center,elements,elevation:{...bridgeDEM,values:Float32Array.from(bridgeDEM.values)},drivingSide:'right',fetchedAt:'test'}),contacts=roadCrossings(world.edges);
+    // Assert
+    expect(new Set(contacts.map(c=>c.lower.edge.way))).toEqual(new Set([13,14]));
+    for(const c of contacts)expect(crossingClearance(c)).toBeGreaterThanOrEqual(3.5);
+    expect(world.edges.filter(e=>e.bridge).every(e=>!e.blocked)).toBe(true);
+  });
+  it.each([false,true])('поднимает весь мост и подходы над набережной, независимо от порядка way: %s', reverse => {
+    // Arrange — пересечение возле берега, где старый профиль ещё почти на земле.
+    const elements = [node(1,-450),node(2,-150),node(3,150),node(4,450),
+      {...node(5,-130),lat:-100/111320},{...node(6,-130),lat:100/111320},
+      way(10,[2,3]),way(11,[1,2],{bridge:'no'}),way(12,[3,4],{bridge:'no'}),way(13,[5,6],{bridge:'no',width:'14'})];
+    // Act
+    const world=buildWorld(region(reverse?[...elements].reverse():elements));
+    const bridge=world.edges.find(e=>e.way===10)!;
+    const lower=world.edges.find(e=>e.way===13)!;
+    // Assert — 3,5 м до низа плиты толщиной 0,55 м по всей ширине набережной.
+    for(const p of bridge.points.filter(p=>Math.abs(p.x+130)<=7)) expect(p.y-.55-lower.points[0].y).toBeGreaterThanOrEqual(3.5);
+    expect(world.edges.every(e=>!e.blocked)).toBe(true);
+    for(const edge of world.edges){
+      expect(grade(edge.points)).toBeLessThan(.081);
+      expect(edge.points[0].y).toBeCloseTo(world.nodes.find(n=>n.id===edge.from)!.y,7);
+      expect(edge.points.at(-1)!.y).toBeCloseTo(world.nodes.find(n=>n.id===edge.to)!.y,7);
+    }
+    expect(world.nodes.find(n=>n.id===1)!.y).toBeCloseTo(.12,6);
+  });
   it.each([false, true])('сшивает торцы разных OSM-путей на повороте (обратный путь: %s)', reverse => {
     // Arrange
     const input = region([
