@@ -65,6 +65,22 @@ function ribbon(mesh: MeshData, a: Point, b: Point, left: number, right: number,
 }
 type Segment = { a: Point; b: Point; edge: Edge; index: number; station: number; na?: { x: number; z: number }; nb?: { x: number; z: number }; join?: CarriagewayJoin };
 type Paving={id:string;segment:Segment;side:number;mask:Prism};
+const sidewalkOn = (edge: Edge, side: number) => side < 0 ? edge.sidewalkLeft !== false : edge.sidewalkRight !== false;
+function segmentPolygonSpans(a:Point,b:Point,outer:Point[],holes:Point[][]=[]){
+  const cuts=new Set([0,1]),dx=b.x-a.x,dz=b.z-a.z;
+  for(const ring of [outer,...holes])for(let i=0;i<ring.length;i++){
+    const p=ring[i],q=ring[(i+1)%ring.length],ex=q.x-p.x,ez=q.z-p.z,den=dx*ez-dz*ex;
+    if(Math.abs(den)<1e-8)continue;
+    const t=((p.x-a.x)*ez-(p.z-a.z)*ex)/den,u=((p.x-a.x)*dz-(p.z-a.z)*dx)/den;
+    if(t>0&&t<1&&u>=0&&u<=1)cuts.add(t);
+  }
+  const sorted=[...cuts].sort((x,y)=>x-y),spans:[Point,Point][]=[];
+  for(let i=1;i<sorted.length;i++){
+    const start=mixPoint(a,b,sorted[i-1]),end=mixPoint(a,b,sorted[i]),mid=mixPoint(start,end,.5);
+    if(polygonContains(mid,outer)&&!holes.some(h=>polygonContains(mid,h)))spans.push([start,end]);
+  }
+  return spans;
+}
 function sidewalkShape(s:Segment,side:number){
   const {a,b,edge}=s,length=distance2(a,b)||1,normal={x:(b.z-a.z)/length,z:-(b.x-a.x)/length},w=edge.width/2,outer=w+CURB_WIDTH+SIDEWALK_WIDTH;
   const offset=(p:Point,n:{x:number;z:number},d:number,up=CURB_HEIGHT)=>({x:p.x+n.x*d*side,y:p.y+up,z:p.z+n.z*d*side});
@@ -143,6 +159,7 @@ export function indexWorld(world: World): Index {
   }
   for(const segments of index.owned.values())for(const segment of segments)for(const side of [-1,1]){
     if(segment.join?.side===side)continue;
+    if(!sidewalkOn(segment.edge,side))continue;
     const {points}=sidewalkShape(segment,side),{a,b}=segment,dx=b.x-a.x,dz=b.z-a.z,slope=(b.y-a.y)/(dx*dx+dz*dz||1);
     const height={x:-dx*slope,y:1,z:-dz*slope,w:-a.y-CURB_HEIGHT+(a.x*dx+a.z*dz)*slope};
     const endpoints=[`${a.x},${a.z}`,`${b.x},${b.z}`].sort().join('/');
@@ -160,7 +177,7 @@ export function indexWorld(world: World): Index {
 export function buildChunk(world: World, key: string, lod: number): ChunkData {
   const index = indexWorld(world), segments = index.segments.get(key) || [], owned = index.owned.get(key) || [];
   const [cx, cz] = key.split(',').map(Number), x0 = cx * 250, z0 = cz * 250;
-  const result: ChunkData = { key, lod, terrain: empty(), road: empty(), shoulders: empty(), sidewalks: empty(), landmarks:empty(), facades:[empty(),empty(),empty()], markings: empty(), structures: empty(), buildings: empty(), windows: empty(), water: empty(), trees: [], lamps: [] };
+  const result: ChunkData = { key, lod, terrain: empty(), road: empty(), shoulders: empty(), sidewalks: empty(), landmarks:empty(), facades:[empty(),empty(),empty()], markings: empty(), structures: empty(), treeTrunks:empty(), buildings: empty(), windows: empty(), water: empty(), trees: [], lamps: [], breakables:[] };
   const waterLevel = (area: World['areas'][number]) => Math.min(...area.points.map(p => p.y)) - .4;
   // Одинаковая сетка на обоих LOD сохраняет стыки; различается детализация объектов.
   const n = 20, terrain = result.terrain;
@@ -169,11 +186,9 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     const query={minX:x,maxX:x,minZ:z,maxZ:z},near=index.spatial.query(query);
     const y = sampleElevation(world.elevation, x, z); let best = Infinity, roadHeight = y;
     for (const s of near) if (!s.edge.bridge && !s.edge.tunnel) {
-      const projected = projectOnSegment({ x, y: 0, z }, s.a, s.b), limit = s.edge.width / 2 + 14;
-      if (projected.distance < limit && projected.distance < best) { best = projected.distance; roadHeight = y + (projected.point.y - .3 - y) * (1 - smooth((projected.distance - s.edge.width / 2 - 3) / 11)); }
+      const projected = projectOnSegment({ x, y: 0, z }, s.a, s.b), limit = s.edge.width / 2 + 7;
+      if (projected.distance < limit && projected.distance < best) { best = projected.distance; roadHeight = y + (projected.point.y - .3 - y) * (1 - smooth((projected.distance - s.edge.width / 2 - 3) / 4)); }
     }
-    // Опускаем все вершины пересекающей полотно ячейки, включая её диагональ.
-    for (const s of near) if (!s.edge.bridge && !s.edge.tunnel && projectOnSegment({ x, y: 0, z }, s.a, s.b).distance < s.edge.width / 2 + 19) roadHeight = Math.min(roadHeight, Math.min(s.a.y, s.b.y) - .65);
     const p = { x, y: 0, z };
     for (const area of index.waters.query(query)) {
       const inside = polygonContains(p, area.points) && !(area.holes || []).some(h => polygonContains(p, h));
@@ -200,9 +215,10 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
   };
   for (const s of owned) {
     const { a, b, edge } = s, w = edge.width / 2;
-    const outer=w+CURB_WIDTH+SIDEWALK_WIDTH;
+    const outer=w+(edge.sidewalkLeft!==false||edge.sidewalkRight!==false?CURB_WIDTH+SIDEWALK_WIDTH:.2);
     for(const side of [-1,1]){
       if(s.join?.side===side)continue;
+      if(!sidewalkOn(edge,side))continue;
       const {aa,bb,points}=sidewalkShape(s,side),bounds=boundsOf(points);
       const candidates=index.paving.query(bounds),own=candidates.find(p=>p.segment===s&&p.side===side)!;
       const roads=index.spatial.query(bounds).filter(other=>other.edge.way!==edge.way).map(other=>roadPrism(other.a,other.b,other.edge.width+.5,.6,.6));
@@ -217,7 +233,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       if(s.join?.side===side)continue;
       const len = distance2(a, b) || 1, normal = { x: (b.z - a.z) / len, z: -(b.x - a.x) / len };
       const offset = (p: Point, n: {x:number;z:number}, d: number) => ({ x:p.x+n.x*d*side, y:p.y-.08, z:p.z+n.z*d*side });
-      const aa = offset(a, s.na || normal, outer), bb = offset(b, s.nb || normal, outer);
+      const sideOuter=w+(sidewalkOn(edge,side)?CURB_WIDTH+SIDEWALK_WIDTH:.2),aa = offset(a, s.na || normal, sideOuter), bb = offset(b, s.nb || normal, sideOuter);
       const cc = offset(b, s.nb || normal, w + 7), dd = offset(a, s.na || normal, w + 7);
       cc.y = terrainHeight(cc.x,cc.z) + .02; dd.y = terrainHeight(dd.x,dd.z) + .02;
       if(side>0)quad(result.shoulders,aa,bb,cc,dd,[.23,.27,.22]);else quad(result.shoulders,dd,cc,bb,aa,[.23,.27,.22]);
@@ -281,7 +297,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     if (lod === 0 && !edge.tunnel && s.join?.side!==1) for (const d of periodicOffsets(s.station, distance2(a, b), edge.laneProfile?.direction || 1)) {
       const l = distance2(a, b), anchor = mixPoint(a, b, d / l), p = { x: anchor.x + (b.z - a.z) / l * (w + 1.6), y: anchor.y, z: anchor.z - (b.x - a.x) / l * (w + 1.6) };
       const free = segments.every(other => Math.abs(other.a.y-p.y)>3 || projectOnSegment(p,other.a,other.b).distance > other.edge.width/2+.6);
-      if (free) { box(result.structures, p, .12, 7, .12, [.2, .25, .25]); box(result.windows, { ...p, y: p.y + 7 }, .7, .12, 1.4, [.85, .82, .55]); result.lamps.push({ ...p, y: p.y + 6.7 }); }
+      if (free) { result.breakables.push({kind:'pole',point:p,heading:0}); result.lamps.push({ ...p, y: p.y + 6.7 }); }
     }
   }
   const models=worldLandmarks(world).filter(model=>model.key===key&&(lod===0||model.asset.far));
@@ -301,6 +317,13 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     const grounded={...building,footprint:building.footprint.map(groundVertex),holes:building.holes?.map(r=>r.map(groundVertex))};
     const roads=index.spatial.query(boundsOf(building.footprint)).filter(s=>!s.edge.tunnel&&!s.edge.bridge).map(s=>roadPrism(s.a,s.b,s.edge.width+.6,10000,s.edge.passage?5.5:4.5));
     appendBuilding(grounded,lod,result.buildings,result.facades!,roads,foundationFloor);
+    for(const s of index.spatial.query(boundsOf(building.footprint)).filter(s=>s.edge.passage)){
+      const length=distance2(s.a,s.b)||1,nx=(s.b.z-s.a.z)/length,nz=-(s.b.x-s.a.x)/length;
+      for(const side of [-1,1]){
+        const d=(s.edge.width+.6)/2,aa={...s.a,x:s.a.x+nx*d*side,z:s.a.z+nz*d*side},bb={...s.b,x:s.b.x+nx*d*side,z:s.b.z+nz*d*side};
+        for(const [p,q] of segmentPolygonSpans(aa,bb,grounded.footprint,grounded.holes))quad(result.structures,{...p,y:p.y-.25},{...q,y:q.y-.25},{...q,y:q.y+5.5},{...p,y:p.y+5.5},[.4,.42,.4]);
+      }
+    }
   }
   for (const area of world.areas) {
     const minx = Math.min(...area.points.map(p => p.x)), maxx = Math.max(...area.points.map(p => p.x)), minz = Math.min(...area.points.map(p => p.z)), maxz = Math.max(...area.points.map(p => p.z));
@@ -321,8 +344,24 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
         p.y = ground(p.x, p.z); result.trees.push(p);
       }
     }
+    if(lod===0&&area.railing)for(const ring of [area.points])for(let i=0;i<ring.length;i++){
+      const a=ring[i],b=ring[(i+1)%ring.length],length=distance2(a,b),parts=Math.max(1,Math.ceil(length/10));
+      for(let j=0;j<parts;j++){
+        const p=mixPoint(a,b,j/parts),q=mixPoint(a,b,(j+1)/parts),mid=mixPoint(p,q,.5);
+        if(tileKey(mid.x,mid.z)!==key)continue;
+        if(area.railing==='river'&&!segments.some(s=>/набережн/iu.test(s.edge.name)&&projectOnSegment(mid,s.a,s.b).distance<s.edge.width/2+24))continue;
+        result.breakables.push({kind:'fence',point:mid,heading:Math.atan2(q.x-p.x,q.z-p.z),length:distance2(p,q)});
+      }
+    }
   }
   if (lod === 0) for (const tree of world.trees) if (tileKey(tree.x, tree.z) === key && segments.every(s => projectOnSegment(tree,s.a,s.b).distance > s.edge.width/2+2)) result.trees.push({ ...tree, y: ground(tree.x,tree.z) });
+  if(lod===0)for(const tree of result.trees)box(result.treeTrunks,tree,.55,7,.55,[.23,.24,.2]);
+  const roadCuts=new SpatialGrid<Prism>(32);
+  for(const s of segments)if(!s.edge.bridge&&!s.edge.tunnel){
+    const length=distance2(s.a,s.b)||1,aa=mixPoint(s.a,s.b,-.3/length),bb=mixPoint(s.a,s.b,1+.3/length);
+    const cut=roadPrism(aa,bb,s.edge.width+14,10000,10000);roadCuts.add(cut,cut.bounds);
+  }
+  cutSoil(result.terrain,roadCuts);
   if(segments.some(s=>s.edge.tunnel||s.edge.tunnelApproach)){
     cutSoil(result.terrain,index.cavities);
     cutSoil(result.shoulders,index.cavities);

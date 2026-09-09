@@ -2,7 +2,7 @@ import {opponentMarkers,raceMarkerPosition} from './race-map-markers';
 import {mapDiagnostics} from './map-diagnostics';
 import {
   Color3, Color4, Engine, Scene, Vector3, FreeCamera,
-  Mesh, MeshBuilder, VertexData, StandardMaterial, PhysicsAggregate, PhysicsShapeType, HavokPlugin,
+  Mesh, MeshBuilder, VertexData, StandardMaterial, PhysicsAggregate, PhysicsShapeType, PhysicsMotionType, HavokPlugin,
   GlowLayer, PointLight, Ray, TransformNode, EngineInstrumentation, SceneInstrumentation, BoundingBox, Frustum,
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
@@ -31,8 +31,10 @@ import type {LoadingLog} from './loading-log';
 import {RegionStream,tileReady} from './region-stream';
 import {edgeKey,changedChunks} from './world-update';
 import {routeHasCoverage,needsRaceRecovery} from './stream-coverage';
+import {nextRaceTurn} from './navigation';
 
-type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; lamps: Point[]; buildingBounds:BoundingBox[]; dispose: () => void };
+type BreakableLoaded = { mesh: Mesh; pole: boolean; broken: boolean; lamp?: Point; body?: PhysicsAggregate };
+type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; breakables: BreakableLoaded[]; lamps: Point[]; buildingBounds:BoundingBox[]; dispose: () => void };
 export class Game {
   readonly engine: Engine;
   readonly scene: Scene;
@@ -213,28 +215,38 @@ export class Game {
   private install(chunk: ChunkData) {
     if (this.disposed) return;
     const started=performance.now();
-    const meshes: Mesh[] = [], bodies: PhysicsAggregate[] = [];
-    const surfaces:[string,MeshData|undefined,StandardMaterial][]=['terrain','shoulders','sidewalks','road','markings','structures','buildings','landmarks','windows','water'].map(role=>[role,chunk[role as keyof ChunkData] as MeshData|undefined,this.materials[role]]);
+    const meshes: Mesh[] = [], bodies: PhysicsAggregate[] = [], breakables:BreakableLoaded[]=[],lamps=[...chunk.lamps];
+    const surfaces:[string,MeshData|undefined,StandardMaterial][]=['terrain','shoulders','sidewalks','road','markings','structures','treeTrunks','buildings','landmarks','windows','water'].map(role=>[role,chunk[role as keyof ChunkData] as MeshData|undefined,this.materials[role]||this.materials.trunk]);
     chunk.facades?.forEach((data,i)=>surfaces.push(['facade'+i,data,this.facadeMaterials[i]]));
     for (const [role,data,mat] of surfaces) {
       if(!data)continue;
       const mesh = this.makeMesh(`${chunk.key}:${role}`, data, mat); if (!mesh) continue;
+      if(role==='treeTrunks'){mesh.isVisible=false;mesh.receiveShadows=false;}
       meshes.push(mesh);
-      if (chunk.lod === 0 && (['terrain', 'shoulders', 'sidewalks', 'road', 'structures', 'buildings', 'landmarks'].includes(role)||role.startsWith('facade'))) {
+      if (chunk.lod === 0 && (['terrain', 'shoulders', 'sidewalks', 'road', 'structures', 'treeTrunks', 'buildings', 'landmarks'].includes(role)||role.startsWith('facade'))) {
         mesh.isPickable = role === 'structures' || role === 'buildings'||role==='landmarks'||role.startsWith('facade');
         bodies.push(new PhysicsAggregate(mesh, PhysicsShapeType.MESH, { mass: 0, friction: .65, restitution: .02 }, this.scene));
       }
     }
+    for(const [i,prop] of chunk.breakables.entries()){
+      const pole=prop.kind==='pole',mesh=pole
+        ?MeshBuilder.CreateCylinder(`${chunk.key}:breakable-pole-${i}`,{height:7,diameter:.16,tessellation:6},this.scene)
+        :MeshBuilder.CreateBox(`${chunk.key}:breakable-fence-${i}`,{width:.14,height:1.05,depth:prop.length||2},this.scene);
+      mesh.position.copyFromFloats(prop.point.x,prop.point.y+(pole?3.5:.525),prop.point.z);mesh.rotation.y=prop.heading;mesh.material=this.materials.structures;mesh.isPickable=false;
+      if(pole){const head=MeshBuilder.CreateBox('streetlight-head',{width:.7,height:.14,depth:1.4},this.scene);head.parent=mesh;head.position.set(0,3.45,0);head.material=this.materials.windows;head.isPickable=false;}
+      const lamp=pole?lamps.find(p=>p.x===prop.point.x&&p.z===prop.point.z):undefined;
+      meshes.push(mesh);breakables.push({mesh,pole,broken:false,lamp});
+    }
     if (chunk.trees.length) {
-      const trunk = MeshBuilder.CreateCylinder(`${chunk.key}:trunks`, { diameter: .35, height: 4, tessellation: 5 }, this.scene); trunk.material = this.materials.trunk;
-      const foliage = MeshBuilder.CreateSphere(`${chunk.key}:foliage`, { diameter: 5.5, segments: 3 }, this.scene); foliage.material = this.materials.tree;
+      const trunk = MeshBuilder.CreateCylinder(`${chunk.key}:trunks`, { diameter: .55, height: 7, tessellation: 5 }, this.scene); trunk.material = this.materials.trunk;
+      const foliage = MeshBuilder.CreateSphere(`${chunk.key}:foliage`, { diameter: 9, segments: 3 }, this.scene); foliage.material = this.materials.tree;
       const matrices = new Float32Array(chunk.trees.length * 16), leaves = new Float32Array(matrices.length);
-      chunk.trees.forEach((p, i) => { const base = i * 16; matrices[base] = matrices[base + 5] = matrices[base + 10] = matrices[base + 15] = 1; matrices[base + 12] = p.x; matrices[base + 13] = p.y + 2; matrices[base + 14] = p.z; leaves.set(matrices.subarray(base, base + 16), base); leaves[base + 13] = p.y + 5; });
+      chunk.trees.forEach((p, i) => { const base = i * 16; matrices[base] = matrices[base + 5] = matrices[base + 10] = matrices[base + 15] = 1; matrices[base + 12] = p.x; matrices[base + 13] = p.y + 3.5; matrices[base + 14] = p.z; leaves.set(matrices.subarray(base, base + 16), base); leaves[base + 13] = p.y + 8.5; });
       trunk.thinInstanceSetBuffer('matrix', matrices, 16); foliage.thinInstanceSetBuffer('matrix', leaves, 16); trunk.isPickable = foliage.isPickable = false; meshes.push(trunk, foliage);
     }
     this.chunks.get(chunk.key)?.dispose();
     const buildingBounds=(indexWorld(this.world).buildings.get(chunk.key)||[]).map(b=>new BoundingBox(new Vector3(Math.min(...b.footprint.map(p=>p.x)),Math.min(...b.footprint.map(p=>p.y))+(b.minHeight||0),Math.min(...b.footprint.map(p=>p.z))),new Vector3(Math.max(...b.footprint.map(p=>p.x)),Math.max(...b.footprint.map(p=>p.y))+b.height,Math.max(...b.footprint.map(p=>p.z)))));
-    this.chunks.set(chunk.key, { lod: chunk.lod, meshes, bodies, lamps: chunk.lamps, buildingBounds, dispose: () => { bodies.forEach(b => b.dispose()); meshes.forEach(m => m.dispose()); } });
+    this.chunks.set(chunk.key, { lod: chunk.lod, meshes, bodies, breakables, lamps, buildingBounds, dispose: () => { breakables.forEach(p=>p.body?.dispose()); bodies.forEach(b => b.dispose()); meshes.forEach(m => m.dispose()); } });
     this.installTimings.add(performance.now()-started);
     this.staleChunks.delete(chunk.key);
   }
@@ -277,6 +289,22 @@ export class Game {
       for (let axis = 0; axis < 2; axis++) { const phase = signalPhase(this.time, axis), active = phase === 'red' ? 0 : phase === 'yellow' ? 1 : 2; item.lamps[axis].forEach((lamp, i) => lamp.material = this.signalMaterials[i === active ? i : 3]); }
     }
   }
+  private updateBreakables() {
+    const activateDistance=70*70,deactivateDistance=95*95;
+    for(const chunk of this.chunks.values())for(const prop of chunk.breakables){
+      const distance=Vector3.DistanceSquared(prop.mesh.position,this.player.position);
+      if(!prop.body&&distance<activateDistance){
+        const body=new PhysicsAggregate(prop.mesh,PhysicsShapeType.BOX,{mass:prop.pole?28:18,friction:.5,restitution:.08},this.scene);
+        prop.body=body;body.body.setMotionType(PhysicsMotionType.STATIC);body.body.setCollisionCallbackEnabled(true);
+        body.body.getCollisionObservable().add(event=>{
+          if(prop.broken||event.impulse<(prop.pole?500:320))return;
+          prop.broken=true;body.body.setMotionType(PhysicsMotionType.DYNAMIC);
+          if(prop.lamp){const i=chunk.lamps.indexOf(prop.lamp);if(i>=0)chunk.lamps.splice(i,1);}
+          const velocity=event.collidedAgainst.getLinearVelocity();body.body.setLinearVelocity(velocity.scale(.7).add(new Vector3(0,1.2,0)));body.body.setAngularVelocity(new Vector3(velocity.z*.12,0,-velocity.x*.12));
+        });
+      }else if(prop.body&&!prop.broken&&distance>deactivateDistance){prop.body.dispose();prop.body=undefined;}
+    }
+  }
   private frame() {
     if (this.disposed) return;
     if(!this.paused&&!document.hidden)this.frameTimings.add(this.engine.getDeltaTime(),this.loading||this.pending.size>0);
@@ -284,7 +312,7 @@ export class Game {
     if (this.driveTest && !this.paused) { this.driveTest.frames.push(this.engine.getDeltaTime()); this.driveTest.maxMeshes = Math.max(this.driveTest.maxMeshes, this.scene.meshes.length); this.driveTest.maxSpeed = Math.max(this.driveTest.maxSpeed, this.player.groundSpeed * 3.6); }
     this.streamClock -= dt; this.hudClock -= dt;
     if (this.streamClock <= 0) {
-      this.streamClock = .5; this.refreshWanted(); this.updateSignals();
+      this.streamClock = .5; this.refreshWanted(); this.updateSignals(); this.updateBreakables();
       const lamps = [...this.chunks.values()].flatMap(c => c.lamps).sort((a, b) => distance2(a, this.player.position) - distance2(b, this.player.position));
       this.lampLights.forEach((light, i) => { if (lamps[i] && !isLightQuality(this.settings.quality)) { light.position.copyFromFloats(lamps[i].x, lamps[i].y, lamps[i].z); light.intensity = 2 * (1-this.atmosphere.state.daylight); } else light.intensity = 0; });
       if (this.player.grounded && !this.race) {
@@ -335,7 +363,7 @@ export class Game {
     if (this.hudClock <= 0) { this.hudClock = .1; this.emit(); }
   }
   private emit() {
-    this.onHUD({ opponents:this.race?opponentMarkers(this.traffic.racers):[], speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.preparingRace?'Прокладываем маршрут по загруженной карте…':this.mapStream?.status, race: this.race ? { ...this.race } : null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
+    this.onHUD({ opponents:this.race?opponentMarkers(this.traffic.racers):[], speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.preparingRace?'Прокладываем маршрут по загруженной карте…':this.mapStream?.status, race: this.race ? { ...this.race } : null, navigation:this.settings.navigator&&this.race?nextRaceTurn(this.race,this.player.position):null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
   }
   private recoverAtMapBoundary(critical:string[]){
     if(!needsRaceRecovery(!!this.race||!!this.driveTest,this.mapCoverage,critical))return critical;

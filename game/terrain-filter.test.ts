@@ -40,6 +40,18 @@ it('подавляет городской пик размером в кварт�
     sampleRoadElevation(grid, 400, 0) - sampleRoadElevation(grid, -400, 0),
   ).toBeCloseTo(24, 1);
 });
+it('не превращает невысокий естественный подъём в локальную низину', () => {
+  // Arrange — подъём на четыре метра слишком мал, чтобы считать его зданием или кроной дерева.
+  const width=161,size=3200;
+  const values=Float32Array.from({length:width*width},(_,i)=>{
+    const x=((i%width)-80)*20,z=(Math.floor(i/width)-80)*20;
+    return 68+(Math.abs(x)<180&&Math.abs(z)<180?4:0);
+  });
+  // Act
+  const filtered=smoothElevation({width,size,values});
+  // Assert
+  expect(sampleRoadElevation(filtered,0,0)).toBeGreaterThan(71);
+});
 it('снижает перепад на Адмиралтейском проспекте в исходном DEM', () => {
   // Arrange
   const grid = { ...admiral, values: Float32Array.from(admiral.values) };

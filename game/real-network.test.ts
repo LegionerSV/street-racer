@@ -21,7 +21,20 @@ describe('Реальный фрагмент Москвы', () => {
 
 import riverFixture from './fixtures/moscow-river.osm.json';
 import elevationFixture from './fixtures/moscow-elevation.json';
-import { mixPoint, projectOnSegment } from './geo';
+import { mixPoint, polygonContains, projectOnSegment } from './geo';
+
+const terrainAt=(chunk:ReturnType<typeof buildChunk>,point:{x:number;z:number})=>{
+  const heights:number[]=[];
+  for(let i=0;i<chunk.terrain.indices.length;i+=3){
+    const ids=chunk.terrain.indices.slice(i,i+3),triangle=ids.map(id=>({x:chunk.terrain.positions[id*3],y:chunk.terrain.positions[id*3+1],z:chunk.terrain.positions[id*3+2]}));
+    if(!polygonContains({...point,y:0},triangle))continue;
+    const [a,b,c]=triangle,den=(b.z-c.z)*(a.x-c.x)+(c.x-b.x)*(a.z-c.z);
+    if(Math.abs(den)<1e-8)continue;
+    const wa=((b.z-c.z)*(point.x-c.x)+(c.x-b.x)*(point.z-c.z))/den,wb=((c.z-a.z)*(point.x-c.x)+(a.x-c.x)*(point.z-c.z))/den;
+    heights.push(wa*a.y+wb*b.y+(1-wa-wb)*c.y);
+  }
+  return heights;
+};
 
 it('асфальт на реальном рельефе у Москвы-реки остаётся выше треугольников земли', () => {
   // Arrange
@@ -37,11 +50,8 @@ it('асфальт на реальном рельефе у Москвы-реки
       p.x += (b.z-a.z) / length * edge.width * .35; p.z -= (b.x-a.x) / length * edge.width * .35;
       const key = tileKey(p.x, p.z); let chunk = cache.get(key);
       if (!chunk) { chunk = buildChunk(world, key, 0); cache.set(key, chunk); if (chunk.water.indices.length) waterChunks++; }
-      const [cx, cz] = key.split(',').map(Number), gx = (p.x - cx * 250) / 12.5, gz = (p.z - cz * 250) / 12.5, ix = Math.floor(gx), iz = Math.floor(gz), tx = gx-ix, tz = gz-iz;
-      const h = (x: number,z: number) => chunk!.terrain.positions[(z * 21 + x) * 3 + 1];
-      const terrainY = tx+tz <= 1 ? h(ix,iz)*(1-tx-tz)+h(ix+1,iz)*tx+h(ix,iz+1)*tz : h(ix+1,iz+1)*(tx+tz-1)+h(ix,iz+1)*(1-tx)+h(ix+1,iz)*(1-tz);
       const roadY = projectOnSegment(p,a,b).point.y;
-      expect(terrainY, 'Полотно перекрыто землёй: ' + edge.name + ', ' + key).toBeLessThan(roadY - .1);
+      for(const terrainY of terrainAt(chunk,p))expect(terrainY, 'Полотно перекрыто землёй: ' + edge.name + ', ' + key).toBeLessThan(roadY - .1);
       checked++;
     }
   }

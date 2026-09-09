@@ -59,6 +59,18 @@ export function buildWorld(region: RegionData): World {
   const local = (id: number): Point | null => { const n = sourceNodes.get(id); if (n?.lat === undefined || n.lon === undefined) return null; const p = toLocal(n.lat, n.lon, region.center); p.y = sampleElevation(elevation, p.x, p.z); return p; };
   const roadLocal = (id: number): Point | null => { const p = local(id); if (p) p.y = sampleRoadElevation(elevation, p.x, p.z); return p; };
   const tagsNumber = (value: string | undefined, fallback: number) => { const n = parseFloat(value || ''); return Number.isFinite(n) ? n : fallback; };
+  const sidewalks = (tags: Record<string, string>) => {
+    const fallback = tags.highway !== 'service' && tags.highway !== 'track';
+    let left = fallback, right = fallback;
+    if (['no', 'none', 'separate'].includes(tags.sidewalk)) left = right = false;
+    else if (['yes', 'both'].includes(tags.sidewalk)) left = right = true;
+    else if (tags.sidewalk === 'left') { left = true; right = false; }
+    else if (tags.sidewalk === 'right') { left = false; right = true; }
+    if (tags['sidewalk:both']) left = right = !['no', 'none', 'separate'].includes(tags['sidewalk:both']);
+    if (tags['sidewalk:left']) left = !['no', 'none', 'separate'].includes(tags['sidewalk:left']);
+    if (tags['sidewalk:right']) right = !['no', 'none', 'separate'].includes(tags['sidewalk:right']);
+    return { left, right };
+  };
   const roadWays = region.elements.filter(way => {
     const tags = way.tags || {};
     return way.type === 'way' && way.nodes && roadTypes.has(tags.highway) && tags.area !== 'yes' && tags.access !== 'no' && tags.access !== 'private' && tags.motor_vehicle !== 'no' && tags.motorcar !== 'no';
@@ -94,9 +106,10 @@ export function buildWorld(region: RegionData): World {
       }
       const rawHeights=points.map(p=>sampleElevation(region.elevation,p.x,p.z));
       const blockedReasons: NonNullable<Edge['blockedReasons']> = outside ? ['coverage'] : [];
+      const walk = sidewalks(tags);
       const base = { sourceHeightRange:[Math.min(...rawHeights),Math.max(...rawHeights)] as [number,number], blockedReasons, way: way.id, length: pathLengths(points).at(-1)!, width, lanes, speed, name: tags.name || 'Безымянная улица', category: tags.highway, oneWay: oneWay || reverse, passage: tags.tunnel === 'building_passage', bridge, tunnel, layer, blocked, unloaded: !!coverage&&outside };
-      if (!reverse && layout.forward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i], to: way.nodes[i + 1], laneProfile: directedLanes(layout, region.drivingSide, 1), markingStart: lengths[i], points });
-      if ((!oneWay || reverse) && layout.backward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i + 1], to: way.nodes[i], laneProfile: directedLanes(layout, region.drivingSide, -1), markingStart: lengths[i + 1], points: [...points].reverse() });
+      if (!reverse && layout.forward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i], to: way.nodes[i + 1], sidewalkLeft:walk.left,sidewalkRight:walk.right,laneProfile: directedLanes(layout, region.drivingSide, 1), markingStart: lengths[i], points });
+      if ((!oneWay || reverse) && layout.backward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i + 1], to: way.nodes[i], sidewalkLeft:walk.right,sidewalkRight:walk.left,laneProfile: directedLanes(layout, region.drivingSide, -1), markingStart: lengths[i + 1], points: [...points].reverse() });
     }
   }
   const restrictions: Restriction[] = [];
@@ -131,8 +144,11 @@ export function buildWorld(region: RegionData): World {
       const fallback = ['house', 'detached', 'garage', 'garages'].includes(t.building) ? 6 : 10 + Math.floor(seeded(e.id) * 6) * 3;
       const height = clamp(tagsNumber(t.height, tagsNumber(t['building:levels'], fallback / 3) * 3), 2.5, 260);
       buildings.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', footprint, holes, height, minHeight: clamp(tagsNumber(t.min_height, tagsNumber(t['building:min_level'], 0) * 3), 0, height - 1), part: !!t['building:part'], colour: seeded(e.id), roof: t['roof:shape'] || 'flat', material:t['building:material'],facadeColour:t['building:colour'],levels:tagsNumber(t['building:levels'],Math.max(1,Math.round(height/3))),kind:t.building,roofHeight:t['roof:height']?Math.max(0,tagsNumber(t['roof:height'],0)):undefined,roofDirection:t['roof:direction']?tagsNumber(t['roof:direction'],0):undefined,roofOrientation:t['roof:orientation'] });
-    } else if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir') areas.push({ id: e.id, points: footprint, holes, kind: 'water' });
-    else if (['grass', 'forest', 'recreation_ground', 'meadow'].includes(t.landuse) || t.leisure === 'park' || t.natural === 'wood') areas.push({ id: e.id, points: footprint, holes, kind: 'park' });
+    } else if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir') areas.push({ id: e.id, points: footprint, holes, kind: 'water', railing:t.waterway === 'riverbank' || t.water === 'river' ? 'river' : undefined });
+    else if (['grass', 'forest', 'recreation_ground', 'meadow'].includes(t.landuse) || t.leisure === 'park' || t.natural === 'wood') {
+      const name=t['name:ru']||t.name||'',certainPark=t.leisure==='park'&&/(^|\s)парк(\s|$)/iu.test(name)&&!/сквер/iu.test(name);
+      areas.push({ id: e.id, points: footprint, holes, kind: 'park', railing:certainPark?'park':undefined });
+    }
   }
   for (const e of region.elements) if (e.type === 'relation' && e.tags?.type === 'multipolygon') {
     const outerIds = (e.members || []).filter(m => m.type === 'way' && m.role !== 'inner').map(m => m.ref), innerIds = (e.members || []).filter(m => m.type === 'way' && m.role === 'inner').map(m => m.ref);
@@ -207,6 +223,7 @@ export function buildWorld(region: RegionData): World {
 }
 
 const safeRaceCache = new WeakMap<World, Set<number>>();
+const raceRoad = (edge: Edge) => !['service', 'living_street', 'track'].includes(edge.category || '');
 function safeRaceEdges(world: World) {
   let safe = safeRaceCache.get(world);
   if (!safe) {
@@ -218,7 +235,7 @@ function safeRaceEdges(world: World) {
       world.edges
         .filter(
           (e) =>
-            !e.blocked && routeHasCoverage(e.points, world.loadedTiles, margin),
+            !e.blocked && raceRoad(e) && routeHasCoverage(e.points, world.loadedTiles, margin),
         )
         .map((e) => e.id),
     );

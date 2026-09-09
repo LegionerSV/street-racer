@@ -4,6 +4,38 @@ import type { World } from './types';
 import { polygonContains } from './geo';
 
 describe('Подготовка кварталов', () => {
+  it('не строит тротуар у дворовой дороги', () => {
+    // Arrange
+    const edge={id:0,way:1,from:1,to:2,length:100,width:4,lanes:1,speed:7,name:'Двор',category:'service',sidewalkLeft:false,sidewalkRight:false,bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:0,z:120}],blocked:false};
+    const world={center:{lat:0,lon:0},nodes:[],edges:[edge],restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:0,routes:[]} as World;
+    // Act
+    const chunk=buildChunk(world,'0,0',0);
+    // Assert
+    expect(chunk.sidewalks?.indices).toHaveLength(0);
+  });
+  it('не оставляет тротуарный отступ на стороне без тротуара', () => {
+    // Arrange
+    const edge={id:0,way:1,from:1,to:2,length:100,width:6,lanes:2,speed:10,name:'Улица',sidewalkLeft:true,sidewalkRight:false,bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:0,z:120}],blocked:false};
+    const world={center:{lat:0,lon:0},nodes:[],edges:[edge],restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:0,routes:[]} as World;
+    // Act
+    const shoulder=buildChunk(world,'0,0',0).shoulders.positions;
+    const xs=shoulder.filter((_,i)=>i%3===0);
+    // Assert
+    expect(xs.some(x=>Math.abs(x-103.2)<1e-6)).toBe(true);
+    expect(xs.some(x=>Math.abs(x-105.2)<1e-6)).toBe(false);
+  });
+  it('добавляет ломкие ограждения только рекам и явно размеченным паркам', () => {
+    // Arrange
+    const square=(id:number,kind:'water'|'park',railing:World['areas'][number]['railing'])=>({id,kind,railing,points:[{x:20,y:0,z:20},{x:80,y:0,z:20},{x:80,y:0,z:80},{x:20,y:0,z:80}]});
+    const base={center:{lat:0,lon:0},nodes:[],edges:[],restrictions:[],buildings:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:-1,routes:[]} as unknown as World;
+    // Act
+    const road={id:0,way:1,from:1,to:2,length:60,width:7,lanes:2,speed:14,name:'Тестовая набережная',bridge:false,tunnel:false,layer:0,points:[{x:20,y:0,z:15},{x:80,y:0,z:15}],blocked:false};
+    const fenced=buildChunk({...base,edges:[road],areas:[square(1,'water','river'),square(2,'park','park')]},'0,0',0);
+    const open=buildChunk({...base,areas:[square(3,'water',undefined),square(4,'park',undefined)]},'0,0',0);
+    // Assert
+    expect(fenced.breakables.filter(p=>p.kind==='fence').length).toBeGreaterThan(0);
+    expect(open.breakables).toHaveLength(0);
+  });
   it('ждёт только стартовую зону и путь на 70 м вперёд с запасом у границ',()=>{
     // Arrange / Act / Assert
     expect(criticalChunks({x:125,y:0,z:125},0)).toEqual(['0,0']);
@@ -66,5 +98,35 @@ describe('Подготовка кварталов', () => {
     const road = buildChunk(w, '0,0', 0).road;
     // Assert
     for (let i = 0; i < road.positions.length; i += 3) expect(Math.abs(road.positions[i + 1] - (.12 + road.positions[i + 2] * .1))).toBeLessThan(.1);
+  });
+  it('подгоняет землю под локальную высоту дороги, а не под нижний конец сегмента', () => {
+    // Arrange
+    const edge={id:0,way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Подъём',bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:10,z:120}],blocked:false};
+    const w={center:{lat:0,lon:0},nodes:[],edges:[edge],restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array([10,10,10,10])},drivingSide:'right',warnings:[],spawnEdge:0,routes:[]} as World;
+    // Act
+    const terrain=buildChunk(w,'0,0',0).terrain.positions;
+    const nearHighEnd=Array.from({length:terrain.length/3},(_,i)=>terrain.slice(i*3,i*3+3)).filter(p=>Math.abs(p[0]-100)<13&&Math.abs(p[2]-112.5)<1);
+    // Assert
+    expect(Math.min(...nearHighEnd.map(p=>p[1]))).toBeGreaterThan(7);
+  });
+  it('не опускает открытый грунт за пределами дорожной обочины', () => {
+    // Arrange
+    const edge={id:0,way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Улица',bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:0,z:120}],blocked:false};
+    const w={center:{lat:0,lon:0},nodes:[],edges:[edge],restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array([10,10,10,10])},drivingSide:'right',warnings:[],spawnEdge:0,routes:[]} as World;
+    // Act
+    const terrain=buildChunk(w,'0,0',0).terrain.positions;
+    const outsideApron=Array.from({length:terrain.length/3},(_,i)=>terrain.slice(i*3,i*3+3)).filter(p=>Math.abs(p[0]-112.5)<1&&p[2]>=25&&p[2]<=112.5);
+    // Assert
+    expect(Math.min(...outsideApron.map(p=>p[1]))).toBeGreaterThan(9);
+  });
+  it('вырезает грунт под дорожным полотном вместо создания траншеи вокруг него', () => {
+    // Arrange
+    const edge={id:0,way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Улица',bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:0,z:120}],blocked:false};
+    const w={center:{lat:0,lon:0},nodes:[],edges:[edge],restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array([10,10,10,10])},drivingSide:'right',warnings:[],spawnEdge:0,routes:[]} as World;
+    // Act
+    const terrain=buildChunk(w,'0,0',0).terrain,point={x:101,y:0,z:71};
+    const covers=Array.from({length:terrain.indices.length/3},(_,i)=>terrain.indices.slice(i*3,i*3+3).map(id=>({x:terrain.positions[id*3],y:0,z:terrain.positions[id*3+2]}))).some(triangle=>polygonContains(point,triangle));
+    // Assert
+    expect(covers).toBe(false);
   });
 });

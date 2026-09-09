@@ -23,8 +23,8 @@ it('на телефоне по умолчанию выбирается моби�
   // Arrange
   vi.stubGlobal('localStorage',{getItem:()=>null});
   // Act / Assert
-  expect(readSettings(true).quality).toBe('mobile');expect(readSettings(false).quality).toBe('high');
-  vi.stubGlobal('localStorage',{getItem:()=>JSON.stringify({quality:'medium',touchControls:'on'})});
-  expect(readSettings(true).quality).toBe('medium');expect(readSettings(true).touchControls).toBe('on');
+  expect(readSettings(true).quality).toBe('mobile');expect(readSettings(false).quality).toBe('high');expect(readSettings(false).navigator).toBe(true);
+  vi.stubGlobal('localStorage',{getItem:()=>JSON.stringify({quality:'medium',touchControls:'on',navigator:false})});
+  expect(readSettings(true).quality).toBe('medium');expect(readSettings(true).touchControls).toBe('on');expect(readSettings(true).navigator).toBe(false);
   vi.unstubAllGlobals();
 });

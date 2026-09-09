@@ -7,6 +7,50 @@ const road = (id: number, nodes: number[], tags = {}): OSMElement => ({ type: 'w
 const region = (elements: OSMElement[]): RegionData => ({ center: { lat: 0, lon: 0 }, elements, elevation: { size: 5600, width: 2, values: new Float32Array(4) }, fetchedAt: '2026-09-05', drivingSide: 'right' });
 
 describe('Дорожная сеть', () => {
+  it('сохраняет класс дороги и не назначает тротуар дворовым проездам', () => {
+    // Arrange
+    const input = region([
+      node(1, 0, 0), node(2, .003, 0), node(3, 0, .003), node(4, -.003, 0),
+      road(10, [1, 2], { highway: 'service' }),
+      road(11, [1, 3], { highway: 'living_street', sidewalk: 'left' }),
+      road(12, [1, 4], { highway: 'living_street', 'sidewalk:both': 'no' }),
+    ]);
+    // Act
+    const w = buildWorld(input);
+    // Assert
+    expect(w.edges.filter(e => e.way === 10).every(e => e.category === 'service' && !e.sidewalkLeft && !e.sidewalkRight)).toBe(true);
+    const forward=w.edges.find(e=>e.way===11&&e.from===1)!,backward=w.edges.find(e=>e.way===11&&e.from===3)!;
+    expect([forward.sidewalkLeft,forward.sidewalkRight]).toEqual([true,false]);
+    expect([backward.sidewalkLeft,backward.sidewalkRight]).toEqual([false,true]);
+    expect(w.edges.filter(e=>e.way===12).every(e=>!e.sidewalkLeft&&!e.sidewalkRight)).toBe(true);
+  });
+  it('отличает ограждаемые парки и реки от скверного озеленения и водоёмов', () => {
+    // Arrange
+    const elements:OSMElement[]=[];
+    for(const [id,x,tags] of [[10,0,{leisure:'park',name:'Екатерининский парк'}],[20,.002,{landuse:'grass'}],[30,.004,{natural:'water',water:'river'}],[40,.006,{natural:'water'}],[50,.008,{leisure:'park',name:'Лицейский сквер'}],[60,.01,{leisure:'park'}]] as const){
+      const ids=[1,2,3,4].map(n=>id+n);
+      [[x,0],[x+.001,0],[x+.001,.001],[x,.001]].forEach(([lon,lat],i)=>elements.push(node(ids[i],lon,lat)));
+      elements.push({type:'way',id,nodes:[...ids,ids[0]],tags});
+    }
+    // Act
+    const areas=buildWorld(region(elements)).areas;
+    // Assert
+    expect(areas.map(a=>[a.id,a.kind,a.railing])).toEqual([[10,'park','park'],[20,'park',undefined],[30,'water','river'],[40,'water',undefined],[50,'park',undefined],[60,'park',undefined]]);
+  });
+  it('не прокладывает гонку через двор, сохраняя его доступным для свободной езды', () => {
+    // Arrange — длинный service-срез короче периметра из обычных улиц.
+    const input = region([
+      node(1, -.004, -.004), node(2, .004, -.004), node(3, .004, .004), node(4, -.004, .004),
+      road(10, [1, 2, 3, 4, 1], { highway: 'residential', oneway: 'yes' }),
+      road(20, [1, 3], { highway: 'service', oneway: 'yes' }),
+    ]);
+    // Act
+    const w = buildWorld(input), routes = createRoutes(w, w.edges.find(e => e.way === 10)!.id, true);
+    // Assert
+    expect(w.edges.some(e => e.way === 20 && !e.blocked)).toBe(true);
+    expect(routes.length).toBeGreaterThan(0);
+    expect(routes.flatMap(r => r.edges).every(id => w.edges[id].way !== 20)).toBe(true);
+  });
   it('сохраняет запрет поворота через промежуточную дорогу только для нужного въезда', () => {
     // Arrange
     const input = region([node(1, -.003, 0), node(2, 0, 0), node(3, .003, 0), node(4, .003, .003), node(5, .003, -.003), road(10, [1, 2]), road(11, [2, 3]), road(12, [3, 4]), road(13, [3, 5]), { type: 'relation', id: 99, tags: { type: 'restriction', restriction: 'no_left_turn' }, members: [{ type: 'way', role: 'from', ref: 10 }, { type: 'way', role: 'via', ref: 11 }, { type: 'way', role: 'to', ref: 12 }] }]);

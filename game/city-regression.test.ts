@@ -76,6 +76,15 @@ it.each([true, false])(
     }
   },
 );
+it.each([0,1,2])('строит непрозрачные боковые стены внутри проезда сквозь дом на LOD %s', (lod) => {
+  // Arrange
+  const world = passageWorld(true);
+  // Act
+  const structures = buildChunk(world, '0,0', lod).structures;
+  const walls = triangles(structures);
+  // Assert
+  expect(walls.some(t => t.every(p => Math.abs(Math.abs(p.z - 50) - 3.8) < .01) && t.some(p => p.y > 5))).toBe(true);
+});
 it('заземляет фасад на изменённом рельефе рядом с дорогой', () => {
   // Arrange
   const world = passageWorld();
@@ -97,6 +106,8 @@ it('совпадающие тротуары оставляют одну пове
   world.buildings = [];
   const base = {
     ...world.edges[0],
+    sidewalkLeft: true,
+    sidewalkRight: true,
     bridge: false,
     tunnel: false,
     from: 1,
@@ -139,6 +150,8 @@ it.each([0, 6])(
     world.buildings = [];
     const base = {
       ...world.edges[0],
+      sidewalkLeft: true,
+      sidewalkRight: true,
       from: 1,
       to: 2,
       width: 7,
@@ -196,8 +209,8 @@ it('учитывает рельеф у дальнего края дома за �
     ys = chunk.facades!.flatMap((m) =>
       m.positions.filter((_, i) => i % 3 === 1),
     );
-  // Assert — фундамент ниже земли, опущенной на 0,65 м относительно дороги.
-  expect(Math.min(...ys)).toBeCloseTo(-0.95, 6);
+  // Assert — фундамент остаётся ниже земли, мягко подогнанной к дороге.
+  expect(Math.min(...ys)).toBeCloseTo(-0.6, 6);
 });
 it('надземная часть здания не удаляет нижние этажи общей оболочки', () => {
   // Arrange

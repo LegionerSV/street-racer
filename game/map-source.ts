@@ -58,7 +58,7 @@ export function mapCellQuery(b: MapBox) {
   const bb = [b.south, b.west, b.north, b.east]
     .map((n) => n.toFixed(7))
     .join(',');
-  return `(way["highway"~"^(${[...roadTypes].join('|')})$"](${bb});node["highway"="traffic_signals"](${bb});relation["type"="restriction"](${bb});way["building"](${bb});way["building:part"](${bb});relation["building"](${bb});nwr["natural"~"^(water|wood|tree)$"](${bb});nwr["landuse"~"^(forest|grass|meadow|reservoir)$"](${bb});nwr["leisure"="park"](${bb}););(._;>;);out body;`;
+  return `(way["highway"~"^(${[...roadTypes].join('|')})$"](${bb});node["highway"="traffic_signals"](${bb});relation["type"="restriction"](${bb});way["building"](${bb});way["building:part"](${bb});relation["building"](${bb});nwr["natural"~"^(water|wood|tree)$"](${bb});nwr["waterway"="riverbank"](${bb});nwr["landuse"~"^(forest|grass|meadow|reservoir)$"](${bb});nwr["leisure"="park"](${bb}););(._;>;);out body;`;
 }
 class MapRequestError extends Error {
   constructor(

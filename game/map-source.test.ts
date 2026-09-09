@@ -87,6 +87,7 @@ it('запрашивает только используемые автомоб�
   expect(q).not.toContain('way["highway"]');
   expect(q).toContain('way["building:part"]');
   expect(q).toContain('relation["type"="restriction"]');
+  expect(q).toContain('nwr["waterway"="riverbank"]');
   expect(q).toContain('(._;>;);out body;');
 });
 it('превышение времени выполнения делит участок и сохраняет успешные части', async () => {

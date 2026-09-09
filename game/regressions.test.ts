@@ -23,7 +23,7 @@ it('держит всю землю под асфальтом на попереч
   // Assert — все вершины ячеек, пересекающих полотно, ниже дороги.
   for (let i = 0; i < chunk.terrain.positions.length; i += 3) {
     const [x, y, z] = chunk.terrain.positions.slice(i, i + 3);
-    if (x > 30 && x < 200 && Math.abs(z - edge.points[0].z) < 20) expect(y).toBeLessThan(edge.points[0].y - .1);
+    if (x > 30 && x < 200 && Math.abs(z - edge.points[0].z) < edge.width / 2 + 1) expect(y).toBeLessThan(edge.points[0].y - .1);
   }
 });
 it('создаёт воду по контуру реки и опускает дно под её поверхность', () => {

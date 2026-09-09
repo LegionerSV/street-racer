@@ -1,2 +1,2 @@
 // Попадает и в лог загрузки, и в диагностику сцены: помогает распознать старую сборку.
-export const MAP_BUILD_VERSION = '2026-09-09-terrain-2-bridge-4';
+export const MAP_BUILD_VERSION = '2026-09-09-terrain-4-bridge-4';

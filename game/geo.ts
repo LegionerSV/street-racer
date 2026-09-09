@@ -67,6 +67,9 @@ export function smoothElevation(grid: ElevationGrid): ElevationGrid {
     }
     opened=next;
   }
+  // Невысокие естественные подъёмы не похожи на здания или кроны: широкое
+  // морфологическое окно не должно растягивать соседнюю низину поверх них.
+  opened=Float32Array.from(opened,(height,i)=>grid.values[i]-height>5?height:grid.values[i]);
   // Медиана удаляет одиночные выбросы до размытия: иначе пик превращается в широкий холм.
   // Симметричное окно сохраняет высоты плоскости и масштаб протяжённых склонов.
   let values = new Float32Array(grid.values.length);
