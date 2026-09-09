@@ -11,6 +11,7 @@ export type Restriction = { fromWay: number; toWay: number; via: number; viaWays
 export type Building = { id: number; osmType?: 'way'|'relation'; footprint: Point[]; holes?: Point[][]; height: number; minHeight?: number; part?: boolean; colour: number; roof: string; material?: string; facadeColour?: string; levels?: number; kind?: string; roofHeight?: number; roofDirection?: number; roofOrientation?: string };
 export type Area = { id: number; points: Point[]; kind: 'water' | 'park'; holes?: Point[][]; railing?: 'river' | 'park' };
 export type Route = { id: string; kind: 'sprint' | 'circuit'; title: string; edges: number[]; points: Point[]; cumulative: number[]; length: number; laps: number };
+export type RacerTraits = { accuracy: number; aggression: number; reaction: number };
 export type World = { center: Center; nodes: RoadNode[]; edges: Edge[]; restrictions: Restriction[]; buildings: Building[]; areas: Area[]; trees: Point[]; elevation: ElevationGrid; drivingSide: 'right' | 'left'; warnings: string[]; heightDatum?: number; spawnEdge: number; routes: Route[]; loadedTiles?: string[] };
 export type MeshData = { positions: number[]; indices: number[]; normals?: number[]; colors?: number[]; uvs?: number[] };
 export type Breakable = { kind: 'pole' | 'fence'; point: Point; heading: number; length?: number };

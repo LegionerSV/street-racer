@@ -1,5 +1,7 @@
 import { pathLengths, pointAt } from './geo';
 import type { Point, Route, World } from './types';
+import type { RacerTraits } from './types';
+import { DEFAULT_RACER_TRAITS } from './racing-ai';
 
 export const RACER_COLOURS = ['#d7e0df', '#e25542', '#794fd0'];
 export type OpponentMarker = {
@@ -8,6 +10,8 @@ export type OpponentMarker = {
   heading: number;
   colour: string;
   finished: boolean;
+  progress?: number;
+  traits?: RacerTraits;
 };
 export function opponentMarkers(
   agents: {
@@ -15,7 +19,7 @@ export function opponentMarkers(
     point: Point;
     heading: number;
     visual?: { root: { position: Point } };
-    race?: { finished: boolean };
+    race?: { finished: boolean; progress?: number; traits?: RacerTraits };
   }[],
 ): OpponentMarker[] {
   return agents
@@ -26,6 +30,8 @@ export function opponentMarkers(
       heading: a.heading,
       colour: RACER_COLOURS[a.id % RACER_COLOURS.length],
       finished: a.race!.finished,
+      progress: a.race!.progress || 0,
+      traits: a.race!.traits || DEFAULT_RACER_TRAITS,
     }));
 }
 // Позиция одна для трёхмерного маркера и миникарты; индекс списка на неё не влияет.

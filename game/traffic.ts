@@ -1,6 +1,6 @@
 import {RACER_COLOURS} from './race-map-markers';
 import { PhysicsAggregate, PhysicsMotionType, PhysicsShapeType, Quaternion, Scene, Vector3 } from '@babylonjs/core';
-import type { Edge, Point, Route, World } from './types';
+import type { Edge, Point, RacerTraits, Route, World } from './types';
 import { allowedTurn, outgoing, advanceTurnHistory } from './network';
 import { clamp, distance2, seeded } from './geo';
 import { laneOffsets } from './lanes';
@@ -8,9 +8,10 @@ import { signalPhase } from './simulation';
 import { smoothPath, samplePath, type DrivingPath } from './driving-path';
 import { createTrafficCar, setCarLights, type CarVisual, type CarKind } from './visuals';
 import {edgeKey} from './world-update';
+import { createRacerTraits, DEFAULT_RACER_TRAITS, racingLineOffset } from './racing-ai';
 
 type Plan={ids:number[]; ends:number[]; path:DrivingPath; total:number; exhausted:boolean};
-type Agent={id:number;edge:number;distance:number;speed:number;point:Point;heading:number;stuck:number;visual?:CarVisual;body?:PhysicsAggregate;plan?:Plan;travel?:number;laneOffset?:number;passing?:boolean;dynamic?:boolean;impact?:number;turn?:number;race?:{route:Route;index:number;lap:number;finished:boolean;progress:number;finishTime?:number}};
+type Agent={id:number;edge:number;distance:number;speed:number;point:Point;heading:number;stuck:number;visual?:CarVisual;body?:PhysicsAggregate;plan?:Plan;travel?:number;laneOffset?:number;avoidanceOffset?:number;avoidanceWay?:number;dynamic?:boolean;impact?:number;turn?:number;race?:{route:Route;index:number;lap:number;finished:boolean;progress:number;traits?:RacerTraits;finishTime?:number}};
 export function trafficBudget(meters:number,density:'light'|'city'|'rush'='city',mobile=false){return Math.min(mobile?(density==='rush'?48:density==='city'?36:20):density==='rush'?220:density==='city'?144:72,Math.max(0,Math.floor(meters/(density==='rush'?22:density==='city'?35:70))));}
 export class Traffic {
   agents:Agent[]=[];wetness=0;
@@ -26,7 +27,7 @@ export class Traffic {
     this.agents=this.agents.filter(a=>{
       const id=ids.get(edgeKey(this.world.edges[a.edge]));
       if(id===undefined){this.hide(a);return false;}
-      a.edge=id;a.plan=undefined;a.travel=a.distance;return true;
+      a.edge=id;a.plan=undefined;a.travel=a.distance;a.avoidanceOffset=undefined;a.avoidanceWay=undefined;return true;
     });
     this.world=world;this.signals=new Set(world.nodes.filter(n=>n.signal).map(n=>n.id));this.reservations.clear();
   }
@@ -49,9 +50,18 @@ export class Traffic {
     agent.plan={ids,ends,total:length,path:smoothPath(points,Math.min(10,this.world.edges[agent.edge].width*.75)), exhausted:deadEnd};
     agent.travel??=agent.distance;
   }
-  private lane(agent:Agent,edge:Edge){
+  private homeLane(agent:Agent,edge:Edge){
     const offsets=laneOffsets(edge,this.world.drivingSide);
-    return offsets[(agent.id+(agent.passing?1:0))%offsets.length]??0;
+    return offsets[agent.id%offsets.length]??0;
+  }
+  private preferredLane(agent:Agent,edge:Edge){return agent.race&&agent.plan?racingLineOffset(agent.plan.path,agent.travel||0,edge,agent.race.traits||DEFAULT_RACER_TRAITS,agent.id):this.homeLane(agent,edge);}
+  private lane(agent:Agent,edge:Edge){return agent.avoidanceOffset!==undefined&&agent.avoidanceWay===edge.way&&!edge.bridge&&!edge.tunnel?agent.avoidanceOffset:this.preferredLane(agent,edge);}
+  private avoidanceLanes(agent:Agent,edge:Edge){
+    const current=this.lane(agent,edge),legal=laneOffsets(edge,this.world.drivingSide).filter(offset=>Math.abs(offset-current)>.2).sort((a,b)=>Math.abs(a-current)-Math.abs(b-current));
+    if(!agent.race||edge.bridge||edge.tunnel)return legal;
+    const shoulder=edge.width/2+.35+(agent.race?.traits?.aggression??DEFAULT_RACER_TRAITS.aggression)*1.15;
+    const shoulders=[shoulder,-shoulder].sort((a,b)=>Math.abs(a-current)-Math.abs(b-current));
+    return [...legal,...shoulders].filter((offset,index,all)=>all.findIndex(other=>Math.abs(other-offset)<.2)===index);
   }
   private sample(agent:Agent,dt=1){
     if(!agent.plan)this.makePlan(agent);
@@ -84,13 +94,13 @@ export class Traffic {
   startRace(route:Route){
     this.clearRacers();
     for(let i=0;i<3;i++){
-      const a:Agent={id:i,edge:route.edges[0],distance:18+i*13,speed:0,point:{x:0,y:0,z:0},heading:0,stuck:0,race:{route,index:0,lap:1,finished:false,progress:0}};
+      const a:Agent={id:i,edge:route.edges[0],distance:18+i*13,speed:0,point:{x:0,y:0,z:0},heading:0,stuck:0,race:{route,index:0,lap:1,finished:false,progress:0,traits:createRacerTraits()}};
       this.sample(a);this.agents.push(a);
     }
   }
   clearRacers(){for(const a of this.agents.filter(a=>a.race))this.hide(a);this.agents=this.agents.filter(a=>!a.race);}
   get racers(){return this.agents.filter(a=>a.race);}
-  update(dt:number,time:number,player:Point,_playerSpeed:number,raceRunning:boolean,raceElapsed=0){
+  update(dt:number,time:number,player:Point,playerSpeed:number,raceRunning:boolean,raceElapsed=0){
     this.spawnTimer-=dt;
     if(this.spawnTimer<=0){
       this.spawnTimer=1;
@@ -115,21 +125,29 @@ export class Traffic {
         if(cut>0){const removed=a.plan!.ends[cut-1];a.plan!.ids.splice(0,cut);a.travel=(a.travel||0)-removed;}
         this.makePlan(a);
       }
-      const plan=a.plan!,edge=this.world.edges[a.edge];
-      let gap=Infinity,lead:typeof snapshot[number]|undefined;
+      const plan=a.plan!,edge=this.world.edges[a.edge],traits=a.race?.traits||DEFAULT_RACER_TRAITS;
+      if(a.avoidanceWay!==undefined&&(a.avoidanceWay!==edge.way||edge.bridge||edge.tunnel)){a.avoidanceOffset=undefined;a.avoidanceWay=undefined;}
+      let gap=Infinity,leadSpeed=Infinity;const scanDistance=a.race?28+traits.reaction*42:60;
       for(const b of snapshot)if(b.agent!==a&&Math.abs(b.point.y-a.point.y)<2.5){
         const dx=b.point.x-a.point.x,dz=b.point.z-a.point.z,along=dx*Math.sin(a.heading)+dz*Math.cos(a.heading),lateral=Math.abs(dx*Math.cos(a.heading)-dz*Math.sin(a.heading));
         const aligned=Math.cos(b.heading-a.heading)>.45;
-        if(aligned&&along>0&&along<60&&lateral<2.05&&along<gap){gap=along;lead=b;}
-      }
-      if(a.race&&lead&&lead.speed<a.speed+3&&gap<36&&laneOffsets(edge,this.world.drivingSide).length>1){
-        const old=a.passing;a.passing=!a.passing;const lane=this.lane(a,edge);a.passing=old;
-        const shift=lane-(a.laneOffset||0);
-        const clear=snapshot.every(b=>{if(b.agent===a||Math.abs(b.point.y-a.point.y)>3)return true;const dx=b.point.x-a.point.x,dz=b.point.z-a.point.z;const ahead=dx*Math.sin(a.heading)+dz*Math.cos(a.heading),lateral=dx*Math.cos(a.heading)-dz*Math.sin(a.heading)-shift;return ahead< -14||ahead>45||Math.abs(lateral)>2.5;});
-        if(clear)a.passing=!a.passing;
+        if(aligned&&along>0&&along<scanDistance&&lateral<2.05&&along<gap){gap=along;leadSpeed=b.speed;}
       }
       const dx=player.x-a.point.x,dz=player.z-a.point.z,along=dx*Math.sin(a.heading)+dz*Math.cos(a.heading),lateral=Math.abs(dx*Math.cos(a.heading)-dz*Math.sin(a.heading));
-      if(along>0&&lateral<2.05&&Math.abs(player.y-a.point.y)<2.5)gap=Math.min(gap,along);
+      if(along>0&&lateral<2.05&&Math.abs(player.y-a.point.y)<2.5&&along<gap){gap=along;leadSpeed=playerSpeed;}
+      const laneClear=(lane:number)=>{
+        const shift=lane-(a.laneOffset??this.lane(a,edge)),margin=a.race?2.35-traits.aggression*.75:2.5,rear=a.race?-(16-traits.aggression*10):-14,front=a.race?45-traits.aggression*12:45;
+        const clear=snapshot.every(b=>{if(b.agent===a||Math.abs(b.point.y-a.point.y)>3)return true;const dx=b.point.x-a.point.x,dz=b.point.z-a.point.z;const ahead=dx*Math.sin(a.heading)+dz*Math.cos(a.heading),lateral=dx*Math.cos(a.heading)-dz*Math.sin(a.heading)-shift;return ahead<rear||ahead>front||Math.abs(lateral)>margin;});
+        const playerLateral=dx*Math.cos(a.heading)-dz*Math.sin(a.heading)-shift;
+        const playerClear=Math.abs(player.y-a.point.y)>3||along<rear||along>front||Math.abs(playerLateral)>margin;
+        return clear&&playerClear;
+      };
+      if(leadSpeed<a.speed+3&&gap<(a.race?16+traits.reaction*30:36)){
+        const lane=this.avoidanceLanes(a,edge).find(laneClear);
+        if(lane!==undefined){a.avoidanceOffset=lane;a.avoidanceWay=edge.way;}
+      }else if(a.avoidanceOffset!==undefined&&laneClear(this.preferredLane(a,edge))){
+        a.avoidanceOffset=undefined;a.avoidanceWay=undefined;
+      }
       let stop=plan.total-(a.travel||0)-3;
       // Ищем светофор на нескольких коротких OSM-рёбрах вперёд.
       const index=plan.ends.findIndex(end=>end>(a.travel||0));
@@ -147,9 +165,10 @@ export class Traffic {
       }
       const look=samplePath(plan.path,Math.min(plan.total,(a.travel||0)+Math.max(12,a.speed*1.3)),true);
       const angle=Math.abs(Math.atan2(Math.sin(look.heading-a.heading),Math.cos(look.heading-a.heading)));
-      const curve=angle/Math.max(12,a.speed*1.3),cornerSpeed=Math.sqrt((a.race?7:3.4)*(1-this.wetness*.4)/Math.max(.001,curve));
+      const curve=angle/Math.max(12,a.speed*1.3),cornerSpeed=Math.sqrt((a.race?5.8+traits.accuracy*2.4:3.4)*(1-this.wetness*.4)/Math.max(.001,curve));
       const limit=Math.min(a.race?60:edge.speed*(.8+seeded(a.id)*.2),cornerSpeed);
-      let target=Math.max(0,Math.min(limit,Math.sqrt(2*(a.race?8:4)*Math.max(0,stop-1)),(gap-(a.race?4:5))/(a.race?.65:1.4)));
+      const ramming=!!a.race&&traits.aggression>.86&&gap<20&&leadSpeed<a.speed&&seeded(a.id*991+Math.floor(time*2))>.94;
+      let target=Math.max(0,Math.min(limit,Math.sqrt(2*(a.race?8:4)*Math.max(0,stop-1)),ramming?Infinity:(gap-(a.race?4:5))/(a.race?.65:1.4)));
       if(a.race&&!raceRunning)target=0;
       const oldSpeed=a.speed,accel=a.race?9500/1200*(1-a.speed/90):2.7;
       a.speed=Math.max(0,a.speed+clamp(target-a.speed,-(a.race?11:7)*dt,accel*(1-this.wetness*.35)*dt));

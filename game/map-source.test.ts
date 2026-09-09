@@ -249,6 +249,28 @@ it('504 из журнала занятого диспетчера повторя
   );
 });
 
+it('обычный nginx 504 сразу переключается на другой сервер', async () => {
+  // Arrange
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response('<h1>504 Gateway Time-out</h1>', { status: 504 }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({ elements: [{ type: 'node', id: 27 }] }),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  // Act
+  const result = await new MapSource(new AbortController().signal).cell(
+    box,
+    'Карта',
+  );
+  // Assert
+  expect(result.map((e) => e.id)).toEqual([27]);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher.mock.calls[0][0]).not.toBe(fetcher.mock.calls[1][0]);
+});
+
 it('очередь ждёт окончания ответа и общей паузы 429 перед следующим участком', async () => {
   // Arrange
   vi.useFakeTimers();

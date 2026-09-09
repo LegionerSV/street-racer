@@ -93,7 +93,7 @@ export class MapSource {
     private store?: Store,
   ) {
     this.log?.start('План загрузки карты', {
-      policyVersion: 5,
+      policyVersion: 6,
       mapConcurrency: 1,
     })();
   }
@@ -323,7 +323,8 @@ export class MapSource {
             (last instanceof MapRequestError ? last.retryAfterMs : 5000);
           if (attempts[endpointIndex] >= 2) break;
         } else if (
-          (httpStatus === 504 ||
+          ((httpStatus === 504 &&
+            /Dispatcher_Client/i.test(serverMessage || '')) ||
             (last instanceof MapRequestError && last.split)) &&
           attempts[endpointIndex] < 2
         ) {
@@ -334,10 +335,12 @@ export class MapSource {
           // Неответивший сервер больше не используем в этой загрузке.
           this.unavailable.add(endpointIndex);
           this.preferred = (endpointIndex + 1) % MAP_ENDPOINTS.length;
-          this.readyAt[this.preferred] = Math.max(
-            this.readyAt[this.preferred],
-            Date.now() + 2500,
-          );
+          // Обычный gateway error означает сбой endpoint, а не квоту.
+          if (![502, 503, 504].includes(httpStatus || 0))
+            this.readyAt[this.preferred] = Math.max(
+              this.readyAt[this.preferred],
+              Date.now() + 2500,
+            );
         }
       }
     }

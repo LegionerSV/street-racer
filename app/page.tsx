@@ -15,9 +15,20 @@ import { WorldWorker } from '@/game/worker-client';
 import type { Game } from '@/game/runtime';
 import type { HUD, World, Settings } from '@/game/types';
 import { Minimap } from '@/game/Minimap';
+import { RacerClover } from '@/game/RacerClover';
+import { racerTraitWords } from '@/game/racing-ai';
 import { defaultSettings, readSettings, saveSettings, recordKey, saveRecord } from '@/game/storage';
 import { formatTime } from '@/game/simulation';
 const INITIAL_CENTER = { lat: 59.934, lon: 30.335 };
+
+function RaceRoster({hud}:{hud:HUD}){
+  if(!hud.race)return null;
+  let rank=1;const opponents=[...(hud.opponents||[])].sort((a,b)=>(b.progress||0)-(a.progress||0)).map(opponent=>{if(rank===hud.race!.position)rank++;return{...opponent,rank:rank++};});
+  return <aside className={`race-roster ${hud.race.phase==='countdown'?'prestart':''}`}><header><b>{hud.race.phase==='countdown'?'СОПЕРНИКИ':'ПОЗИЦИИ'}</b><span><i className="accuracy"/>ТОЧН <i className="aggression"/>АГР <i className="reaction"/>РЕАК</span></header>{opponents.map(opponent=>{
+    const words=racerTraitWords(opponent.traits!);
+    return <div className="racer-row" key={opponent.id}><strong>{opponent.rank}</strong><i className="racer-colour" style={{background:opponent.colour}}/><div><b>СОПЕРНИК {opponent.id+1}</b><small>{words.join(' · ')}</small></div><RacerClover traits={opponent.traits!} size={38}/></div>;
+  })}</aside>;
+}
 
 export default function Home() {
   const mapEl = useRef<HTMLDivElement>(null);
@@ -171,6 +182,7 @@ export default function Home() {
     {debug && <div className="debug-panel"><button onClick={() => gameRef.current?.startDriveTest()}>Автопроезд 90 с / стоп</button><button onClick={() => gameRef.current?.visitStructure('bridge')}>Проверить мост</button><button onClick={() => gameRef.current?.visitStructure('tunnel')}>Проверить тоннель</button><button onClick={() => gameRef.current?.resetPerformance()}>Сбросить замеры</button><button onClick={() => gameRef.current?.exportPerformance()}>Скачать замеры</button><pre>{JSON.stringify(diagnostics, null, 2)}</pre></div>}
     <header className="hud-header"><div><div className="eyebrow">STREET RACER / {hud.race ? 'ЗАЕЗД' : 'СВОБОДНАЯ ЕЗДА'}</div><h2>{hud.race?.route.title || hud.street || 'Твой город. Твои правила.'}</h2>{hud.lanes && <small className="lane-status">{hud.lanes}</small>}</div><div className="hud-actions"><span className="weather-status">{String(Math.floor(hud.hour || 0)).padStart(2,'0')}:{String(Math.floor((hud.hour || 0)%1*60)).padStart(2,'0')} · {hud.weather}{(hud.wetness || 0) > .2 && <small> МОКРАЯ ДОРОГА</small>}</span><span>{hud.fps} <small>FPS</small></span><Button variant="outline" size="icon" onClick={() => gameRef.current?.togglePause()} aria-label="Пауза и настройки"><Pause size={18} /></Button></div></header>
     {hud.race && <div className="race-stats"><div><small>ПОЗИЦИЯ</small><b>{hud.race.position}<i>/ 4</i></b></div><div><small>{hud.race.route.kind === 'circuit' ? 'КРУГ' : 'ПРОГРЕСС'}</small><b>{hud.race.route.kind === 'circuit' ? `${hud.race.lap} / 3` : `${Math.round(hud.race.checkpoint / hud.race.route.points.length * 100)}%`}</b></div><div><small>ВРЕМЯ</small><b>{formatTime(hud.race.elapsed)}</b></div></div>}
+    <RaceRoster hud={hud}/>
     {hud.navigation && <div className="navigation-hint">{hud.navigation.direction==='left'?<CornerUpLeft/>:<CornerUpRight/>}<div><small>ПОВОРОТ</small><b>{hud.navigation.direction==='left'?'НАЛЕВО':'НАПРАВО'}</b><span>через {Math.max(10,Math.round(hud.navigation.distance/10)*10)} м</span></div></div>}
     {hud.race?.phase === 'countdown' && <div className="countdown">{Math.max(1, Math.ceil(hud.race.countdown))}<span>ПРИГОТОВЬСЯ</span></div>}
     {hud.loading && <output className="streaming-banner">{hud.mapStatus || "Подготавливаем улицы впереди…"}</output>}
