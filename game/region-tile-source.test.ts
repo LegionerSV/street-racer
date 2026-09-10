@@ -111,7 +111,10 @@ it('определяет сторону движения по центру гл�
 
   // Assert
   expect(result.kind).toBe('hit');
-  expect(drivingSide).toHaveBeenCalledExactlyOnceWith(sourceTileCenter(tileId));
+  expect(drivingSide).toHaveBeenCalledExactlyOnceWith(
+    sourceTileCenter(tileId),
+    expect.any(AbortSignal),
+  );
   if (result.kind === 'hit')
     expect(result.tile.osmTimestamp).toBe(new Date(123456789).toISOString());
   if (result.kind === 'hit')

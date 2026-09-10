@@ -7,18 +7,10 @@ import {
   S3TileSource,
   type ArtifactStore,
 } from './tile-source';
-import { toGeo, toLocal } from './geo';
-import {
-  sourceTileBounds,
-  sourceTileCenter,
-  type SourceTileBounds,
-  type SourceTileId,
-} from './source-tiles';
-import {
-  TILE_ARTIFACT_SCHEMA_VERSION,
-  TILE_BUILD_VERSION,
-  type TileArtifactV1,
-} from './tile-artifact';
+import { toLocal } from './geo';
+import { type SourceTileId } from './source-tiles';
+import { type TileArtifactV1 } from './tile-artifact';
+import { prepareTileArtifact } from './tile-preparation';
 import type { Center, ElevationGrid, OSMElement, RegionData } from './types';
 
 export type MapTile = TileArtifactV1;
@@ -31,6 +23,7 @@ type RegionTileSourceOptions = {
   tileBaseUrl?: string;
   tileFetch?: (input: string, init?: RequestInit) => Promise<Response>;
   tileRequestTimeoutMs?: number;
+  now?: () => Date;
   catalogCache?: Map<string, Promise<import('./tile-source').TileCatalogV1>>;
   onSourceResult?: (
     tileId: SourceTileId,
@@ -41,6 +34,7 @@ type RegionTileSourceOptions = {
   mapCell: (
     box: MapBox,
     stage: string,
+    signal: AbortSignal,
   ) => Promise<{ elements: OSMElement[]; savedAt: number }>;
   loadElevation: (
     center: Center,
@@ -49,35 +43,9 @@ type RegionTileSourceOptions = {
   ) => Promise<ElevationGrid>;
   drivingSide: (
     center: Center,
+    signal: AbortSignal,
   ) => Promise<{ side: RegionData['drivingSide']; resolved: boolean }>;
 };
-
-function bufferedBounds(id: SourceTileId, margin: number): SourceTileBounds {
-  const core = sourceTileBounds(id),
-    center = sourceTileCenter(id),
-    southWest = toGeo(
-      {
-        x: toLocal(center.lat, core.west, center).x - margin,
-        y: 0,
-        z: toLocal(core.south, center.lon, center).z - margin,
-      },
-      center,
-    ),
-    northEast = toGeo(
-      {
-        x: toLocal(center.lat, core.east, center).x + margin,
-        y: 0,
-        z: toLocal(core.north, center.lon, center).z + margin,
-      },
-      center,
-    );
-  return {
-    south: southWest.lat,
-    west: southWest.lon,
-    north: northEast.lat,
-    east: northEast.lon,
-  };
-}
 
 export function createRegionTileSource(options: RegionTileSourceOptions) {
   const store: ArtifactStore = {
@@ -97,36 +65,23 @@ export function createRegionTileSource(options: RegionTileSourceOptions) {
       timeoutMs: options.tileRequestTimeoutMs,
       catalogCache: options.catalogCache,
     }),
-    fallback = new OverpassTileSource(async (id, signal) => {
-      signal.throwIfAborted();
-      const coreBounds = sourceTileBounds(id),
-        tileCenter = sourceTileCenter(id),
-        bounds = bufferedBounds(id, options.tileMargin),
-        [map, elevation, drivingSide] = await Promise.all([
-          options.mapCell(bounds, `Source-тайл ${id.z}/${id.x}/${id.y}`),
-          options.loadElevation(tileCenter, signal, {
-            size: options.elevationSize,
-            width: options.elevationWidth,
-            offsetX: 0,
-            offsetZ: 0,
-          }),
-          options.drivingSide(tileCenter),
-        ]);
-      signal.throwIfAborted();
-      return {
-        schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
-        tileBuildVersion: TILE_BUILD_VERSION,
-        ...id,
-        coreBounds,
-        bufferedBounds: bounds,
-        generatedAt: new Date().toISOString(),
-        osmTimestamp: new Date(map.savedAt).toISOString(),
-        drivingSide: drivingSide.side,
-        drivingSideSource: drivingSide.resolved ? 'tile-center' : 'default',
-        elements: map.elements,
-        elevation,
-      };
-    });
+    fallback = new OverpassTileSource((id, signal) =>
+      prepareTileArtifact(
+        id,
+        signal,
+        {
+          tileMargin: options.tileMargin,
+          elevationSize: options.elevationSize,
+          elevationWidth: options.elevationWidth,
+          generatedAt: (options.now?.() ?? new Date()).toISOString(),
+        },
+        {
+          map: options.mapCell,
+          elevation: options.loadElevation,
+          drivingSide: options.drivingSide,
+        },
+      ),
+    );
   return new CompositeTileSource(
     [cache, remote, fallback],
     (id) => `${id.z}/${id.x}/${id.y}`,
