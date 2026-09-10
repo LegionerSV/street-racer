@@ -1,22 +1,22 @@
 import { cacheGet, cachePut, loadElevations, validateCenter } from './data';
+import { criticalChunks } from './chunks';
 import { sampleElevation, toGeo, toLocal } from './geo';
 import type { LoadingLog } from './loading-log';
-import { abortableDelay, MapSource } from './map-source';
+import { MapSource } from './map-source';
 import {
   createRegionTileSource,
   tileElevationForSession,
   type MapTile,
 } from './region-tile-source';
 import {
-  SOURCE_TILE_ZOOM,
   latLonToSourceTile,
-  normalizeSourceTileX,
   parseSourceTileKey,
   sourceTileCenter,
   sourceTileKey,
 } from './source-tiles';
 import {
   chunkHasCoverage,
+  sourceTileLocalBounds,
   sourceTileKeysForLocalBounds,
 } from './stream-coverage';
 import type { Center, OSMElement, Point, RegionData, Settings } from './types';
@@ -27,19 +27,57 @@ export const ELEVATION_TILE_SIZE = 2600;
 export const ELEVATION_TILE_WIDTH = 131;
 export type { MapTile } from './region-tile-source';
 
-export function startupTiles(center: Center) {
-  const tile = latLonToSourceTile(center.lat, center.lon),
-    result: string[] = [];
-  for (let x = tile.x - 1; x <= tile.x + 1; x++)
-    for (let y = tile.y - 1; y <= tile.y + 1; y++)
-      result.push(
-        sourceTileKey({
-          z: SOURCE_TILE_ZOOM,
-          x: normalizeSourceTileX(x, SOURCE_TILE_ZOOM),
-          y,
-        }),
-      );
-  return result;
+export type MapStreamingPolicy = {
+  blockingRadiusMeters: number;
+  targetRadiusMeters: number;
+  forwardTileRows: number;
+  maxConcurrentTiles: number;
+  maxElements: number;
+};
+
+const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
+  {
+    mobile: {
+      blockingRadiusMeters: 800,
+      targetRadiusMeters: 2500,
+      forwardTileRows: 1,
+      maxConcurrentTiles: 2,
+      maxElements: 180000,
+    },
+    low: {
+      blockingRadiusMeters: 900,
+      targetRadiusMeters: 2700,
+      forwardTileRows: 1,
+      maxConcurrentTiles: 2,
+      maxElements: 360000,
+    },
+    medium: {
+      blockingRadiusMeters: 1000,
+      targetRadiusMeters: 3000,
+      forwardTileRows: 2,
+      maxConcurrentTiles: 3,
+      maxElements: 360000,
+    },
+    high: {
+      blockingRadiusMeters: 1000,
+      targetRadiusMeters: 3000,
+      forwardTileRows: 2,
+      maxConcurrentTiles: 4,
+      maxElements: 360000,
+    },
+  };
+
+export function mapStreamingPolicy(quality: Settings['quality']) {
+  return MAP_STREAMING_POLICIES[quality];
+}
+
+export function startupTiles(center: Center, radiusMeters = 1000) {
+  return sourceTileKeysForLocalBounds(center, {
+    minX: -radiusMeters,
+    maxX: radiusMeters,
+    minZ: -radiusMeters,
+    maxZ: radiusMeters,
+  });
 }
 
 export const mapTileAt = (p: Pick<Point, 'x' | 'z'>, center: Center) => {
@@ -54,34 +92,52 @@ export function tileReady(loaded: Set<string>, chunk: string, center: Center) {
 export function tileOrder(
   p: Point,
   heading: number,
-  side: number,
+  radiusMeters: number,
+  forwardTileRows: number,
   center: Center,
 ) {
   const geo = toGeo(p, center),
     current = latLonToSourceTile(geo.lat, geo.lon),
-    half = Math.floor(side / 2),
+    currentBounds = sourceTileLocalBounds(current, center),
+    tileSpanX = currentBounds.maxX - currentBounds.minX,
+    tileSpanZ = currentBounds.maxZ - currentBounds.minZ,
+    forwardX = Math.sin(heading) * tileSpanX * forwardTileRows,
+    forwardZ = Math.cos(heading) * tileSpanZ * forwardTileRows,
+    keys = sourceTileKeysForLocalBounds(center, {
+      minX: p.x - radiusMeters + Math.min(0, forwardX),
+      maxX: p.x + radiusMeters + Math.max(0, forwardX),
+      minZ: p.z - radiusMeters + Math.min(0, forwardZ),
+      maxZ: p.z + radiusMeters + Math.max(0, forwardZ),
+    }),
+    blocking = new Set(
+      criticalChunks(p, heading, true).flatMap((key) => {
+        const [x, z] = key.split(',').map(Number);
+        return sourceTileKeysForLocalBounds(center, {
+          minX: x * 250,
+          maxX: (x + 1) * 250,
+          minZ: z * 250,
+          maxZ: (z + 1) * 250,
+        });
+      }),
+    ),
     cells: { key: string; score: number }[] = [];
-  for (let dx = -half; dx < side - half; dx++)
-    for (let dy = -half; dy < side - half; dy++) {
-      const id = {
-          z: current.z,
-          x: normalizeSourceTileX(current.x + dx, current.z),
-          y: current.y + dy,
-        },
-        tileCenter = sourceTileCenter(id),
-        local = toLocal(tileCenter.lat, tileCenter.lon, center),
-        offsetX = local.x - p.x,
-        offsetZ = local.z - p.z,
-        distance = Math.hypot(offsetX, offsetZ);
-      cells.push({
-        key: sourceTileKey(id),
-        score:
-          distance -
-          ((offsetX * Math.sin(heading) + offsetZ * Math.cos(heading)) /
-            (distance || 1)) *
-            600,
-      });
-    }
+  for (const key of keys) {
+    const id = parseSourceTileKey(key),
+      tileCenter = sourceTileCenter(id),
+      local = toLocal(tileCenter.lat, tileCenter.lon, center),
+      offsetX = local.x - p.x,
+      offsetZ = local.z - p.z,
+      distance = Math.hypot(offsetX, offsetZ);
+    cells.push({
+      key,
+      score:
+        (blocking.has(key) ? -1_000_000 : 0) +
+        distance -
+        ((offsetX * Math.sin(heading) + offsetZ * Math.cos(heading)) /
+          (distance || 1)) *
+          600,
+    });
+  }
   return cells
     .sort((a, b) => a.score - b.score || a.key.localeCompare(b.key))
     .map((cell) => cell.key);
@@ -150,8 +206,10 @@ export class RegionStream {
     error?: string;
     elements?: number;
   }[] = [];
-  readonly windowSide: number;
+  readonly policy: MapStreamingPolicy;
   readonly maxElements: number;
+  private blockingTileCount = 0;
+  private targetTileCount = 0;
   status = '';
 
   constructor(
@@ -159,8 +217,15 @@ export class RegionStream {
     quality: Settings['quality'],
     private log?: LoadingLog,
   ) {
-    this.windowSide = quality === 'mobile' ? 4 : 6;
-    this.maxElements = quality === 'mobile' ? 180000 : 360000;
+    this.policy = mapStreamingPolicy(quality);
+    this.maxElements = this.policy.maxElements;
+    this.log?.start('Политика окна source-тайлов', {
+      blockingRadiusMeters: this.policy.blockingRadiusMeters,
+      targetRadiusMeters: this.policy.targetRadiusMeters,
+      forwardTileRows: this.policy.forwardTileRows,
+      staticConcurrency: this.policy.maxConcurrentTiles,
+      elementLimit: this.policy.maxElements,
+    })();
     this.source = new MapSource(this.control.signal, log, {
       get: cacheGet,
       put: cachePut,
@@ -227,6 +292,16 @@ export class RegionStream {
     });
   }
 
+  private resetTileSource() {
+    this.source = new MapSource(this.control.signal, undefined, {
+      get: cacheGet,
+      put: cachePut,
+    });
+    this.sidePromises.clear();
+    this.sessionSidePromise = undefined;
+    this.tileSource = this.createTileSource();
+  }
+
   async start(
     signal: AbortSignal,
     progress: (text: string, n: number) => void,
@@ -243,11 +318,19 @@ export class RegionStream {
           ),
         300000,
       ),
-      initial = startupTiles(this.center);
+      initial = startupTiles(this.center, this.policy.blockingRadiusMeters);
     const centerTile = sourceTileKey(
       latLonToSourceTile(this.center.lat, this.center.lon),
     );
     signal.addEventListener('abort', cancel, { once: true });
+    this.blockingTileCount = initial.length;
+    this.targetTileCount = tileOrder(
+      { x: 0, y: 0, z: 0 },
+      0,
+      this.policy.targetRadiusMeters,
+      this.policy.forwardTileRows,
+      this.center,
+    ).length;
     try {
       for (const [index, key] of initial.entries()) {
         progress(
@@ -261,6 +344,7 @@ export class RegionStream {
               ? await this.sessionDrivingSide()
               : tile.drivingSide;
         this.tiles.set(key, tile);
+        this.blockingTileCount = initial.length - this.tiles.size;
         if (
           [...this.tiles.values()].reduce(
             (count, item) => count + item.elements.length,
@@ -327,23 +411,56 @@ export class RegionStream {
     latest?: () => { position: Point; heading: number },
   ): Promise<RegionData | null> {
     this.control.signal.throwIfAborted();
-    let order = tileOrder(p, heading, this.windowSide, this.center);
-    const key = order.find(
-      (candidate) =>
-        !this.tiles.has(candidate) &&
-        (this.failures.get(candidate) || 0) <= Date.now(),
+    let order = tileOrder(
+      p,
+      heading,
+      this.policy.targetRadiusMeters,
+      this.policy.forwardTileRows,
+      this.center,
     );
-    if (!key) return null;
+    this.targetTileCount = order.length;
+    this.blockingTileCount = this.missingBlockingTiles(p, heading);
+    const keys = order
+      .filter(
+        (candidate) =>
+          !this.tiles.has(candidate) &&
+          (this.failures.get(candidate) || 0) <= Date.now(),
+      )
+      .slice(0, this.policy.maxConcurrentTiles);
+    if (!keys.length) return null;
     this.status = 'Загружаем улицы вокруг';
     try {
-      const tile = await this.fetchTile(key),
+      const loaded = await Promise.allSettled(
+          keys.map(async (key) => ({ key, tile: await this.fetchTile(key) })),
+        ),
         candidate = new Map(this.tiles);
-      candidate.set(key, tile);
       const current = latest?.();
       if (current) {
         p = current.position;
         heading = current.heading;
-        order = tileOrder(p, heading, this.windowSide, this.center);
+        order = tileOrder(
+          p,
+          heading,
+          this.policy.targetRadiusMeters,
+          this.policy.forwardTileRows,
+          this.center,
+        );
+      }
+      this.targetTileCount = order.length;
+      const wanted = new Set(order);
+      for (const [index, result] of loaded.entries()) {
+        const key = keys[index];
+        if (result.status === 'rejected') {
+          this.failures.set(key, Date.now() + 30000);
+          this.record({
+            at: new Date().toISOString(),
+            tile: key,
+            error:
+              result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason),
+          });
+        } else if (wanted.has(key)) candidate.set(key, result.value.tile);
       }
       const pinned = new Set(
         sourceTileKeysForLocalBounds(this.center, {
@@ -354,49 +471,49 @@ export class RegionStream {
         }),
       );
       const kept = retainTiles(
-        candidate,
-        order,
-        pinned,
-        this.windowSide ** 2,
-        this.maxElements,
-      );
-      if (
-        !kept.has(key) ||
-        [...kept.values()].reduce(
-          (count, item) => count + item.elements.length,
+          candidate,
+          order,
+          pinned,
+          new Set([...order, ...pinned]).size,
+          this.maxElements,
+        ),
+        keptElements = [...kept.values()].reduce(
+          (count, tile) => count + tile.elements.length,
           0,
-        ) > this.maxElements
-      ) {
+        ),
+        accepted = loaded.filter(
+          (result) =>
+            result.status === 'fulfilled' &&
+            kept.has(result.value.key) &&
+            keptElements <= this.maxElements &&
+            !this.tiles.has(result.value.key),
+        );
+      if (loaded.some((result) => result.status === 'rejected'))
+        this.resetTileSource();
+      if (!accepted.length) {
+        for (const result of loaded)
+          if (result.status === 'fulfilled')
+            this.failures.set(result.value.key, Date.now() + 30000);
         this.status = 'Дальние улицы подгрузим, когда вы к ним приблизитесь.';
-        this.failures.set(key, Date.now() + 30000);
         return null;
       }
       this.tiles = kept;
-      this.failures.delete(key);
+      this.blockingTileCount = this.missingBlockingTiles(p, heading);
       this.status = '';
-      this.record({
-        at: new Date().toISOString(),
-        tile: key,
-        elements: tile.elements.length,
-      });
+      for (const result of accepted)
+        if (result.status === 'fulfilled') {
+          this.failures.delete(result.value.key);
+          this.record({
+            at: new Date().toISOString(),
+            tile: result.value.key,
+            elements: result.value.tile.elements.length,
+          });
+        }
       return this.snapshot(p);
-    } catch (error) {
+    } catch {
       this.control.signal.throwIfAborted();
-      this.failures.set(key, Date.now() + 30000);
       this.status = 'Не удалось подгрузить участок. Повторим автоматически.';
-      this.record({
-        at: new Date().toISOString(),
-        tile: key,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await abortableDelay(30000, this.control.signal);
-      this.source = new MapSource(this.control.signal, undefined, {
-        get: cacheGet,
-        put: cachePut,
-      });
-      this.sidePromises.clear();
-      this.sessionSidePromise = undefined;
-      this.tileSource = this.createTileSource();
+      this.resetTileSource();
       return null;
     } finally {
       const wanted = new Set(order);
@@ -410,10 +527,29 @@ export class RegionStream {
     if (this.messages.length > 40) this.messages.shift();
   }
 
+  private missingBlockingTiles(p: Point, heading: number) {
+    const loaded = new Set(this.tiles.keys()),
+      keys = new Set(
+        criticalChunks(p, heading, true).flatMap((key) => {
+          const [x, z] = key.split(',').map(Number);
+          return sourceTileKeysForLocalBounds(this.center, {
+            minX: x * 250,
+            maxX: (x + 1) * 250,
+            minZ: z * 250,
+            maxZ: (z + 1) * 250,
+          });
+        }),
+      );
+    return [...keys].filter((key) => !loaded.has(key)).length;
+  }
+
   diagnostics() {
     return {
       tiles: this.tiles.size,
-      tileLimit: this.windowSide ** 2,
+      blockingTiles: this.blockingTileCount,
+      targetTiles: this.targetTileCount,
+      retainedTiles: this.tiles.size,
+      policy: this.policy,
       inputElements: [...this.tiles.values()].reduce(
         (count, tile) => count + tile.elements.length,
         0,

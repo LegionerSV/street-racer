@@ -1,5 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { RegionStream, startupTiles } from './region-stream';
+import {
+  RegionStream,
+  mapStreamingPolicy,
+  startupTiles,
+} from './region-stream';
 import { MapSource } from './map-source';
 import { buildWorld } from './network';
 import { Traffic } from './traffic';
@@ -8,6 +12,7 @@ import type { RegionData, WorkerRequest, WorkerResponse } from './types';
 import * as data from './data';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -33,6 +38,8 @@ function mockedDownloads() {
     .mockResolvedValue([{ type: 'node', id: 1, lat: 0, lon: 0 }]);
   return { cells, cache, requests };
 }
+const blockingTiles = (center: RegionData['center']) =>
+  startupTiles(center, mapStreamingPolicy('mobile').blockingRadiusMeters);
 it('повторно использует глобальные артефакты из IndexedDB без загрузки OSM и DEM', async () => {
   // Arrange
   const { cells } = mockedDownloads();
@@ -53,9 +60,24 @@ it('повторно использует глобальные артефакт�
     expect(fetcher).not.toHaveBeenCalled();
     expect(data.loadElevations).not.toHaveBeenCalled();
     expect(cells).not.toHaveBeenCalled();
-    expect(result.elevation.patches).toHaveLength(9);
+    expect(result.elevation.patches).toHaveLength(
+      startupTiles(
+        firstCenter,
+        mapStreamingPolicy('mobile').blockingRadiusMeters,
+      ).length,
+    );
     expect(result.center).toEqual(nearbyCenter);
-    expect(startupTiles(firstCenter)).toEqual(startupTiles(nearbyCenter));
+    expect(
+      startupTiles(
+        firstCenter,
+        mapStreamingPolicy('mobile').blockingRadiusMeters,
+      ),
+    ).toEqual(
+      startupTiles(
+        nearbyCenter,
+        mapStreamingPolicy('mobile').blockingRadiusMeters,
+      ),
+    );
     expect(result.elements).toEqual([{ type: 'node', id: 1, lat: 0, lon: 0 }]);
   } finally {
     next.dispose();
@@ -76,9 +98,11 @@ it('не использует старый кэш района с ключом, 
     const result = await stream.start(new AbortController().signal, () => {});
     // Assert
     expect(result.drivingSide).toBe('right');
-    expect(result.loadedTiles).toHaveLength(9);
-    expect(cells).toHaveBeenCalledTimes(9);
-    expect(requests).toHaveBeenCalledTimes(9);
+    expect(result.loadedTiles).toHaveLength(
+      blockingTiles(legacy.center).length,
+    );
+    expect(cells).toHaveBeenCalledTimes(blockingTiles(legacy.center).length);
+    expect(requests).toHaveBeenCalledTimes(blockingTiles(legacy.center).length);
   } finally {
     stream.dispose();
   }
@@ -96,8 +120,8 @@ it('не переносит просроченный старый район в�
     // Act
     await stream.start(new AbortController().signal, () => {});
     // Assert
-    expect(cells).toHaveBeenCalledTimes(9);
-    expect(requests).toHaveBeenCalledTimes(9);
+    expect(cells).toHaveBeenCalledTimes(blockingTiles(legacy.center).length);
+    expect(requests).toHaveBeenCalledTimes(blockingTiles(legacy.center).length);
   } finally {
     stream.dispose();
   }
@@ -115,9 +139,13 @@ it('не блокирует прибрежный старт, если центр
     // Act
     const result = await stream.start(new AbortController().signal, () => {});
     // Assert
-    expect(result.loadedTiles).toHaveLength(9);
+    expect(result.loadedTiles).toHaveLength(
+      blockingTiles(result.center).length,
+    );
     expect(result.drivingSide).toBe('right');
-    expect(requests).toHaveBeenCalledTimes(10);
+    expect(requests).toHaveBeenCalledTimes(
+      blockingTiles(result.center).length + 1,
+    );
   } finally {
     stream.dispose();
   }
@@ -131,19 +159,28 @@ it('старт отдаёт глобальное окно, затем фон о�
     const first = await stream.start(new AbortController().signal, () => {});
     // Assert
     expect(new Set(first.loadedTiles)).toEqual(
-      new Set(startupTiles(first.center)),
+      new Set(blockingTiles(first.center)),
     );
-    expect(cells).toHaveBeenCalledTimes(9);
+    expect(cells).toHaveBeenCalledTimes(blockingTiles(first.center).length);
     expect(
       cells.mock.calls.every((call) => call[2] === 0 && call[3] === true),
     ).toBe(true);
     expect(first.elements).toHaveLength(1);
+    expect(stream.diagnostics()).toMatchObject({
+      blockingTiles: 0,
+      retainedTiles: first.loadedTiles!.length,
+    });
+    expect(stream.diagnostics().targetTiles).toBeGreaterThan(
+      first.loadedTiles!.length,
+    );
     // Act — уезжаем на десятки километров, не накапливая старые клетки.
     for (let i = 1; i <= 40; i++)
       await stream.next({ x: i * 1000, y: 0, z: 0 }, Math.PI / 2);
     const last = stream.snapshot({ x: 40000, y: 0, z: 0 });
     // Assert
-    expect(last.loadedTiles!.length).toBeLessThanOrEqual(16);
+    expect(last.loadedTiles!.length).toBeLessThanOrEqual(
+      stream.diagnostics().targetTiles,
+    );
     expect(last.loadedTiles).not.toContain(startupTiles(first.center)[0]);
     expect(last.heightDatum).toBe(first.heightDatum);
     expect(stream.diagnostics().recent.length).toBeLessThanOrEqual(40);
@@ -166,7 +203,9 @@ it('после обрыва старта берёт готовые клетки 
   try {
     await next.start(new AbortController().signal, () => {});
     // Assert — первая успешная клетка повторно не запрашивается.
-    expect(cells).toHaveBeenCalledTimes(10);
+    expect(cells).toHaveBeenCalledTimes(
+      blockingTiles({ lat: 0, lon: 0 }).length + 1,
+    );
   } finally {
     next.dispose();
   }
@@ -179,7 +218,7 @@ it('отмена поездки запрещает дальнейшие сете
   stream.dispose();
   // Act / Assert
   await expect(stream.next({ x: 0, y: 0, z: 0 }, 0)).rejects.toBeDefined();
-  expect(cells).toHaveBeenCalledTimes(9);
+  expect(cells).toHaveBeenCalledTimes(blockingTiles({ lat: 0, lon: 0 }).length);
 });
 it('после медленного ответа использует актуальное окно машины, не устанавливая устаревшую клетку', async () => {
   // Arrange
@@ -194,7 +233,36 @@ it('после медленного ответа использует актуа
     }));
     // Assert — готовые данные старого окна не выбрасываем до успешной замены.
     expect(result).toBeNull();
-    expect(stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles).toHaveLength(9);
+    expect(stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles).toHaveLength(
+      blockingTiles({ lat: 0, lon: 0 }).length,
+    );
+  } finally {
+    stream.dispose();
+  }
+});
+it('восстанавливает источник после временного полного сбоя фонового окна', async () => {
+  // Arrange
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-09-10T00:00:00.000Z'));
+  const { cells } = mockedDownloads(),
+    stream = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  await stream.start(new AbortController().signal, () => {});
+  const source = (stream as unknown as { source: MapSource }).source;
+  cells.mockRejectedValue(new Error('Временный сбой'));
+  try {
+    // Act
+    const failed = await stream.next({ x: 0, y: 0, z: 0 }, 0);
+    // Assert
+    expect(failed).toBeNull();
+    expect((stream as unknown as { source: MapSource }).source).not.toBe(
+      source,
+    );
+    // Act
+    cells.mockResolvedValue([{ type: 'node', id: 2, lat: 0, lon: 0 }]);
+    vi.advanceTimersByTime(30001);
+    const recovered = await stream.next({ x: 0, y: 0, z: 0 }, 0);
+    // Assert
+    expect(recovered).not.toBeNull();
   } finally {
     stream.dispose();
   }
