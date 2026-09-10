@@ -1,2 +1,7 @@
 import { defineConfig } from 'vitest/config';
-export default defineConfig({ test: { include: ['game/**/*.test.ts'], environment: 'node' } });
+export default defineConfig({
+  test: {
+    include: ['game/**/*.test.ts', 'scripts/**/*.test.ts'],
+    environment: 'node',
+  },
+});

@@ -1,16 +1,16 @@
-import { toGeo, toLocal } from './geo';
+import { toGeo, toLocal } from './geo.ts';
 import type { MapBox } from './map-source';
 import {
   sourceTileBounds,
   sourceTileCenter,
   type SourceTileBounds,
   type SourceTileId,
-} from './source-tiles';
+} from './source-tiles.ts';
 import {
   TILE_ARTIFACT_SCHEMA_VERSION,
   TILE_BUILD_VERSION,
   type TileArtifactV1Input,
-} from './tile-artifact';
+} from './tile-artifact.ts';
 import type { Center, ElevationGrid, OSMElement, RegionData } from './types';
 
 type ElevationShape = {

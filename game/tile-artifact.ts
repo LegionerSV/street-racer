@@ -3,7 +3,7 @@ import {
   sourceTileBounds,
   type SourceTileBounds,
   type SourceTileId,
-} from './source-tiles';
+} from './source-tiles.ts';
 
 export const TILE_ARTIFACT_SCHEMA_VERSION = 1 as const;
 // Версия исходных геоданных не связана с версией рендера MAP_BUILD_VERSION.

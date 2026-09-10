@@ -9,10 +9,11 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
-    "lint": "oxlint app game static vite.config.ts vite.pages.config.ts",
+    "lint": "oxlint app game scripts static vite.config.ts vite.pages.config.ts vitest.config.ts",
     "build:pages": "vite build --config vite.pages.config.ts",
     "preview:pages": "vite preview --config vite.pages.config.ts",
     "format": "oxfmt",
+    "generate:map-tiles": "node --experimental-transform-types scripts/generate-map-tiles.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
