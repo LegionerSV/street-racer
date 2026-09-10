@@ -1,127 +1,138 @@
 import type { LoadingLog } from './loading-log';
 import type { MapBox } from './map-source';
-import { CompositeTileSource, type TileSource } from './tile-source';
-import { toGeo } from './geo';
-import type { Center, ElevationGrid, OSMElement } from './types';
+import {
+  CompositeTileSource,
+  IndexedDbTileSource,
+  OverpassTileSource,
+  StaticTileSource,
+  type ArtifactStore,
+} from './tile-source';
+import { toGeo, toLocal } from './geo';
+import {
+  sourceTileBounds,
+  sourceTileCenter,
+  type SourceTileBounds,
+  type SourceTileId,
+} from './source-tiles';
+import {
+  TILE_ARTIFACT_SCHEMA_VERSION,
+  TILE_BUILD_VERSION,
+  type TileArtifactV1,
+} from './tile-artifact';
+import type { Center, ElevationGrid, OSMElement, RegionData } from './types';
 
-export type MapTile = {
-  key: string;
-  elements: OSMElement[];
-  elevation: ElevationGrid;
-};
-
-type CachedMapTile = { tile: MapTile; savedAt: number };
+export type MapTile = TileArtifactV1;
 
 type RegionTileSourceOptions = {
-  center: Center;
   elevationSize: number;
   elevationWidth: number;
-  tileSize: number;
   tileMargin: number;
   log?: LoadingLog;
-  cacheKey: (key: string) => string;
-  validateCenter: (center: Center) => void;
   get: <T>(key: string) => Promise<T | undefined>;
   put: <T>(key: string, value: T) => Promise<void>;
-  mapCell: (box: MapBox, stage: string) => Promise<OSMElement[]>;
+  mapCell: (
+    box: MapBox,
+    stage: string,
+  ) => Promise<{ elements: OSMElement[]; savedAt: number }>;
   loadElevation: (
     center: Center,
     signal: AbortSignal,
     shape: { size: number; width: number; offsetX: number; offsetZ: number },
   ) => Promise<ElevationGrid>;
+  drivingSide: (
+    center: Center,
+  ) => Promise<{ side: RegionData['drivingSide']; resolved: boolean }>;
 };
 
-// До MAP-S3-04 RegionStream планирует старые километровые клетки. Этот адаптер
-// использует общую политику TileSource, не выдавая локальный ключ за глобальный XYZ.
+function bufferedBounds(id: SourceTileId, margin: number): SourceTileBounds {
+  const core = sourceTileBounds(id),
+    center = sourceTileCenter(id),
+    southWest = toGeo(
+      {
+        x: toLocal(center.lat, core.west, center).x - margin,
+        y: 0,
+        z: toLocal(core.south, center.lon, center).z - margin,
+      },
+      center,
+    ),
+    northEast = toGeo(
+      {
+        x: toLocal(center.lat, core.east, center).x + margin,
+        y: 0,
+        z: toLocal(core.north, center.lon, center).z + margin,
+      },
+      center,
+    );
+  return {
+    south: southWest.lat,
+    west: southWest.lon,
+    north: northEast.lat,
+    east: northEast.lon,
+  };
+}
+
 export function createRegionTileSource(options: RegionTileSourceOptions) {
-  const savedAt = new Map<string, number>(),
-    cache: TileSource<MapTile, string> = {
-      name: 'indexeddb',
-      load: async (key, signal) => {
-        signal.throwIfAborted();
-        const cached = await options.get<CachedMapTile>(options.cacheKey(key));
-        signal.throwIfAborted();
-        if (!cached || Date.now() - cached.savedAt >= 7 * 86400000)
-          return { kind: 'missing', source: 'indexeddb' };
-        if (
-          cached.tile.elevation.size !== options.elevationSize ||
-          cached.tile.elevation.width !== options.elevationWidth
-        )
-          return {
-            kind: 'incompatible',
-            source: 'indexeddb',
-            error: 'Сохранённый рельеф участка имеет устаревший формат.',
-          };
-        return { kind: 'hit', source: 'indexeddb', tile: cached.tile };
-      },
-      save: async (key, tile, signal) => {
-        signal.throwIfAborted();
-        await options.put(options.cacheKey(key), {
-          tile,
-          savedAt: savedAt.get(key) ?? Date.now(),
-        });
-        savedAt.delete(key);
-        signal.throwIfAborted();
-      },
+  const store: ArtifactStore = {
+      get: (key) => options.get(key),
+      put: (key, value) => options.put(key, value),
     },
-    remote: TileSource<MapTile, string> = {
-      name: 'static',
-      load: async (_key, signal) => {
-        signal.throwIfAborted();
-        return { kind: 'missing', source: 'static' };
-      },
-    },
-    fallback: TileSource<MapTile, string> = {
-      name: 'overpass-dem',
-      load: async (key, signal) => {
-        signal.throwIfAborted();
-        const cached = await options.get<CachedMapTile>(options.cacheKey(key)),
-          fresh = cached && Date.now() - cached.savedAt < 7 * 86400000,
-          [x, z] = key.split(',').map(Number),
-          size = options.tileSize + options.tileMargin * 2,
-          offsetX = (x + 0.5) * options.tileSize,
-          offsetZ = (z + 0.5) * options.tileSize,
-          sw = toGeo(
-            { x: offsetX - size / 2, y: 0, z: offsetZ - size / 2 },
-            options.center,
-          ),
-          ne = toGeo(
-            { x: offsetX + size / 2, y: 0, z: offsetZ + size / 2 },
-            options.center,
-          );
-        options.validateCenter(sw);
-        options.validateCenter(ne);
-        const [elements, elevation] = await Promise.all([
-          fresh
-            ? cached.tile.elements
-            : options.mapCell(
-                {
-                  south: sw.lat,
-                  west: sw.lon,
-                  north: ne.lat,
-                  east: ne.lon,
-                },
-                `Участок ${key}`,
-              ),
-          options.loadElevation(options.center, signal, {
+    cache = new IndexedDbTileSource(store),
+    remote = new StaticTileSource(),
+    fallback = new OverpassTileSource(async (id, signal) => {
+      signal.throwIfAborted();
+      const coreBounds = sourceTileBounds(id),
+        tileCenter = sourceTileCenter(id),
+        bounds = bufferedBounds(id, options.tileMargin),
+        [map, elevation, drivingSide] = await Promise.all([
+          options.mapCell(bounds, `Source-тайл ${id.z}/${id.x}/${id.y}`),
+          options.loadElevation(tileCenter, signal, {
             size: options.elevationSize,
             width: options.elevationWidth,
-            offsetX,
-            offsetZ,
+            offsetX: 0,
+            offsetZ: 0,
           }),
+          options.drivingSide(tileCenter),
         ]);
-        signal.throwIfAborted();
-        savedAt.set(key, fresh ? cached.savedAt : Date.now());
-        return {
-          kind: 'hit',
-          source: 'overpass-dem',
-          tile: { key, elements, elevation },
-        };
-      },
-    };
+      signal.throwIfAborted();
+      return {
+        schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+        tileBuildVersion: TILE_BUILD_VERSION,
+        ...id,
+        coreBounds,
+        bufferedBounds: bounds,
+        generatedAt: new Date().toISOString(),
+        osmTimestamp: new Date(map.savedAt).toISOString(),
+        drivingSide: drivingSide.side,
+        drivingSideSource: drivingSide.resolved ? 'tile-center' : 'default',
+        elements: map.elements,
+        elevation,
+      };
+    });
   return new CompositeTileSource(
     [cache, remote, fallback],
-    (key) => key,
+    (id) => `${id.z}/${id.x}/${id.y}`,
     options.log,
   );
+}
+
+export function tileElevationForSession(
+  tile: TileArtifactV1,
+  sessionCenter: Center,
+): ElevationGrid {
+  const local = toLocal(
+    (tile.coreBounds.south + tile.coreBounds.north) / 2,
+    (tile.coreBounds.west + tile.coreBounds.east) / 2,
+    sessionCenter,
+  ),
+    tileCenterLatitude = (tile.coreBounds.south + tile.coreBounds.north) / 2,
+    xScale =
+      Math.cos((sessionCenter.lat * Math.PI) / 180) /
+      Math.cos((tileCenterLatitude * Math.PI) / 180);
+  return {
+    ...tile.elevation,
+    sizeX: (tile.elevation.sizeX ?? tile.elevation.size) * xScale,
+    sizeZ: tile.elevation.sizeZ ?? tile.elevation.size,
+    offsetX: local.x,
+    offsetZ: local.z,
+  };
 }

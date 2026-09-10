@@ -46,6 +46,8 @@ function artifact(): TileArtifactV1Input {
     elevation: {
       width: 2,
       size: 690,
+      sizeX: 688.5,
+      sizeZ: 691.5,
       offsetX: 12.5,
       offsetZ: -7.25,
       values: new Float32Array([-0, 1.5, 123.25, -42.75]),

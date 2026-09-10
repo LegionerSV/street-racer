@@ -3,6 +3,7 @@ import { Game } from './runtime';
 import { criticalChunks } from './chunks';
 import { makeRace } from './simulation';
 import { tileReady } from './region-stream';
+import { sourceTileKeysForLocalBounds } from './stream-coverage';
 import type { Point, Route } from './types';
 
 it('возвращает гонщика к контрольной точке и снимает ожидание отсутствующей карты', () => {
@@ -24,7 +25,13 @@ it('возвращает гонщика к контрольной точке и 
   Object.assign(game, {
     race: makeRace(route),
     driveTest: null,
-    mapCoverage: new Set(['0,0']),
+    mapCoverage: new Set(
+      sourceTileKeysForLocalBounds(
+        { lat: 0, lon: 0 },
+        { minX: 200, minZ: 200, maxX: 800, maxZ: 800 },
+      ),
+    ),
+    world: { center: { lat: 0, lon: 0 } },
     camera: { position: { setAll: vi.fn() } },
     clearControls: vi.fn(),
     refreshWanted: vi.fn(),
@@ -33,8 +40,8 @@ it('возвращает гонщика к контрольной точке и 
   game.race.elapsed = 12;
   game.race.lap = 2;
   game.player = {
-    position: { x: 500, y: 0, z: 986 },
-    heading: Math.PI / 2,
+    position: { x: 500, y: 0, z: 1200 },
+    heading: 0,
     teleport(p: Point, h: number) {
       this.position = { ...p };
       this.heading = h;
@@ -48,8 +55,12 @@ it('возвращает гонщика к контрольной точке и 
   // Act
   const after: string[] = game.recoverAtMapBoundary(before);
   // Assert
-  expect(before.some((k) => !tileReady(game.mapCoverage, k))).toBe(true);
-  expect(after.every((k) => tileReady(game.mapCoverage, k))).toBe(true);
+  expect(
+    before.some((k) => !tileReady(game.mapCoverage, k, game.world.center)),
+  ).toBe(true);
+  expect(
+    after.every((k) => tileReady(game.mapCoverage, k, game.world.center)),
+  ).toBe(true);
   expect(game.player.position).toEqual({ x: 500, y: 0.88, z: 500 });
   expect(game.race).toMatchObject({
     phase: 'running',

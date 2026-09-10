@@ -22,7 +22,9 @@ it('размещает старты по загруженным километр
   expect(world.routes.length).toBeLessThanOrEqual(24);
   expect(new Set(world.routes.map((r) => r.id)).size).toBe(world.routes.length);
   expect(
-    world.routes.every((r) => routeHasCoverage(r.points, world.loadedTiles)),
+    world.routes.every((r) =>
+      routeHasCoverage(r.points, world.loadedTiles, world.center),
+    ),
   ).toBe(true);
 });
 it.each(['sprint', 'circuit'] as const)(
@@ -45,7 +47,9 @@ it.each(['sprint', 'circuit'] as const)(
       from: start.from,
       to: start.to,
     });
-    expect(routeHasCoverage(route!.points, next.loadedTiles)).toBe(true);
+    expect(routeHasCoverage(route!.points, next.loadedTiles, next.center)).toBe(
+      true,
+    );
     expect(route!.id).not.toBe(invitation.id);
   },
 );
@@ -63,7 +67,7 @@ it('после подгрузки добавляет другие старты, 
   ).toBe(true);
   expect(
     smaller.routes.every((r) =>
-      routeHasCoverage(r.points, smaller.loadedTiles),
+      routeHasCoverage(r.points, smaller.loadedTiles, smaller.center),
     ),
   ).toBe(true);
   expect(
@@ -75,7 +79,13 @@ it('после подгрузки добавляет другие старты, 
 it('обходит незагруженную клетку, даже когда через неё проходит короткий путь', () => {
   // Arrange
   const region = raceGrid(3, 2);
-  region.loadedTiles = region.loadedTiles!.filter((k) => k !== '1,0');
+  region.loadedTiles = region.loadedTiles!.filter((key) => {
+    const routeGap = { x: 1500, y: 0, z: 500 };
+    return (
+      !key.includes('/') ||
+      routeHasCoverage([routeGap], [key], region.center, 0) === false
+    );
+  });
   const world = buildWorld(region),
     start = world.edges.find((e) => e.from === 1 && e.to === 2)!;
   // Act
@@ -83,7 +93,9 @@ it('обходит незагруженную клетку, даже когда 
   // Assert
   expect(route).toBeDefined();
   expect(route!.points.some((p) => p.x > 2000)).toBe(true);
-  expect(routeHasCoverage(route!.points, region.loadedTiles)).toBe(true);
+  expect(
+    routeHasCoverage(route!.points, region.loadedTiles, region.center),
+  ).toBe(true);
 });
 it('сохраняет ограничения поворотов при построении большого кольца, включая стык кругов', () => {
   // Arrange

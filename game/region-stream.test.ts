@@ -1,38 +1,56 @@
 import { expect, it } from 'vitest';
+import { criticalChunks, desiredChunks } from './chunks';
 import {
+  mapTileAt,
+  retainTiles,
   startupTiles,
   tileOrder,
   tileReady,
-  retainTiles,
   type MapTile,
 } from './region-stream';
-import { criticalChunks, desiredChunks } from './chunks';
+import { sourceTileBounds } from './source-tiles';
+import {
+  TILE_ARTIFACT_SCHEMA_VERSION,
+  TILE_BUILD_VERSION,
+} from './tile-artifact';
 
-it('начинает с четырёх километровых клеток вокруг выбранной точки', () => {
-  // Arrange / Act / Assert
-  expect(new Set(startupTiles())).toEqual(
-    new Set(['-1,-1', '-1,0', '0,-1', '0,0']),
-  );
-});
-it('сдвигает окно вместе с машиной и отдаёт приоритет направлению движения', () => {
+const center = { lat: 55.7558, lon: 37.6173 };
+
+it('близкие точки старта используют одинаковые глобальные XYZ source-тайлы', () => {
   // Arrange
-  const p = { x: 12500, y: 0, z: 12500 };
+  const nearby = { lat: center.lat + 0.0001, lon: center.lon + 0.0001 };
   // Act
-  const north = tileOrder(p, 0, 4),
-    south = tileOrder(p, Math.PI, 4);
+  const first = startupTiles(center),
+    second = startupTiles(nearby);
+  // Assert
+  expect(first).toEqual(second);
+  expect(first).toHaveLength(9);
+  expect(first.every((key) => /^15\/\d+\/\d+$/.test(key))).toBe(true);
+});
+
+it('сдвигает глобальное окно вместе с машиной и отдаёт приоритет направлению движения', () => {
+  // Arrange
+  const point = { x: 12500, y: 0, z: 12500 },
+    northKey = mapTileAt({ x: point.x, z: point.z + 1000 }, center),
+    southKey = mapTileAt({ x: point.x, z: point.z - 1000 }, center);
+  // Act
+  const north = tileOrder(point, 0, 4, center),
+    south = tileOrder(point, Math.PI, 4, center);
   // Assert
   expect(north).toHaveLength(16);
   expect(new Set(north).size).toBe(16);
-  expect(north.indexOf('12,13')).toBeLessThan(north.indexOf('12,11'));
-  expect(south.indexOf('12,11')).toBeLessThan(south.indexOf('12,13'));
-  expect(north).not.toContain('0,0');
+  expect(north.indexOf(northKey)).toBeLessThan(north.indexOf(southKey));
+  expect(south.indexOf(southKey)).toBeLessThan(south.indexOf(northKey));
+  expect(north).not.toContain(startupTiles(center)[0]);
 });
-it('не открывает границу до получения соседнего участка и его физических кварталов', () => {
+
+it('открывает локальный квартал только после загрузки всех пересекающих source-тайлов', () => {
   // Arrange
-  const loaded = new Set(['0,0']);
+  const chunk = '3,0',
+    loaded = new Set(startupTiles(center));
   // Act / Assert
-  expect(tileReady(loaded, '3,0')).toBe(true);
-  expect(tileReady(loaded, '4,0')).toBe(false);
+  expect(tileReady(loaded, chunk, center)).toBe(true);
+  expect(tileReady(loaded, '40,40', center)).toBe(false);
   expect(criticalChunks({ x: 9990, y: 0, z: 9990 }, 0, true)).toContain(
     '40,40',
   );
@@ -40,27 +58,42 @@ it('не открывает границу до получения соседн�
     desiredChunks({ x: 12500, y: 0, z: 12500 }, 0, 'mobile', true).length,
   ).toBeGreaterThan(0);
 });
-it('выгружает дальние данные по бюджету, сохраняя защищённые клетки', () => {
+
+function tile(key: string, id: number): MapTile {
+  const [z, x, y] = key.split('/').map(Number),
+    coreBounds = sourceTileBounds({ z, x, y });
+  return {
+    schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+    tileBuildVersion: TILE_BUILD_VERSION,
+    z,
+    x,
+    y,
+    coreBounds,
+    bufferedBounds: coreBounds,
+    generatedAt: '2026-09-10T00:00:00.000Z',
+    osmTimestamp: '2026-09-10T00:00:00.000Z',
+    drivingSide: 'right',
+    elements: [{ type: 'node', id }],
+    elevation: { width: 2, size: 1600, values: new Float32Array(4) },
+    checksum: 'test',
+  };
+}
+
+it('выгружает дальние данные по бюджету, сохраняя защищённые source-тайлы', () => {
   // Arrange
-  const tiles = new Map<string, MapTile>(
-    ['0,0', '1,0', '2,0', '3,0'].map((key) => [
-      key,
-      {
-        key,
-        elements: [{ type: 'node', id: Number(key[0]) }],
-        elevation: { width: 2, size: 1600, values: new Float32Array(4) },
-      },
-    ]),
-  );
+  const keys = startupTiles(center).slice(0, 4),
+    tiles = new Map<string, MapTile>(
+      keys.map((key, index) => [key, tile(key, index)]),
+    );
   // Act
   const kept = retainTiles(
     tiles,
-    ['3,0', '2,0', '1,0', '0,0'],
-    new Set(['0,0']),
+    [...keys].reverse(),
+    new Set([keys[0]]),
     3,
     3,
   );
   // Assert
-  expect([...kept.keys()]).toEqual(['0,0', '3,0', '2,0']);
+  expect([...kept.keys()]).toEqual([keys[0], keys[3], keys[2]]);
   expect(tiles.size).toBe(4);
 });

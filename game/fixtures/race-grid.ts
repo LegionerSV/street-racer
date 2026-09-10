@@ -1,4 +1,5 @@
 import type { OSMElement, RegionData } from '../types';
+import { sourceTileKeysForLocalBounds } from '../stream-coverage';
 
 export function raceGrid(columns = 2, rows = 2): RegionData {
   const elements: OSMElement[] = [];
@@ -29,9 +30,9 @@ export function raceGrid(columns = 2, rows = 2): RegionData {
     elevation: { width: 2, size: 12000, values: new Float32Array(4) },
     drivingSide: 'right',
     fetchedAt: 'test',
-    loadedTiles: Array.from(
-      { length: columns * rows },
-      (_, i) => `${i % columns},${Math.floor(i / columns)}`,
+    loadedTiles: sourceTileKeysForLocalBounds(
+      { lat: 0, lon: 0 },
+      { minX: 0, minZ: 0, maxX: columns * 1000, maxZ: rows * 1000 },
     ),
   };
 }

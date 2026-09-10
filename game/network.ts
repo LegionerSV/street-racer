@@ -5,7 +5,7 @@ import { fitBridgeClearance, fitTunnelDepth, validateClearance } from './clearan
 import { roadLayout, directedLanes,roadTypes } from './lanes';
 import {buildingCoveredByParts} from './buildings';
 import {SpatialGrid,boundsOf,overlaps} from './geometry';
-import {coverageBounds,routeHasCoverage} from './stream-coverage';
+import {coverageBounds,pointHasCoverage,routeHasCoverage} from './stream-coverage';
 
 const adjacencyCache = new WeakMap<World, Map<number, Edge[]>>();
 export function outgoing(world: World, id: number): Edge[] {
@@ -47,8 +47,8 @@ export function allowedTurn(world: World, from: Edge, to: Edge, history: number[
 
 export function buildWorld(region: RegionData): World {
   const coverage=region.loadedTiles?new Set(region.loadedTiles):undefined;
-  const objectBounds=coverageBounds(region.loadedTiles);
-  const covered=(p:Point)=>coverage?.has(`${Math.floor((p.x+1e-5)/1000)},${Math.floor((p.z+1e-5)/1000)}`)??false;
+  const objectBounds=coverageBounds(region.loadedTiles,region.center);
+  const covered=(p:Point)=>pointHasCoverage(coverage,p,region.center);
   const sourceNodes = new Map(region.elements.filter(e => e.type === 'node').map(e => [e.id, e]));
   const roadNodes = new Map<number, RoadNode>();
   const edges: Edge[] = [], warnings: string[] = [];
@@ -235,7 +235,7 @@ function safeRaceEdges(world: World) {
       world.edges
         .filter(
           (e) =>
-            !e.blocked && raceRoad(e) && routeHasCoverage(e.points, world.loadedTiles, margin),
+            !e.blocked && raceRoad(e) && routeHasCoverage(e.points, world.loadedTiles, world.center, margin),
         )
         .map((e) => e.id),
     );
@@ -386,6 +386,7 @@ export function createRoutes(
       !routeHasCoverage(
         points,
         world.loadedTiles,
+        world.center,
         Math.max(120, ...ids.map((id) => world.edges[id].width / 2 + 110)),
       )
     )

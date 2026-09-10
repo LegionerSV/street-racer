@@ -1,0 +1,90 @@
+import { expect, it, vi } from 'vitest';
+import { toGeo, toLocal } from './geo';
+import {
+  createRegionTileSource,
+  tileElevationForSession,
+} from './region-tile-source';
+import { sourceTileBounds, sourceTileCenter } from './source-tiles';
+import {
+  TILE_ARTIFACT_SCHEMA_VERSION,
+  TILE_BUILD_VERSION,
+  type TileArtifactV1,
+} from './tile-artifact';
+
+const tileId = { z: 15, x: 19808, y: 10243 };
+
+it('определяет сторону движения по центру глобального тайла, а не сессии', async () => {
+  // Arrange
+  const drivingSide = vi.fn(async () => ({
+      side: 'right' as const,
+      resolved: true,
+    })),
+    source = createRegionTileSource({
+      elevationSize: 2600,
+      elevationWidth: 3,
+      tileMargin: 300,
+      get: async () => undefined,
+      put: async () => {},
+      mapCell: async () => ({ elements: [], savedAt: 123456789 }),
+      loadElevation: async (_center, _signal, shape) => ({
+        ...shape,
+        values: new Float32Array(shape.width ** 2),
+      }),
+      drivingSide,
+    });
+
+  // Act
+  const result = await source.load(tileId, new AbortController().signal);
+
+  // Assert
+  expect(result.kind).toBe('hit');
+  expect(drivingSide).toHaveBeenCalledExactlyOnceWith(sourceTileCenter(tileId));
+  if (result.kind === 'hit')
+    expect(result.tile.osmTimestamp).toBe(
+      new Date(123456789).toISOString(),
+    );
+  if (result.kind === 'hit')
+    expect(result.tile.drivingSideSource).toBe('tile-center');
+});
+
+it('сохраняет географический масштаб DEM вдали от центра высокоширотной сессии', () => {
+  // Arrange
+  const highLatitudeTile = { z: 15, x: 16384, y: 1780 },
+    coreBounds = sourceTileBounds(highLatitudeTile),
+    tileCenter = sourceTileCenter(highLatitudeTile),
+    sessionCenter = { lat: tileCenter.lat - 0.36, lon: tileCenter.lon },
+    tile: TileArtifactV1 = {
+      schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+      tileBuildVersion: TILE_BUILD_VERSION,
+      ...highLatitudeTile,
+      coreBounds,
+      bufferedBounds: coreBounds,
+      generatedAt: '2026-09-10T00:00:00.000Z',
+      osmTimestamp: '2026-09-10T00:00:00.000Z',
+      drivingSide: 'right',
+      elements: [],
+      elevation: {
+        width: 2,
+        size: 2600,
+        values: new Float32Array(4),
+      },
+      checksum: 'test',
+    },
+    geographicEastEdge = toGeo({ x: 1300, y: 0, z: 0 }, tileCenter);
+
+  // Act
+  const patch = tileElevationForSession(tile, sessionCenter),
+    localEastEdge = toLocal(
+      geographicEastEdge.lat,
+      geographicEastEdge.lon,
+      sessionCenter,
+    );
+
+  // Assert
+  expect(tileCenter.lat - sessionCenter.lat).toBeCloseTo(0.36, 8);
+  expect(patch.sizeX).not.toBeCloseTo(patch.size, 3);
+  expect(localEastEdge.x).toBeCloseTo(
+    patch.offsetX! + patch.sizeX! / 2,
+    6,
+  );
+});

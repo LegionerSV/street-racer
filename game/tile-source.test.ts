@@ -111,6 +111,7 @@ describe('CompositeTileSource', () => {
         '15/1/2',
         { value: 'built' },
         expect.any(AbortSignal),
+        'overpass-dem',
       );
     },
   );
@@ -404,6 +405,49 @@ describe('источники TileArtifactV1', () => {
       expect(cached.tile.elements).toEqual(artifact().elements);
       expect([...cached.tile.elevation.values]).toEqual([1, 2, 3, 4]);
       expect(cached.tile.checksum).toMatch(/^crc32:[0-9a-f]{8}$/);
+    }
+  });
+
+  it('не продлевает почти семидневный OSM-кэш ещё на семь дней', async () => {
+    // Arrange
+    vi.useFakeTimers();
+    vi.setSystemTime('2026-09-10T00:00:00.000Z');
+    const data = new Map<string, { serialized: string; savedAt: number }>(),
+      store = {
+        get: vi.fn(async (key: string) => data.get(key)),
+        put: vi.fn(
+          async (
+            key: string,
+            value: { serialized: string; savedAt: number },
+          ) => {
+            data.set(key, value);
+          },
+        ),
+      },
+      oldArtifact = () => ({
+        ...artifact(),
+        osmTimestamp: '2026-09-03T01:00:00.000Z',
+      }),
+      build = vi.fn(async () => oldArtifact()),
+      composite = new CompositeTileSource([
+        new IndexedDbTileSource(store),
+        new OverpassTileSource(build),
+      ]),
+      signal = new AbortController().signal;
+
+    try {
+      // Act
+      await composite.load(artifactId, signal);
+      vi.advanceTimersByTime(2 * 60 * 60 * 1000);
+      await composite.load(artifactId, signal);
+
+      // Assert
+      expect(build).toHaveBeenCalledTimes(2);
+      expect(store.put.mock.calls[0][1].savedAt).toBe(
+        Date.parse('2026-09-03T01:00:00.000Z'),
+      );
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

@@ -19,19 +19,18 @@ export function bounds(center: Center, half = 2800) {
   const sw = toGeo({ x: -half, y: 0, z: -half }, center), ne = toGeo({ x: half, y: 0, z: half }, center);
   return { south: sw.lat, west: sw.lon, north: ne.lat, east: ne.lon };
 }
-const patchIndices = new WeakMap<ElevationGrid, Map<string, ElevationGrid>>();
 function elevationPatch(grid: ElevationGrid, x: number, z: number): ElevationGrid {
   if (!grid.patches?.length) return grid;
-  let index = patchIndices.get(grid);
-  if (!index) { index = new Map(grid.patches.map(p => [`${Math.floor((p.offsetX || 0) / 1000)},${Math.floor((p.offsetZ || 0) / 1000)}`, p])); patchIndices.set(grid, index); }
-  return index.get(`${Math.floor(x / 1000)},${Math.floor(z / 1000)}`) || grid.patches.reduce((a,b) => Math.hypot(x-(a.offsetX||0),z-(a.offsetZ||0)) <= Math.hypot(x-(b.offsetX||0),z-(b.offsetZ||0)) ? a : b);
+  // XYZ-тайлы имеют ширину меньше километра и не совпадают с локальной сеткой.
+  // Ближайший географический центр однозначно выбирает патч по обе стороны шва.
+  return grid.patches.reduce((a,b) => Math.hypot(x-(a.offsetX||0),z-(a.offsetZ||0)) <= Math.hypot(x-(b.offsetX||0),z-(b.offsetZ||0)) ? a : b);
 }
 export function offsetElevation(grid: ElevationGrid, datum: number): ElevationGrid {
   return { ...grid, values: Float32Array.from(grid.values, h => h - datum), patches: grid.patches?.map(p => offsetElevation(p, datum)) };
 }
 export function sampleElevation(grid: ElevationGrid, x: number, z: number): number {
   grid = elevationPatch(grid, x, z);
-  const gx = clamp(((x-(grid.offsetX||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp(((z-(grid.offsetZ||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1);
+  const gx = clamp(((x-(grid.offsetX||0)) / (grid.sizeX||grid.size) + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp(((z-(grid.offsetZ||0)) / (grid.sizeZ||grid.size) + .5) * (grid.width - 1), 0, grid.width - 1);
   const ix = Math.min(grid.width - 2, Math.floor(gx)), iz = Math.min(grid.width - 2, Math.floor(gz));
   const tx = gx - ix, tz = gz - iz, a = iz * grid.width + ix;
   return lerp(lerp(grid.values[a], grid.values[a + 1], tx), lerp(grid.values[a + grid.width], grid.values[a + grid.width + 1], tx), tz);
@@ -94,7 +93,7 @@ export const decodeTerrarium = (r: number, g: number, b: number) => r * 256 + g 
 // Монотонная кубическая интерполяция сглаживает переломы между ячейками DEM без новых пиков.
 export function sampleRoadElevation(grid: ElevationGrid, x: number, z: number): number {
   grid = elevationPatch(grid, x, z);
-  const gx = clamp(((x-(grid.offsetX||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp(((z-(grid.offsetZ||0)) / grid.size + .5) * (grid.width - 1), 0, grid.width - 1);
+  const gx = clamp(((x-(grid.offsetX||0)) / (grid.sizeX||grid.size) + .5) * (grid.width - 1), 0, grid.width - 1), gz = clamp(((z-(grid.offsetZ||0)) / (grid.sizeZ||grid.size) + .5) * (grid.width - 1), 0, grid.width - 1);
   const ix = Math.min(grid.width - 2, Math.floor(gx)), iz = Math.min(grid.width - 2, Math.floor(gz));
   const cubic = (a: number, b: number, c: number, d: number, t: number) => {
     const slope = (u: number, v: number) => u * v <= 0 ? 0 : 2 * u * v / (u + v);

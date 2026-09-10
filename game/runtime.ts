@@ -251,7 +251,7 @@ export class Game {
     this.staleChunks.delete(chunk.key);
   }
   private refreshWanted() {
-    this.wanted = desiredChunks(this.player.position, this.player.heading, this.settings.quality,!!this.mapCoverage).filter(c=>!this.mapCoverage||tileReady(this.mapCoverage,c.key));
+    this.wanted = desiredChunks(this.player.position, this.player.heading, this.settings.quality,!!this.mapCoverage).filter(c=>!this.mapCoverage||tileReady(this.mapCoverage,c.key,this.world.center));
     const wanted = new Set(this.wanted.map(c => c.key));
     for (const [key, chunk] of this.chunks) if (!wanted.has(key)) { chunk.dispose(); this.chunks.delete(key); this.staleChunks.delete(key); }
   }
@@ -323,7 +323,7 @@ export class Game {
     this.pump();
     const p = this.player.position, h = this.player.heading;
     const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage));
-    this.loading = this.preparingRace || this.applyingMap || critical.some(k => this.mapCoverage ? !tileReady(this.mapCoverage,k)||this.chunks.get(k)?.lod!==0||this.staleChunks.has(k) : this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
+    this.loading = this.preparingRace || this.applyingMap || critical.some(k => this.mapCoverage ? !tileReady(this.mapCoverage,k,this.world.center)||this.chunks.get(k)?.lod!==0||this.staleChunks.has(k) : this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
     if(this.loading)this.clearControls();
     advanceDrivingPhysics(this.scene,this.engine.getDeltaTime(),!this.paused&&!this.loading);
     if ((!this.mapCoverage&&(Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495)) || p.y < -200 || p.y > 10000) this.recover();
@@ -366,7 +366,7 @@ export class Game {
     this.onHUD({ opponents:this.race?opponentMarkers(this.traffic.racers):[], speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.preparingRace?'Прокладываем маршрут по загруженной карте…':this.mapStream?.status, race: this.race ? { ...this.race } : null, navigation:this.settings.navigator&&this.race?nextRaceTurn(this.race,this.player.position):null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
   }
   private recoverAtMapBoundary(critical:string[]){
-    if(!needsRaceRecovery(!!this.race||!!this.driveTest,this.mapCoverage,critical))return critical;
+    if(!needsRaceRecovery(!!this.race||!!this.driveTest,this.mapCoverage,critical,this.world.center))return critical;
     if(this.driveTest)this.endDriveTest();
     this.recover();
     this.message='Впереди район ещё не загружен. Автомобиль возвращён на трассу.';
@@ -397,7 +397,7 @@ export class Game {
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;
           const nextCoverage=new Set(next.loadedTiles);
-          if(criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true).some(k=>!tileReady(nextCoverage,k))){awaiting=null;continue;}
+          if(criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true).some(k=>!tileReady(nextCoverage,k,this.world.center))){awaiting=null;continue;}
           this.suspendPump=true;
           while(!this.disposed&&this.pending.size)await wait(20);
           if(this.disposed)return;
@@ -456,7 +456,7 @@ export class Game {
       const route=await this.worker.raceRoute({way:start.way,from:start.from,to:start.to},invitation.kind);
       if(this.disposed)return;
       if(this.paused)return;
-      if(!route||!routeHasCoverage(route.points,this.world.loadedTiles,Math.max(120,...route.edges.map(id=>this.world.edges[id].width/2+110))))
+      if(!route||!routeHasCoverage(route.points,this.world.loadedTiles,this.world.center,Math.max(120,...route.edges.map(id=>this.world.edges[id].width/2+110))))
         throw new Error('Для этого заезда пока не хватает связанных загруженных дорог. Попробуйте другой старт или дождитесь подгрузки карты.');
       this.race = makeRace(route);this.message='';this.player.reset(this.world.edges[route.edges[0]], this.world.drivingSide, 2);
       this.traffic.startRace(route);this.refreshWanted();this.clearControls();

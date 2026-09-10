@@ -522,6 +522,8 @@ OSM object -> source tiles / reference count
 
 ### MAP-S3-04. Перевести RegionStream на глобальные source-тайлы
 
+**Статус:** ✅ Выполнено.
+
 **Зависимости:** MAP-S3-01, MAP-S3-02, MAP-S3-03.
 
 **Задание агенту:**

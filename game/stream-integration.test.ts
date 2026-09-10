@@ -1,10 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import {
-  RegionStream,
-  startupTiles,
-  ELEVATION_TILE_SIZE,
-  ELEVATION_TILE_WIDTH,
-} from './region-stream';
+import { RegionStream, startupTiles } from './region-stream';
 import { MapSource } from './map-source';
 import { buildWorld } from './network';
 import { Traffic } from './traffic';
@@ -38,68 +33,57 @@ function mockedDownloads() {
     .mockResolvedValue([{ type: 'node', id: 1, lat: 0, lon: 0 }]);
   return { cells, cache, requests };
 }
-it('обновляет старый DEM, повторно используя сохранённую карту OSM', async () => {
+it('повторно использует глобальные артефакты из IndexedDB без загрузки OSM и DEM', async () => {
   // Arrange
-  const { cache, cells } = mockedDownloads();
-  const first = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  const { cells } = mockedDownloads();
+  const firstCenter = { lat: 55.7558, lon: 37.6173 },
+    nearbyCenter = { lat: 55.7559, lon: 37.6174 },
+    first = new RegionStream(firstCenter, 'mobile');
   await first.start(new AbortController().signal, () => {});
   first.dispose();
-  for (const value of cache.values())
-    if (value.tile)
-      value.tile.elevation = {
-        ...value.tile.elevation,
-        size: 1600,
-        width: 81,
-        values: new Float32Array(81 * 81),
-      };
-  cells.mockRestore();
+  cells.mockClear();
   vi.mocked(data.loadElevations).mockClear();
   const fetcher = vi.fn().mockRejectedValue(new Error('Сеть недоступна'));
   vi.stubGlobal('fetch', fetcher);
-  const next = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  const next = new RegionStream(nearbyCenter, 'mobile');
   try {
     // Act
     const result = await next.start(new AbortController().signal, () => {});
     // Assert
     expect(fetcher).not.toHaveBeenCalled();
-    expect(data.loadElevations).toHaveBeenCalledTimes(4);
-    expect(result.elevation.patches).toHaveLength(4);
-    for (const p of result.elevation.patches!) {
-      expect(p.size).toBe(ELEVATION_TILE_SIZE);
-      expect(p.width).toBe(ELEVATION_TILE_WIDTH);
-    }
+    expect(data.loadElevations).not.toHaveBeenCalled();
+    expect(cells).not.toHaveBeenCalled();
+    expect(result.elevation.patches).toHaveLength(9);
+    expect(result.center).toEqual(nearbyCenter);
+    expect(startupTiles(firstCenter)).toEqual(startupTiles(nearbyCenter));
     expect(result.elements).toEqual([{ type: 'node', id: 1, lat: 0, lon: 0 }]);
   } finally {
     next.dispose();
   }
 });
-it('переносит свежий старый район в клетки без сетевых запросов OSM', async () => {
+it('не использует старый кэш района с ключом, зависящим от точки старта', async () => {
   // Arrange
   const { cache, requests, cells } = mockedDownloads();
-  requests.mockRestore();
-  cells.mockRestore();
   const legacy = {
     ...fixture(),
     fetchedAt: new Date().toISOString(),
     drivingSide: 'left' as const,
   };
   cache.set(data.regionKey(legacy.center), legacy);
-  const fetcher = vi.fn().mockRejectedValue(new Error('Сеть недоступна'));
-  vi.stubGlobal('fetch', fetcher);
   const stream = new RegionStream(legacy.center, 'mobile');
   try {
     // Act
     const result = await stream.start(new AbortController().signal, () => {});
     // Assert
-    expect(result.drivingSide).toBe('left');
-    expect(result.elements).toEqual(legacy.elements);
-    expect(result.loadedTiles).toHaveLength(4);
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.drivingSide).toBe('right');
+    expect(result.loadedTiles).toHaveLength(9);
+    expect(cells).toHaveBeenCalledTimes(9);
+    expect(requests).toHaveBeenCalledTimes(9);
   } finally {
     stream.dispose();
   }
 });
-it('не переносит просроченный старый район вместо свежей загрузки', async () => {
+it('не переносит просроченный старый район вместо глобальных source-тайлов', async () => {
   // Arrange
   const { cache, cells, requests } = mockedDownloads(),
     legacy = fixture();
@@ -112,13 +96,33 @@ it('не переносит просроченный старый район в�
     // Act
     await stream.start(new AbortController().signal, () => {});
     // Assert
-    expect(cells).toHaveBeenCalledTimes(4);
-    expect(requests).toHaveBeenCalledTimes(1);
+    expect(cells).toHaveBeenCalledTimes(9);
+    expect(requests).toHaveBeenCalledTimes(9);
   } finally {
     stream.dispose();
   }
 });
-it('старт отдаёт только 2 × 2 км, затем фон расширяет карту и ограничивает её память при поездке', async () => {
+it('не блокирует прибрежный старт, если центр соседнего source-тайла находится в море', async () => {
+  // Arrange
+  const { requests } = mockedDownloads();
+  requests.mockImplementation(async (query) =>
+    query.includes('is_in(59.9343,30.3351)')
+      ? [{ type: 'relation', id: 99, tags: { 'ISO3166-1': 'RU' } }]
+      : [],
+  );
+  const stream = new RegionStream({ lat: 59.9343, lon: 30.3351 }, 'mobile');
+  try {
+    // Act
+    const result = await stream.start(new AbortController().signal, () => {});
+    // Assert
+    expect(result.loadedTiles).toHaveLength(9);
+    expect(result.drivingSide).toBe('right');
+    expect(requests).toHaveBeenCalledTimes(10);
+  } finally {
+    stream.dispose();
+  }
+});
+it('старт отдаёт глобальное окно, затем фон ограничивает память при поездке', async () => {
   // Arrange
   const { cells } = mockedDownloads();
   const stream = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
@@ -126,8 +130,10 @@ it('старт отдаёт только 2 × 2 км, затем фон расш
     // Act
     const first = await stream.start(new AbortController().signal, () => {});
     // Assert
-    expect(new Set(first.loadedTiles)).toEqual(new Set(startupTiles()));
-    expect(cells).toHaveBeenCalledTimes(4);
+    expect(new Set(first.loadedTiles)).toEqual(
+      new Set(startupTiles(first.center)),
+    );
+    expect(cells).toHaveBeenCalledTimes(9);
     expect(
       cells.mock.calls.every((call) => call[2] === 0 && call[3] === true),
     ).toBe(true);
@@ -138,7 +144,7 @@ it('старт отдаёт только 2 × 2 км, затем фон расш
     const last = stream.snapshot({ x: 40000, y: 0, z: 0 });
     // Assert
     expect(last.loadedTiles!.length).toBeLessThanOrEqual(16);
-    expect(last.loadedTiles).not.toContain('-1,-1');
+    expect(last.loadedTiles).not.toContain(startupTiles(first.center)[0]);
     expect(last.heightDatum).toBe(first.heightDatum);
     expect(stream.diagnostics().recent.length).toBeLessThanOrEqual(40);
   } finally {
@@ -160,7 +166,7 @@ it('после обрыва старта берёт готовые клетки 
   try {
     await next.start(new AbortController().signal, () => {});
     // Assert — первая успешная клетка повторно не запрашивается.
-    expect(cells).toHaveBeenCalledTimes(5);
+    expect(cells).toHaveBeenCalledTimes(10);
   } finally {
     next.dispose();
   }
@@ -173,7 +179,7 @@ it('отмена поездки запрещает дальнейшие сете
   stream.dispose();
   // Act / Assert
   await expect(stream.next({ x: 0, y: 0, z: 0 }, 0)).rejects.toBeDefined();
-  expect(cells).toHaveBeenCalledTimes(4);
+  expect(cells).toHaveBeenCalledTimes(9);
 });
 it('после медленного ответа использует актуальное окно машины, не устанавливая устаревшую клетку', async () => {
   // Arrange
@@ -188,7 +194,7 @@ it('после медленного ответа использует актуа
     }));
     // Assert — готовые данные старого окна не выбрасываем до успешной замены.
     expect(result).toBeNull();
-    expect(stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles).toHaveLength(4);
+    expect(stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles).toHaveLength(9);
   } finally {
     stream.dispose();
   }

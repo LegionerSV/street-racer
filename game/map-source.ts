@@ -87,6 +87,7 @@ export class MapSource {
   private queue: Promise<void> = Promise.resolve();
   private unavailable = new Set<number>();
   private readyAt = MAP_ENDPOINTS.map(() => 0);
+  private dataTimes = new Map<string, number>();
   constructor(
     private signal: AbortSignal,
     private log?: LoadingLog,
@@ -105,6 +106,7 @@ export class MapSource {
       cached = await this.store?.get(this.key(query));
     this.signal.throwIfAborted();
     const valid = fresh(cached);
+    if (valid && !cached.split) this.dataTimes.set(query, cached.savedAt);
     end?.('success', {
       cacheHit: !!valid,
       elements: valid ? cached.elements.length : 0,
@@ -112,8 +114,13 @@ export class MapSource {
     });
     return valid ? cached : undefined;
   }
-  private async save(query: string, elements: OSMElement[]) {
-    await this.store?.put(this.key(query), { elements, savedAt: Date.now() });
+  private async save(
+    query: string,
+    elements: OSMElement[],
+    savedAt = Date.now(),
+  ) {
+    this.dataTimes.set(query, savedAt);
+    await this.store?.put(this.key(query), { elements, savedAt });
   }
   async request(
     query: string,
@@ -354,7 +361,17 @@ export class MapSource {
       current = await this.store?.get(this.key(query));
     this.signal.throwIfAborted();
     if (!fresh(current) || current.split)
-      await this.store?.put(this.key(query), { elements, savedAt });
+      await this.save(query, elements, savedAt);
+  }
+  async cellSnapshot(
+    box: MapBox,
+    stage: string,
+    depth = 0,
+    splitFirst = false,
+  ) {
+    const query = mapCellQuery(box),
+      elements = await this.cell(box, stage, depth, splitFirst);
+    return { elements, savedAt: this.dataTimes.get(query) ?? Date.now() };
   }
   async cell(
     box: MapBox,
@@ -407,11 +424,19 @@ export class MapSource {
       const end = this.log?.start(`${stage} / делим участок`, { parts: 4 }),
         merged = new Map<string, OSMElement>();
       try {
-        for (const [i, part] of splitMapBox(box).entries())
-          for (const e of await this.cell(part, `${stage}.${i + 1}`, depth + 1))
+        let savedAt = Date.now();
+        for (const [i, part] of splitMapBox(box).entries()) {
+          const snapshot = await this.cellSnapshot(
+            part,
+            `${stage}.${i + 1}`,
+            depth + 1,
+          );
+          savedAt = Math.min(savedAt, snapshot.savedAt);
+          for (const e of snapshot.elements)
             merged.set(`${e.type}/${e.id}`, e);
+        }
         const elements = [...merged.values()];
-        await this.save(query, elements);
+        await this.save(query, elements, savedAt);
         end?.('success', { elements: elements.length });
         return elements;
       } catch (error) {

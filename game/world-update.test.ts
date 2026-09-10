@@ -3,6 +3,7 @@ import { buildWorld } from './network';
 import { reconcileWorld, edgeKey } from './world-update';
 import { sampleElevation, sampleRoadElevation, smoothElevation } from './geo';
 import type { RegionData } from './types';
+import { sourceTileKeysForLocalBounds } from './stream-coverage';
 const region = (x: number): RegionData => ({
   center: { lat: 0, lon: 0 },
   elements: [
@@ -19,7 +20,10 @@ const region = (x: number): RegionData => ({
     values: new Float32Array(4),
   },
   fetchedAt: 'test',
-  loadedTiles: [`${Math.floor(x / 1000)},0`],
+  loadedTiles: sourceTileKeysForLocalBounds(
+    { lat: 0, lon: 0 },
+    { minX: x, minZ: 0, maxX: x + 1000, maxZ: 1000 },
+  ),
   focus: { x, y: 0, z: 0 },
   heightDatum: 0,
 });
@@ -36,7 +40,7 @@ it('строит доступные дороги далеко за прежне�
   expect(world.edges.find((e) => e.way === 10)?.blocked).toBe(false);
   expect(world.edges.find((e) => e.way === 11)?.blocked).toBe(true);
   expect(world.edges.find((e) => e.way === 11)?.unloaded).toBe(true);
-  expect(world.loadedTiles).toEqual(['10,0']);
+  expect(world.loadedTiles).toEqual(input.loadedTiles);
 });
 it('пересчитывает высоту продолжения дороги после получения недостающих данных', () => {
   // Arrange

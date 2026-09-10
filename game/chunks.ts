@@ -111,7 +111,7 @@ function clipToChunk(polygon: Point[], x0: number, z0: number): Point[] {
 }
 export function indexWorld(world: World): Index {
   const existing = worldIndices.get(world); if (existing) return existing;
-  const coverage=coverageBounds(world.loadedTiles);
+  const coverage=coverageBounds(world.loadedTiles,world.center);
   const index: Index = { segments: new Map(), owned: new Map(), buildings: new Map(), junctions: new Set(), spatial:new SpatialGrid(32,coverage),paving:new SpatialGrid(32,coverage),cavities:new SpatialGrid(32,coverage),ground:new Map(),waters:new SpatialGrid(250,coverage) }, seen = new Set<string>();
   const links = new Map<number, Set<number>>(), normals = new Map<string, { x: number; z: number; count: number }>();
   const endpoints = new Map<number, { normal: { x: number; z: number }; x: number; z: number; sign: number }[]>();

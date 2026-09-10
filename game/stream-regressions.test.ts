@@ -3,7 +3,11 @@ import { buildWorld } from './network';
 import { indexWorld, criticalChunks, buildChunk } from './chunks';
 import { reconcileWorld, changedChunks } from './world-update';
 import { SpatialGrid } from './geometry';
-import { routeHasCoverage, needsRaceRecovery } from './stream-coverage';
+import {
+  routeHasCoverage,
+  needsRaceRecovery,
+  sourceTileKeysForLocalBounds,
+} from './stream-coverage';
 import { tileReady } from './region-stream';
 import type { Point, RegionData, OSMElement } from './types';
 
@@ -11,7 +15,10 @@ const point = (x: number, z: number): Point => ({ x, y: 0, z });
 function input(
   points: Point[],
   ways: OSMElement[],
-  tiles = ['0,0'],
+  tiles = sourceTileKeysForLocalBounds(
+    { lat: 0, lon: 0 },
+    { minX: 0, minZ: 0, maxX: 1000, maxZ: 1000 },
+  ),
 ): RegionData {
   return {
     center: { lat: 0, lon: 0 },
@@ -43,45 +50,66 @@ const road = (id: number, nodes: number[]): OSMElement => ({
 it('не предлагает гонку у неготовой границы, но открывает её после загрузки коридора', () => {
   // Arrange
   const data = input(
-    [point(150, 900), point(150, 990), point(850, 990), point(850, 900)],
+    [point(150, 1100), point(150, 1210), point(850, 1210), point(850, 1100)],
     [road(10, [1, 2, 3, 4, 1])],
   );
   // Act
   const before = buildWorld(data),
-    after = buildWorld({ ...data, loadedTiles: ['0,0', '0,1'] });
+    after = buildWorld({
+      ...data,
+      loadedTiles: sourceTileKeysForLocalBounds(data.center, {
+        minX: 0,
+        minZ: 0,
+        maxX: 1000,
+        maxZ: 1500,
+      }),
+    });
   // Assert
   expect(before.routes).toHaveLength(0);
   expect(after.routes.map((r) => r.kind)).toContain('circuit');
   expect(
-    after.routes.every((r) => routeHasCoverage(r.points, after.loadedTiles)),
+    after.routes.every((r) =>
+      routeHasCoverage(r.points, after.loadedTiles, after.center),
+    ),
   ).toBe(true);
 });
 
 it('при выезде гонщика к неготовой границе требует возврат, а ожидание коллизий не сбрасывает гонку', () => {
   // Arrange
-  const loaded = new Set(['0,0']),
-    outside = point(500, 986),
+  const center = { lat: 0, lon: 0 },
+    loaded = new Set(
+      sourceTileKeysForLocalBounds(center, {
+        minX: 200,
+        minZ: 200,
+        maxX: 800,
+        maxZ: 800,
+      }),
+    ),
+    outside = point(500, 1200),
     inside = point(500, 500);
   // Act / Assert
   expect(
-    needsRaceRecovery(true, loaded, criticalChunks(outside, Math.PI / 2, true)),
+    needsRaceRecovery(true, loaded, criticalChunks(outside, 0, true), center),
   ).toBe(true);
   expect(
-    needsRaceRecovery(true, loaded, criticalChunks(inside, Math.PI / 2, true)),
+    needsRaceRecovery(true, loaded, criticalChunks(inside, 0, true), center),
   ).toBe(false);
   expect(
     needsRaceRecovery(
       false,
       loaded,
       criticalChunks(outside, Math.PI / 2, true),
+      center,
     ),
   ).toBe(false);
   const safeRoute = [point(200, 200), point(800, 800)];
-  expect(routeHasCoverage(safeRoute, [...loaded])).toBe(true);
+  expect(routeHasCoverage(safeRoute, [...loaded], center)).toBe(true);
   for (const p of safeRoute)
     for (const heading of [0, Math.PI / 2, Math.PI, -Math.PI / 2])
       expect(
-        criticalChunks(p, heading, true).every((k) => tileReady(loaded, k)),
+        criticalChunks(p, heading, true).every((k) =>
+          tileReady(loaded, k, center),
+        ),
       ).toBe(true);
 });
 
@@ -114,7 +142,12 @@ it('обновляет старые кварталы вдоль всего мо�
     before,
     buildWorld({
       ...data,
-      loadedTiles: ['0,0', '1,0'],
+      loadedTiles: sourceTileKeysForLocalBounds(data.center, {
+        minX: 0,
+        minZ: 0,
+        maxX: 2000,
+        maxZ: 1000,
+      }),
       elevation: { ...data.elevation, patches: [patch(500), patch(1500)] },
     }),
   );
@@ -193,12 +226,10 @@ it('отбрасывает дальнюю часть мультиполигон�
   // Вода в квартале 250..500 обходит остров 200..400, а не закрывает его.
   let surface = 0;
   for (let i = 0; i < water.indices.length; i += 3) {
-    const p = water.indices
-      .slice(i, i + 3)
-      .map((j) => ({
-        x: water.positions[j * 3],
-        z: water.positions[j * 3 + 2],
-      }));
+    const p = water.indices.slice(i, i + 3).map((j) => ({
+      x: water.positions[j * 3],
+      z: water.positions[j * 3 + 2],
+    }));
     surface +=
       Math.abs(
         (p[1].x - p[0].x) * (p[2].z - p[0].z) -

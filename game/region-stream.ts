@@ -1,51 +1,92 @@
-import {
-  cacheGet,
-  cachePut,
-  loadElevations,
-  validateCenter,
-  regionKey,
-} from './data';
-import { MapSource, abortableDelay } from './map-source';
-import { createRegionTileSource, type MapTile } from './region-tile-source';
-import { sampleElevation, toGeo, bounds } from './geo';
-import { selectLegacyMap } from './legacy-map';
-import type { Center, OSMElement, Point, RegionData, Settings } from './types';
+import { cacheGet, cachePut, loadElevations, validateCenter } from './data';
+import { sampleElevation, toGeo, toLocal } from './geo';
 import type { LoadingLog } from './loading-log';
+import { abortableDelay, MapSource } from './map-source';
+import {
+  createRegionTileSource,
+  tileElevationForSession,
+  type MapTile,
+} from './region-tile-source';
+import {
+  SOURCE_TILE_ZOOM,
+  latLonToSourceTile,
+  normalizeSourceTileX,
+  parseSourceTileKey,
+  sourceTileCenter,
+  sourceTileKey,
+} from './source-tiles';
+import {
+  chunkHasCoverage,
+  sourceTileKeysForLocalBounds,
+} from './stream-coverage';
+import type { Center, OSMElement, Point, RegionData, Settings } from './types';
 
-export const MAP_TILE_SIZE = 1000;
 export const MAP_TILE_MARGIN = 300;
-// до 520 м для открытия DEM, до 200 м для сглаживания и запас для интерполяции.
+// Рельеф получает дополнительный запас для сглаживания и интерполяции.
 export const ELEVATION_TILE_SIZE = 2600;
 export const ELEVATION_TILE_WIDTH = 131;
 export type { MapTile } from './region-tile-source';
-export const startupTiles = () => ['-1,-1', '0,-1', '-1,0', '0,0'];
-export const mapTileAt = (p: Pick<Point, 'x' | 'z'>) =>
-  `${Math.floor((p.x + 1e-5) / 1000)},${Math.floor((p.z + 1e-5) / 1000)}`;
-export function tileReady(loaded: Set<string>, chunk: string) {
-  const [x, z] = chunk.split(',').map(Number);
-  return loaded.has(`${Math.floor(x / 4)},${Math.floor(z / 4)}`);
+
+export function startupTiles(center: Center) {
+  const tile = latLonToSourceTile(center.lat, center.lon),
+    result: string[] = [];
+  for (let x = tile.x - 1; x <= tile.x + 1; x++)
+    for (let y = tile.y - 1; y <= tile.y + 1; y++)
+      result.push(
+        sourceTileKey({
+          z: SOURCE_TILE_ZOOM,
+          x: normalizeSourceTileX(x, SOURCE_TILE_ZOOM),
+          y,
+        }),
+      );
+  return result;
 }
-export function tileOrder(p: Point, heading: number, side: number) {
-  const cx = Math.round(p.x / 1000),
-    cz = Math.round(p.z / 1000),
-    half = side / 2;
-  const cells: { key: string; score: number }[] = [];
-  for (let x = cx - half; x < cx + half; x++)
-    for (let z = cz - half; z < cz + half; z++) {
-      const dx = (x + 0.5) * 1000 - p.x,
-        dz = (z + 0.5) * 1000 - p.z,
-        d = Math.hypot(dx, dz);
+
+export const mapTileAt = (p: Pick<Point, 'x' | 'z'>, center: Center) => {
+  const geo = toGeo({ ...p, y: 0 }, center);
+  return sourceTileKey(latLonToSourceTile(geo.lat, geo.lon));
+};
+
+export function tileReady(loaded: Set<string>, chunk: string, center: Center) {
+  return chunkHasCoverage(loaded, chunk, center);
+}
+
+export function tileOrder(
+  p: Point,
+  heading: number,
+  side: number,
+  center: Center,
+) {
+  const geo = toGeo(p, center),
+    current = latLonToSourceTile(geo.lat, geo.lon),
+    half = Math.floor(side / 2),
+    cells: { key: string; score: number }[] = [];
+  for (let dx = -half; dx < side - half; dx++)
+    for (let dy = -half; dy < side - half; dy++) {
+      const id = {
+          z: current.z,
+          x: normalizeSourceTileX(current.x + dx, current.z),
+          y: current.y + dy,
+        },
+        tileCenter = sourceTileCenter(id),
+        local = toLocal(tileCenter.lat, tileCenter.lon, center),
+        offsetX = local.x - p.x,
+        offsetZ = local.z - p.z,
+        distance = Math.hypot(offsetX, offsetZ);
       cells.push({
-        key: `${x},${z}`,
+        key: sourceTileKey(id),
         score:
-          d -
-          ((dx * Math.sin(heading) + dz * Math.cos(heading)) / (d || 1)) * 600,
+          distance -
+          ((offsetX * Math.sin(heading) + offsetZ * Math.cos(heading)) /
+            (distance || 1)) *
+            600,
       });
     }
   return cells
     .sort((a, b) => a.score - b.score || a.key.localeCompare(b.key))
-    .map((c) => c.key);
+    .map((cell) => cell.key);
 }
+
 // Бюджет относится к входным объектам, а не обещает точный размер JS/GPU heap.
 export function retainTiles(
   tiles: Map<string, MapTile>,
@@ -69,12 +110,12 @@ export function retainTiles(
   }
   return kept;
 }
+
 function countrySide(elements: OSMElement[]): RegionData['drivingSide'] {
-  const country = elements.find((e) => e.tags?.['ISO3166-1'])?.tags?.[
-    'ISO3166-1'
-  ];
-  const explicit = elements.find((e) => e.tags?.driving_side)?.tags
-    ?.driving_side;
+  const country = elements.find((element) => element.tags?.['ISO3166-1'])
+      ?.tags?.['ISO3166-1'],
+    explicit = elements.find((element) => element.tags?.driving_side)?.tags
+      ?.driving_side;
   if (!country && !explicit)
     throw new Error(
       'Не удалось определить сторону движения для участка. Выберите точку на суше и повторите.',
@@ -96,6 +137,11 @@ export class RegionStream {
   private tileSource: ReturnType<typeof createRegionTileSource>;
   private control = new AbortController();
   private side: RegionData['drivingSide'] = 'right';
+  private sidePromises = new Map<
+    string,
+    Promise<{ side: RegionData['drivingSide']; resolved: boolean }>
+  >();
+  private sessionSidePromise?: Promise<RegionData['drivingSide']>;
   private datum?: number;
   private failures = new Map<string, number>();
   private messages: {
@@ -107,6 +153,7 @@ export class RegionStream {
   readonly windowSide: number;
   readonly maxElements: number;
   status = '';
+
   constructor(
     readonly center: Center,
     quality: Settings['quality'],
@@ -120,59 +167,44 @@ export class RegionStream {
     });
     this.tileSource = this.createTileSource(log);
   }
-  private cacheKey(key: string) {
-    return `stream:1:${this.center.lat.toFixed(7)}:${this.center.lon.toFixed(7)}:${key}`;
-  }
-  private tileBox(key: string) {
-    const [x, z] = key.split(',').map(Number);
-    const sw = toGeo(
-      { x: x * 1000 - MAP_TILE_MARGIN, y: 0, z: z * 1000 - MAP_TILE_MARGIN },
-      this.center,
-    );
-    const ne = toGeo(
-      {
-        x: (x + 1) * 1000 + MAP_TILE_MARGIN,
-        y: 0,
-        z: (z + 1) * 1000 + MAP_TILE_MARGIN,
-      },
-      this.center,
-    );
-    return { south: sw.lat, west: sw.lon, north: ne.lat, east: ne.lon };
-  }
-  private async restoreLegacy() {
-    const end = this.log?.start('Старый кэш района');
-    const legacy = await cacheGet<RegionData>(regionKey(this.center));
-    this.control.signal.throwIfAborted();
-    const savedAt = legacy ? Date.parse(legacy.fetchedAt) : NaN;
-    if (
-      !legacy ||
-      !Number.isFinite(savedAt) ||
-      Date.now() - savedAt > 7 * 86400000
-    ) {
-      end?.('success', { cacheHit: false });
-      return;
-    }
-    const old = bounds(legacy.center);
-    let restored = 0;
-    for (const key of startupTiles()) {
-      const box = this.tileBox(key);
-      if (
-        box.south < old.south ||
-        box.north > old.north ||
-        box.west < old.west ||
-        box.east > old.east
+
+  private sessionDrivingSide() {
+    this.sessionSidePromise ??= this.source
+      .request(
+        `is_in(${this.center.lat},${this.center.lon})->.a;area.a["admin_level"="2"];out tags;`,
+        'Сторона движения',
       )
-        continue;
-      const elements = selectLegacyMap(legacy.elements, box);
-      if (!elements) continue;
-      await this.source.seedCell(box, elements, savedAt);
-      restored++;
-    }
-    end?.('success', { cacheHit: true, restoredTiles: restored });
-    return restored === 4 ? legacy.drivingSide : undefined;
+      .then(countrySide);
+    return this.sessionSidePromise;
   }
+
+  private drivingSide(center: Center) {
+    const key = `${center.lat.toFixed(7)},${center.lon.toFixed(7)}`,
+      existing = this.sidePromises.get(key);
+    if (existing) return existing;
+    const promise = this.source
+      .request(
+        `is_in(${center.lat},${center.lon})->.a;area.a["admin_level"="2"];out tags;`,
+        `Сторона движения / ${key}`,
+      )
+      .then((elements) => {
+        try {
+          return { side: countrySide(elements), resolved: true } as const;
+        } catch {
+          // Водный тайл не должен блокировать прибрежный старт. Значение
+          // детерминировано, а для центрального тайла уточняется по точке сессии.
+          return { side: 'right', resolved: false } as const;
+        }
+      });
+    this.sidePromises.set(key, promise);
+    return promise;
+  }
+
   private async fetchTile(key: string): Promise<MapTile> {
-    const result = await this.tileSource.load(key, this.control.signal);
+    const result = await this.tileSource.load(
+      parseSourceTileKey(key),
+      this.control.signal,
+    );
     if (result.kind === 'hit') return result.tile;
     this.control.signal.throwIfAborted();
     throw new Error(
@@ -182,68 +214,73 @@ export class RegionStream {
 
   private createTileSource(log?: LoadingLog) {
     return createRegionTileSource({
-      center: this.center,
       elevationSize: ELEVATION_TILE_SIZE,
       elevationWidth: ELEVATION_TILE_WIDTH,
-      tileSize: MAP_TILE_SIZE,
       tileMargin: MAP_TILE_MARGIN,
       log,
-      cacheKey: (key) => this.cacheKey(key),
-      validateCenter,
       get: cacheGet,
       put: cachePut,
-      mapCell: (box, stage) => this.source.cell(box, stage, 0, true),
+      mapCell: (box, stage) => this.source.cellSnapshot(box, stage, 0, true),
       loadElevation: (center, signal, shape) =>
         loadElevations(center, signal, () => {}, log, shape),
+      drivingSide: (center) => this.drivingSide(center),
     });
   }
+
   async start(
     signal: AbortSignal,
     progress: (text: string, n: number) => void,
   ) {
     validateCenter(this.center);
     signal.throwIfAborted();
-    const cancel = () => this.dispose();
-    signal.addEventListener('abort', cancel, { once: true });
-    // Начальный экран имеет собственный срок; фон после старта живёт до конца поездки.
-    const deadline = setTimeout(
-      () =>
-        this.control.abort(
-          new Error(
-            'Подготовка стартового района заняла больше пяти минут. Готовые части сохранены; повторите попытку.',
+    const cancel = () => this.dispose(),
+      deadline = setTimeout(
+        () =>
+          this.control.abort(
+            new Error(
+              'Подготовка стартового района заняла больше пяти минут. Готовые части сохранены; повторите попытку.',
+            ),
           ),
-        ),
-      300000,
+        300000,
+      ),
+      initial = startupTiles(this.center);
+    const centerTile = sourceTileKey(
+      latLonToSourceTile(this.center.lat, this.center.lon),
     );
+    signal.addEventListener('abort', cancel, { once: true });
     try {
-      const restoredSide = await this.restoreLegacy();
-      this.side =
-        restoredSide ??
-        countrySide(
-          await this.source.request(
-            `is_in(${this.center.lat},${this.center.lon})->.a;area.a["admin_level"="2"];out tags;`,
-            'Сторона движения',
-          ),
+      for (const [index, key] of initial.entries()) {
+        progress(
+          `Загружаем стартовый район · ${index + 1} из ${initial.length}`,
+          5 + (72 * index) / initial.length,
         );
-      for (const [i, key] of startupTiles().entries()) {
-        progress(`Загружаем стартовый район · ${i + 1} из 4`, 5 + i * 18);
         const tile = await this.fetchTile(key);
+        if (key === centerTile)
+          this.side =
+            tile.drivingSideSource === 'default'
+              ? await this.sessionDrivingSide()
+              : tile.drivingSide;
         this.tiles.set(key, tile);
         if (
-          [...this.tiles.values()].reduce((n, t) => n + t.elements.length, 0) >
-          this.maxElements
+          [...this.tiles.values()].reduce(
+            (count, item) => count + item.elements.length,
+            0,
+          ) > this.maxElements
         )
           throw new Error(
             'Стартовый район содержит слишком много объектов. Выберите менее плотный участок.',
           );
       }
-      this.datum = sampleElevation(
-        this.tiles.values().next().value!.elevation,
-        0,
-        0,
-      );
+      const elevation = {
+        width: 2,
+        size: 1,
+        values: new Float32Array(4),
+        patches: [...this.tiles.values()].map((tile) =>
+          tileElevationForSession(tile, this.center),
+        ),
+      };
+      this.datum = sampleElevation(elevation, 0, 0);
       progress('Стартовый район готов', 83);
-      // Закрытый журнал старта больше не удерживаем в длительной фоновой сессии.
       this.log = undefined;
       this.source = new MapSource(this.control.signal, undefined, {
         get: cacheGet,
@@ -259,10 +296,12 @@ export class RegionStream {
       signal.removeEventListener('abort', cancel);
     }
   }
+
   snapshot(focus: Point): RegionData {
     const elements = new Map<string, OSMElement>();
     for (const tile of this.tiles.values())
-      for (const e of tile.elements) elements.set(`${e.type}/${e.id}`, e);
+      for (const element of tile.elements)
+        elements.set(`${element.type}/${element.id}`, element);
     return {
       center: this.center,
       elements: [...elements.values()],
@@ -270,7 +309,9 @@ export class RegionStream {
         width: 2,
         size: 1,
         values: new Float32Array(4),
-        patches: [...this.tiles.values()].map((t) => t.elevation),
+        patches: [...this.tiles.values()].map((tile) =>
+          tileElevationForSession(tile, this.center),
+        ),
       },
       drivingSide: this.side,
       fetchedAt: new Date().toISOString(),
@@ -279,15 +320,18 @@ export class RegionStream {
       heightDatum: this.datum,
     };
   }
+
   async next(
     p: Point,
     heading: number,
     latest?: () => { position: Point; heading: number },
   ): Promise<RegionData | null> {
     this.control.signal.throwIfAborted();
-    let order = tileOrder(p, heading, this.windowSide);
+    let order = tileOrder(p, heading, this.windowSide, this.center);
     const key = order.find(
-      (k) => !this.tiles.has(k) && (this.failures.get(k) || 0) <= Date.now(),
+      (candidate) =>
+        !this.tiles.has(candidate) &&
+        (this.failures.get(candidate) || 0) <= Date.now(),
     );
     if (!key) return null;
     this.status = 'Загружаем улицы вокруг';
@@ -299,14 +343,16 @@ export class RegionStream {
       if (current) {
         p = current.position;
         heading = current.heading;
-        order = tileOrder(p, heading, this.windowSide);
+        order = tileOrder(p, heading, this.windowSide, this.center);
       }
-      const pinned = new Set<string>();
-      // После сетевого ожидания используем свежую позицию, чтобы не удалить
-      // опору под машиной, успевшей пересечь несколько клеток.
-      for (const dx of [-350, 350])
-        for (const dz of [-350, 350])
-          pinned.add(mapTileAt({ x: p.x + dx, z: p.z + dz }));
+      const pinned = new Set(
+        sourceTileKeysForLocalBounds(this.center, {
+          minX: p.x - 350,
+          maxX: p.x + 350,
+          minZ: p.z - 350,
+          maxZ: p.z + 350,
+        }),
+      );
       const kept = retainTiles(
         candidate,
         order,
@@ -316,8 +362,10 @@ export class RegionStream {
       );
       if (
         !kept.has(key) ||
-        [...kept.values()].reduce((n, t) => n + t.elements.length, 0) >
-          this.maxElements
+        [...kept.values()].reduce(
+          (count, item) => count + item.elements.length,
+          0,
+        ) > this.maxElements
       ) {
         this.status = 'Дальние улицы подгрузим, когда вы к ним приблизитесь.';
         this.failures.set(key, Date.now() + 30000);
@@ -341,30 +389,33 @@ export class RegionStream {
         tile: key,
         error: error instanceof Error ? error.message : String(error),
       });
-      // Следующая попытка после общей паузы снова проверит доступность серверов.
       await abortableDelay(30000, this.control.signal);
       this.source = new MapSource(this.control.signal, undefined, {
         get: cacheGet,
         put: cachePut,
       });
+      this.sidePromises.clear();
+      this.sessionSidePromise = undefined;
       this.tileSource = this.createTileSource();
       return null;
     } finally {
       const wanted = new Set(order);
-      for (const k of this.failures.keys())
-        if (!wanted.has(k)) this.failures.delete(k);
+      for (const failed of this.failures.keys())
+        if (!wanted.has(failed)) this.failures.delete(failed);
     }
   }
+
   private record(entry: (typeof this.messages)[number]) {
     this.messages.push(entry);
     if (this.messages.length > 40) this.messages.shift();
   }
+
   diagnostics() {
     return {
       tiles: this.tiles.size,
       tileLimit: this.windowSide ** 2,
       inputElements: [...this.tiles.values()].reduce(
-        (n, t) => n + t.elements.length,
+        (count, tile) => count + tile.elements.length,
         0,
       ),
       elementLimit: this.maxElements,
@@ -372,6 +423,7 @@ export class RegionStream {
       recent: this.messages,
     };
   }
+
   dispose() {
     this.control.abort();
     this.tiles.clear();

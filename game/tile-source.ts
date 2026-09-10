@@ -22,7 +22,12 @@ export type TileLoadResult<TTile = TileArtifactV1> =
 export interface TileSource<TTile = TileArtifactV1, TId = SourceTileId> {
   readonly name: string;
   load: (tileId: TId, signal: AbortSignal) => Promise<TileLoadResult<TTile>>;
-  save?: (tileId: TId, tile: TTile, signal: AbortSignal) => Promise<void>;
+  save?: (
+    tileId: TId,
+    tile: TTile,
+    signal: AbortSignal,
+    source?: string,
+  ) => Promise<void>;
 }
 
 function aborted(source: string, signal: AbortSignal, error?: unknown) {
@@ -169,7 +174,7 @@ export class CompositeTileSource<
       if (index > 0 && this.sources[0].save) {
         if (signal.aborted) return aborted(source.name, signal);
         try {
-          await this.sources[0].save(tileId, result.tile, signal);
+          await this.sources[0].save(tileId, result.tile, signal, result.source);
         } catch (error) {
           if (signal.aborted) return aborted(source.name, signal, error);
           this.log?.start('Сохранение source-тайла', {
@@ -193,7 +198,7 @@ export class CompositeTileSource<
 }
 
 type ArtifactCacheEntry = { serialized: string; savedAt: number };
-type ArtifactStore = {
+export type ArtifactStore = {
   get(key: string): Promise<ArtifactCacheEntry | undefined>;
   put(key: string, value: ArtifactCacheEntry): Promise<void>;
 };
@@ -243,13 +248,22 @@ export class IndexedDbTileSource implements TileSource {
     }
   }
 
-  async save(tileId: SourceTileId, tile: TileArtifactV1, signal: AbortSignal) {
+  async save(
+    tileId: SourceTileId,
+    tile: TileArtifactV1,
+    signal: AbortSignal,
+    source?: string,
+  ) {
     signal.throwIfAborted();
     const serialized = encodeTileArtifact(tile);
     decodeTileArtifact(serialized, tileId);
+    const osmTimestamp = Date.parse(tile.osmTimestamp);
     await this.store.put(this.key(tileId), {
       serialized,
-      savedAt: Date.now(),
+      savedAt:
+        source === 'overpass-dem' && Number.isFinite(osmTimestamp)
+          ? Math.min(Date.now(), osmTimestamp)
+          : Date.now(),
     });
     signal.throwIfAborted();
   }

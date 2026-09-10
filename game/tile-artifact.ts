@@ -17,6 +17,7 @@ export type TileArtifactV1Input = SourceTileId & {
   generatedAt: string;
   osmTimestamp: string;
   drivingSide: RegionData['drivingSide'];
+  drivingSideSource?: 'tile-center' | 'default';
   elements: OSMElement[];
   elevation: ElevationGrid;
 };
@@ -155,6 +156,10 @@ function validateElevation(grid: ElevationGrid) {
       'Высоты source-тайла должны быть конечными числами.',
     );
   if (
+    (grid.sizeX !== undefined &&
+      (!Number.isFinite(grid.sizeX) || grid.sizeX <= 0)) ||
+    (grid.sizeZ !== undefined &&
+      (!Number.isFinite(grid.sizeZ) || grid.sizeZ <= 0)) ||
     (grid.offsetX !== undefined && !Number.isFinite(grid.offsetX)) ||
     (grid.offsetZ !== undefined && !Number.isFinite(grid.offsetZ))
   )
@@ -196,7 +201,9 @@ function validateArtifact(input: TileArtifactV1Input) {
     !Number.isFinite(Date.parse(input.generatedAt)) ||
     typeof input.osmTimestamp !== 'string' ||
     input.osmTimestamp.length === 0 ||
-    !['left', 'right'].includes(input.drivingSide)
+    !['left', 'right'].includes(input.drivingSide) ||
+    (input.drivingSideSource !== undefined &&
+      !['tile-center', 'default'].includes(input.drivingSideSource))
   )
     fail('invalid-metadata', 'Source-тайл содержит некорректные метаданные.');
   validateElements(input.elements);
@@ -251,6 +258,8 @@ function encodeElevation(grid: ElevationGrid): EncodedElevationGrid {
   return {
     width: grid.width,
     size: grid.size,
+    ...(grid.sizeX === undefined ? {} : { sizeX: grid.sizeX }),
+    ...(grid.sizeZ === undefined ? {} : { sizeZ: grid.sizeZ }),
     ...(grid.offsetX === undefined ? {} : { offsetX: grid.offsetX }),
     ...(grid.offsetZ === undefined ? {} : { offsetZ: grid.offsetZ }),
     values: {
@@ -286,6 +295,8 @@ function decodeElevation(value: unknown): ElevationGrid {
   const grid: ElevationGrid = {
     width: value.width as number,
     size: value.size as number,
+    ...(value.sizeX === undefined ? {} : { sizeX: value.sizeX as number }),
+    ...(value.sizeZ === undefined ? {} : { sizeZ: value.sizeZ as number }),
     values,
     ...(value.offsetX === undefined
       ? {}

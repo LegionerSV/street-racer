@@ -113,3 +113,26 @@ export function sourceTileBounds(id: SourceTileId): SourceTileBounds {
     east: ((x + 1) / count) * 360 - 180,
   };
 }
+
+export function sourceTileKey(id: SourceTileId) {
+  return `${id.z}/${normalizeSourceTileX(id.x, id.z)}/${id.y}`;
+}
+
+export function parseSourceTileKey(key: string): SourceTileId {
+  const parts = key.split('/').map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part)))
+    throw new Error(`Некорректный ключ source-тайла: ${key}.`);
+  const [z, x, y] = parts;
+  const normalized = { z, x: normalizeSourceTileX(x, z), y };
+  if (!isValidSourceTileY(y, z) || normalized.x !== x)
+    throw new Error(`Некорректный ключ source-тайла: ${key}.`);
+  return normalized;
+}
+
+export function sourceTileCenter(id: SourceTileId) {
+  const bounds = sourceTileBounds(id);
+  return {
+    lat: (bounds.south + bounds.north) / 2,
+    lon: (bounds.west + bounds.east) / 2,
+  };
+}

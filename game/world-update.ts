@@ -42,7 +42,7 @@ export function changedChunks(
   const changed = [...new Set([...oldCoverage, ...newCoverage])].filter(
     (k) => oldCoverage.has(k) !== newCoverage.has(k),
   );
-  dirty.push(...coverageBounds(changed)!);
+  dirty.push(...coverageBounds(changed, next.center)!);
   const samePoints = (a: Point[], b: Point[]) =>
     a.length === b.length &&
     a.every((p, i) => p.x === b[i].x && p.y === b[i].y && p.z === b[i].z);
@@ -97,16 +97,20 @@ export function changedChunks(
       !old ||
       old.width !== patch.width ||
       old.size !== patch.size ||
+      old.sizeX !== patch.sizeX ||
+      old.sizeZ !== patch.sizeZ ||
       old.values.length !== patch.values.length ||
       !old.values.every((v, i) => v === patch.values[i])
     ) {
       const x = patch.offsetX || 0,
-        z = patch.offsetZ || 0;
+        z = patch.offsetZ || 0,
+        sizeX = patch.sizeX ?? patch.size,
+        sizeZ = patch.sizeZ ?? patch.size;
       dirty.push({
-        minX: x - patch.size / 2 - 60,
-        maxX: x + patch.size / 2 + 60,
-        minZ: z - patch.size / 2 - 60,
-        maxZ: z + patch.size / 2 + 60,
+        minX: x - sizeX / 2 - 60,
+        maxX: x + sizeX / 2 + 60,
+        minZ: z - sizeZ / 2 - 60,
+        maxZ: z + sizeZ / 2 + 60,
       });
     }
   }
