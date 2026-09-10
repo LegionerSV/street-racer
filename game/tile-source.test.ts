@@ -3,6 +3,7 @@ import {
   CompositeTileSource,
   IndexedDbTileSource,
   OverpassTileSource,
+  S3TileSource,
   StaticTileSource,
   type TileLoadResult,
   type TileSource,
@@ -143,6 +144,41 @@ describe('CompositeTileSource', () => {
     // Assert
     expect(result.kind).toBe('hit');
     expect(fallback.load).toHaveBeenCalledTimes(1);
+  });
+
+  it('передаёт в диагностику источник и точную причину fallback', async () => {
+    // Arrange
+    const remote = source('s3', async () => ({
+        kind: 'temporary-failure',
+        source: 's3',
+        error: 'S3 GET: HTTP 503.',
+      })),
+      fallback = source('overpass-dem', async () => ({
+        kind: 'hit',
+        source: 'overpass-dem',
+        tile: { value: 'built' },
+      })),
+      observe = vi.fn();
+
+    // Act
+    await new CompositeTileSource(
+      [remote, fallback],
+      undefined,
+      undefined,
+      observe,
+    ).load('15/1/2', new AbortController().signal);
+
+    // Assert
+    expect(observe).toHaveBeenNthCalledWith(1, '15/1/2', {
+      kind: 'temporary-failure',
+      source: 's3',
+      error: 'S3 GET: HTTP 503.',
+    });
+    expect(observe).toHaveBeenNthCalledWith(2, '15/1/2', {
+      kind: 'hit',
+      source: 'overpass-dem',
+      tile: { value: 'built' },
+    });
   });
 
   it('aborted немедленно завершает цепочку', async () => {
@@ -343,6 +379,261 @@ function artifact(): TileArtifactV1Input {
 }
 
 describe('источники TileArtifactV1', () => {
+  function catalog(
+    tileChecksum = JSON.parse(encodeTileArtifact(artifact())).checksum,
+  ) {
+    return {
+      schemaVersion: 1,
+      generatedAt: '2026-09-10T01:00:00.000Z',
+      activeDatasets: ['moscow-2026-09-10'],
+      datasets: [
+        {
+          datasetId: 'moscow-2026-09-10',
+          schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+          tileBuildVersion: TILE_BUILD_VERSION,
+          path: 'maps/v1/2026-09-09-source-tile-1/moscow-2026-09-10',
+          tiles: {
+            '15/19808/10243': {
+              bytes: 1234,
+              checksum: tileChecksum,
+            },
+          },
+        },
+      ],
+    };
+  }
+
+  it('не выполняет S3-запросы без базового URL', async () => {
+    // Arrange
+    const request = vi.fn();
+
+    // Act
+    const result = await new S3TileSource({ fetch: request }).load(
+      artifactId,
+      new AbortController().signal,
+    );
+
+    // Assert
+    expect(result).toEqual({
+      kind: 'missing',
+      source: 's3',
+      error: 'S3 source-тайлы отключены: VITE_MAP_TILE_BASE_URL не задан.',
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('не начинает чтение каталога для уже отменённого запроса', async () => {
+    // Arrange
+    const request = vi.fn(),
+      control = new AbortController();
+    control.abort(new Error('Запрос отменён.'));
+
+    // Act
+    const result = await new S3TileSource({
+      baseUrl: 'https://maps.example',
+      fetch: request,
+    }).load(artifactId, control.signal);
+
+    // Assert
+    expect(result).toEqual({
+      kind: 'aborted',
+      source: 's3',
+      error: 'Запрос отменён.',
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'maps/%2e%2e/secret',
+    'maps/base/..\\secret',
+    'maps/base/tile?token=secret',
+    'maps/base/tile#fragment',
+  ])('отклоняет небезопасный путь dataset: %s', async (path) => {
+    // Arrange
+    const unsafeCatalog = catalog();
+    unsafeCatalog.datasets[0].path = path;
+    const request = vi.fn(
+        async () => new Response(JSON.stringify(unsafeCatalog)),
+      ),
+      source = new S3TileSource({
+        baseUrl: 'https://maps.example/public-prefix',
+        fetch: request,
+      });
+
+    // Act
+    const result = await source.load(artifactId, new AbortController().signal);
+
+    // Assert
+    expect(result).toMatchObject({ kind: 'corrupt', source: 's3' });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('кэширует каталог и не запрашивает тайл, которого в нём нет', async () => {
+    // Arrange
+    const request = vi.fn(async (url: string) => {
+      expect(url).toBe('https://maps.example/maps/catalog-v1.json');
+      return new Response(JSON.stringify(catalog()));
+    });
+    const source = new S3TileSource({
+      baseUrl: 'https://maps.example/',
+      fetch: request,
+    });
+
+    // Act
+    const first = await source.load(
+      { ...artifactId, x: artifactId.x + 1 },
+      new AbortController().signal,
+    );
+    const second = await source.load(
+      { ...artifactId, y: artifactId.y + 1 },
+      new AbortController().signal,
+    );
+
+    // Assert
+    expect(first.kind).toBe('missing');
+    expect(second.kind).toBe('missing');
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('использует один каталог после безопасного пересоздания цепочки в той же сессии', async () => {
+    // Arrange
+    const catalogCache = new Map(),
+      request = vi.fn(async () => new Response(JSON.stringify(catalog()))),
+      options = {
+        baseUrl: 'https://maps.example',
+        fetch: request,
+        catalogCache,
+      };
+
+    // Act
+    await new S3TileSource(options).load(
+      { ...artifactId, x: artifactId.x + 1 },
+      new AbortController().signal,
+    );
+    await new S3TileSource(options).load(
+      { ...artifactId, y: artifactId.y + 1 },
+      new AbortController().signal,
+    );
+
+    // Assert
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('не кэширует ошибку каталога и безопасно повторяет его чтение', async () => {
+    // Arrange
+    const request = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('', { status: 503 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(catalog()))),
+      source = new S3TileSource({
+        baseUrl: 'https://maps.example',
+        fetch: request,
+      }),
+      missingId = { ...artifactId, x: artifactId.x + 1 };
+
+    // Act
+    const failed = await source.load(missingId, new AbortController().signal),
+      retried = await source.load(missingId, new AbortController().signal);
+
+    // Assert
+    expect(failed).toMatchObject({
+      kind: 'temporary-failure',
+      error: 'Каталог S3 недоступен: HTTP 503.',
+    });
+    expect(retried.kind).toBe('missing');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('при S3 hit делает GET без HEAD, проверяет артефакт и не вызывает fallback', async () => {
+    // Arrange
+    const encoded = encodeTileArtifact(artifact()),
+      store = { get: vi.fn(async () => undefined), put: vi.fn(async () => {}) },
+      request = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify(catalog())))
+        .mockResolvedValueOnce(new Response(encoded)),
+      cache = new IndexedDbTileSource(store),
+      remote = new S3TileSource({
+        baseUrl: 'https://maps.example',
+        fetch: request,
+      }),
+      build = vi.fn(async () => artifact()),
+      fallback = new OverpassTileSource(build);
+
+    // Act
+    const result = await new CompositeTileSource([
+      cache,
+      remote,
+      fallback,
+    ]).load(artifactId, new AbortController().signal);
+
+    // Assert
+    expect(result.kind).toBe('hit');
+    expect(result.source).toBe('s3');
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      'https://maps.example/maps/v1/2026-09-09-source-tile-1/moscow-2026-09-10/15/19808/10243.tile.json.br',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(
+      request.mock.calls.every(([, init]) => init?.method !== 'HEAD'),
+    ).toBe(true);
+    expect(build).not.toHaveBeenCalled();
+    expect(store.put).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['temporary-failure', new TypeError('Failed to fetch')],
+    ['incompatible', { ...catalog(), schemaVersion: 2 }],
+  ] as const)(
+    'диагностирует S3 %s и передаёт управление fallback',
+    async (kind, value) => {
+      // Arrange
+      const request = vi.fn(async () => {
+          if (value instanceof Error) throw value;
+          return new Response(JSON.stringify(value));
+        }),
+        remote = new S3TileSource({
+          baseUrl: 'https://maps.example',
+          fetch: request,
+        });
+
+      // Act
+      const result = await remote.load(
+        artifactId,
+        new AbortController().signal,
+      );
+
+      // Assert
+      expect(result.kind).toBe(kind);
+      if (result.kind !== 'hit') expect(result.error).toBeTruthy();
+    },
+  );
+
+  it('отклоняет тайл с checksum, не совпадающим с каталогом', async () => {
+    // Arrange
+    const request = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify(catalog('crc32:00000000'))),
+        )
+        .mockResolvedValueOnce(new Response(encodeTileArtifact(artifact()))),
+      remote = new S3TileSource({
+        baseUrl: 'https://maps.example',
+        fetch: request,
+      });
+
+    // Act
+    const result = await remote.load(artifactId, new AbortController().signal);
+
+    // Assert
+    expect(result.kind).toBe('corrupt');
+    if (result.kind !== 'hit')
+      expect(result.error).toBe(
+        'Контрольная сумма source-тайла 15/19808/10243 не совпадает с каталогом S3.',
+      );
+  });
+
   it.each([
     ['incompatible', { schemaVersion: 2 }],
     ['corrupt', { checksum: 'crc32:00000000' }],

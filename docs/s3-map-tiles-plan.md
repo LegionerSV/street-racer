@@ -588,6 +588,8 @@ OSM object -> source tiles / reference count
 
 ### MAP-S3-06. Добавить каталог наборов и S3TileSource
 
+**Статус:** ✅ Выполнено.
+
 **Зависимости:** MAP-S3-03, MAP-S3-04.
 
 **Задание агенту:**

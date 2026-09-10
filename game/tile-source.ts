@@ -1,6 +1,8 @@
 import type { LoadingLog } from './loading-log';
 import type { SourceTileId } from './source-tiles';
 import {
+  TILE_ARTIFACT_SCHEMA_VERSION,
+  TILE_BUILD_VERSION,
   TileArtifactError,
   decodeTileArtifact,
   encodeTileArtifact,
@@ -93,6 +95,7 @@ export class CompositeTileSource<
     private sources: TileSource<TTile, TId>[],
     private key: (tileId: TId) => string = defaultTileKey,
     private log?: LoadingLog,
+    private observe?: (tileId: TId, result: TileLoadResult<TTile>) => void,
   ) {
     if (sources.length === 0)
       throw new Error('Цепочка источников тайлов не может быть пустой.');
@@ -157,6 +160,7 @@ export class CompositeTileSource<
       } catch (error) {
         result = thrownResult(source.name, signal, error);
       }
+      this.observe?.(tileId, result);
       last = result;
       end?.(
         result.kind === 'hit'
@@ -174,7 +178,12 @@ export class CompositeTileSource<
       if (index > 0 && this.sources[0].save) {
         if (signal.aborted) return aborted(source.name, signal);
         try {
-          await this.sources[0].save(tileId, result.tile, signal, result.source);
+          await this.sources[0].save(
+            tileId,
+            result.tile,
+            signal,
+            result.source,
+          );
         } catch (error) {
           if (signal.aborted) return aborted(source.name, signal, error);
           this.log?.start('Сохранение source-тайла', {
@@ -278,6 +287,326 @@ export class StaticTileSource implements TileSource {
   ): Promise<TileLoadResult> {
     if (signal.aborted) return aborted(this.name, signal);
     return { kind: 'missing', source: this.name };
+  }
+}
+
+export type TileCatalogEntry = {
+  bytes: number;
+  checksum: string;
+  path?: string;
+};
+
+export type TileCatalogDatasetV1 = {
+  datasetId: string;
+  schemaVersion: number;
+  tileBuildVersion: string;
+  path: string;
+  tiles: Record<string, TileCatalogEntry>;
+};
+
+export type TileCatalogV1 = {
+  schemaVersion: 1;
+  generatedAt: string;
+  activeDatasets: string[];
+  datasets: TileCatalogDatasetV1[];
+};
+
+type S3TileSourceOptions = {
+  baseUrl?: string;
+  fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+  timeoutMs?: number;
+  catalogCache?: Map<string, Promise<TileCatalogV1>>;
+};
+
+class CatalogError extends Error {
+  constructor(
+    readonly kind: 'temporary-failure' | 'incompatible' | 'corrupt',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CatalogError';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function safeCatalogPath(value: unknown) {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    /^[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/.test(value) &&
+    value
+      .split('/')
+      .every((part) => part !== '' && part !== '.' && part !== '..')
+  );
+}
+
+function decodeCatalog(serialized: string): TileCatalogV1 {
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized);
+  } catch {
+    throw new CatalogError('corrupt', 'Каталог S3 содержит некорректный JSON.');
+  }
+  if (!isRecord(value) || value.schemaVersion !== 1)
+    throw new CatalogError(
+      'incompatible',
+      `Несовместимая версия каталога S3: ${isRecord(value) ? String(value.schemaVersion) : 'не указана'}.`,
+    );
+  if (
+    typeof value.generatedAt !== 'string' ||
+    !Number.isFinite(Date.parse(value.generatedAt)) ||
+    !Array.isArray(value.activeDatasets) ||
+    !value.activeDatasets.every((id) => typeof id === 'string') ||
+    !Array.isArray(value.datasets)
+  )
+    throw new CatalogError(
+      'corrupt',
+      'Каталог S3 содержит некорректные метаданные.',
+    );
+  const datasetIds = new Set<string>();
+  for (const dataset of value.datasets) {
+    if (
+      !isRecord(dataset) ||
+      typeof dataset.datasetId !== 'string' ||
+      datasetIds.has(dataset.datasetId) ||
+      !Number.isInteger(dataset.schemaVersion) ||
+      typeof dataset.tileBuildVersion !== 'string' ||
+      !safeCatalogPath(dataset.path) ||
+      !isRecord(dataset.tiles)
+    )
+      throw new CatalogError(
+        'corrupt',
+        'Каталог S3 содержит некорректный dataset.',
+      );
+    datasetIds.add(dataset.datasetId);
+    for (const [key, entry] of Object.entries(dataset.tiles))
+      if (
+        !/^\d+\/\d+\/\d+$/.test(key) ||
+        !isRecord(entry) ||
+        !Number.isInteger(entry.bytes) ||
+        (entry.bytes as number) <= 0 ||
+        typeof entry.checksum !== 'string' ||
+        !/^crc32:[0-9a-f]{8}$/.test(entry.checksum) ||
+        (entry.path !== undefined && !safeCatalogPath(entry.path))
+      )
+        throw new CatalogError(
+          'corrupt',
+          'Каталог S3 содержит некорректную запись тайла.',
+        );
+  }
+  if (!value.activeDatasets.every((id) => datasetIds.has(id)))
+    throw new CatalogError(
+      'corrupt',
+      'Каталог S3 ссылается на отсутствующий активный dataset.',
+    );
+  return value as TileCatalogV1;
+}
+
+function waitForAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+export class S3TileSource implements TileSource {
+  readonly name = 's3';
+  private readonly baseUrl?: string;
+  private readonly configurationError?: string;
+  private readonly request: (
+    input: string,
+    init?: RequestInit,
+  ) => Promise<Response>;
+  private readonly timeoutMs: number;
+  private readonly catalogCache: Map<string, Promise<TileCatalogV1>>;
+
+  constructor(options: S3TileSourceOptions = {}) {
+    const configured = options.baseUrl?.trim();
+    if (configured)
+      try {
+        const parsed = new URL(configured);
+        if (
+          !['http:', 'https:'].includes(parsed.protocol) ||
+          parsed.username ||
+          parsed.password ||
+          parsed.search ||
+          parsed.hash
+        )
+          throw new Error(
+            'разрешены только публичные HTTP(S) URL без credentials, query и hash',
+          );
+        this.baseUrl = parsed.href.replace(/\/+$/, '');
+      } catch (error) {
+        this.configurationError = `Некорректный VITE_MAP_TILE_BASE_URL: ${error instanceof Error ? error.message : String(error)}.`;
+      }
+    this.request =
+      options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.timeoutMs = options.timeoutMs ?? 15_000;
+    this.catalogCache = options.catalogCache ?? new Map();
+  }
+
+  private url(path: string) {
+    if (!safeCatalogPath(path))
+      throw new CatalogError(
+        'corrupt',
+        'Каталог S3 содержит небезопасный путь.',
+      );
+    const base = new URL(`${this.baseUrl}/`),
+      resolved = new URL(path, base),
+      basePath = base.pathname.endsWith('/')
+        ? base.pathname
+        : `${base.pathname}/`;
+    if (
+      resolved.origin !== base.origin ||
+      !resolved.pathname.startsWith(basePath)
+    )
+      throw new CatalogError(
+        'corrupt',
+        'Путь каталога S3 выходит за базовый префикс.',
+      );
+    return resolved.href;
+  }
+
+  private async fetchText(path: string, signal?: AbortSignal) {
+    const timeout = AbortSignal.timeout(this.timeoutMs),
+      combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    try {
+      const response = await this.request(this.url(path), {
+        method: 'GET',
+        signal: combined,
+        headers: { Accept: 'application/json' },
+      });
+      return { response, text: await response.text() };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const reason = timeout.aborted
+        ? `Таймаут S3 GET (${this.timeoutMs} мс).`
+        : `Сетевая/CORS ошибка S3 GET: ${error instanceof Error ? error.message : String(error)}.`;
+      throw new CatalogError('temporary-failure', reason);
+    }
+  }
+
+  private loadCatalog() {
+    const cacheKey = this.baseUrl!;
+    let catalog = this.catalogCache.get(cacheKey);
+    if (!catalog) {
+      const pending = this.fetchText('maps/catalog-v1.json')
+        .then(({ response, text }) => {
+          if (!response.ok)
+            throw new CatalogError(
+              'temporary-failure',
+              `Каталог S3 недоступен: HTTP ${response.status}.`,
+            );
+          return decodeCatalog(text);
+        })
+        .catch((error) => {
+          if (this.catalogCache.get(cacheKey) === pending)
+            this.catalogCache.delete(cacheKey);
+          throw error;
+        });
+      catalog = pending;
+      this.catalogCache.set(cacheKey, catalog);
+    }
+    return catalog;
+  }
+
+  async load(
+    tileId: SourceTileId,
+    signal: AbortSignal,
+  ): Promise<TileLoadResult> {
+    if (signal.aborted) return aborted(this.name, signal);
+    if (this.configurationError)
+      return {
+        kind: 'temporary-failure',
+        source: this.name,
+        error: this.configurationError,
+      };
+    if (!this.baseUrl)
+      return {
+        kind: 'missing',
+        source: this.name,
+        error: 'S3 source-тайлы отключены: VITE_MAP_TILE_BASE_URL не задан.',
+      };
+    try {
+      const catalog = await waitForAbort(this.loadCatalog(), signal),
+        key = sourceTileKey(tileId),
+        datasets = new Map(
+          catalog.datasets.map((dataset) => [dataset.datasetId, dataset]),
+        );
+      let incompatible: TileCatalogDatasetV1 | undefined;
+      for (const datasetId of catalog.activeDatasets) {
+        const dataset = datasets.get(datasetId)!,
+          entry = dataset.tiles[key];
+        if (!entry) continue;
+        if (
+          dataset.schemaVersion !== TILE_ARTIFACT_SCHEMA_VERSION ||
+          dataset.tileBuildVersion !== TILE_BUILD_VERSION
+        ) {
+          incompatible ??= dataset;
+          continue;
+        }
+        const path = entry.path ?? `${dataset.path}/${key}.tile.json.br`,
+          { response, text } = await this.fetchText(path, signal);
+        if (response.status === 404)
+          return {
+            kind: 'missing',
+            source: this.name,
+            error: `Source-тайл ${key} заявлен в каталоге, но отсутствует в S3 (HTTP 404).`,
+          };
+        if (!response.ok)
+          return {
+            kind: 'temporary-failure',
+            source: this.name,
+            error: `S3 GET source-тайла ${key} завершился с HTTP ${response.status}.`,
+          };
+        const tile = decodeTileArtifact(text, tileId);
+        if (tile.checksum !== entry.checksum)
+          return {
+            kind: 'corrupt',
+            source: this.name,
+            error: `Контрольная сумма source-тайла ${key} не совпадает с каталогом S3.`,
+          };
+        return { kind: 'hit', source: this.name, tile };
+      }
+      if (incompatible)
+        return {
+          kind: 'incompatible',
+          source: this.name,
+          error: `Source-тайл ${key} опубликован в несовместимом dataset ${incompatible.datasetId} (schema ${incompatible.schemaVersion}, build ${incompatible.tileBuildVersion}).`,
+        };
+      return {
+        kind: 'missing',
+        source: this.name,
+        error: `Source-тайл ${key} отсутствует в активных datasets каталога S3.`,
+      };
+    } catch (error) {
+      if (signal.aborted) return aborted(this.name, signal, error);
+      if (error instanceof TileArtifactError)
+        return {
+          kind: error.code.startsWith('incompatible-')
+            ? 'incompatible'
+            : 'corrupt',
+          source: this.name,
+          error: error.message,
+        };
+      if (error instanceof CatalogError)
+        return { kind: error.kind, source: this.name, error: error.message };
+      return thrownResult(this.name, signal, error);
+    }
   }
 }
 

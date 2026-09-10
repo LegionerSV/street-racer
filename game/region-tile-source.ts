@@ -4,7 +4,7 @@ import {
   CompositeTileSource,
   IndexedDbTileSource,
   OverpassTileSource,
-  StaticTileSource,
+  S3TileSource,
   type ArtifactStore,
 } from './tile-source';
 import { toGeo, toLocal } from './geo';
@@ -28,6 +28,14 @@ type RegionTileSourceOptions = {
   elevationWidth: number;
   tileMargin: number;
   log?: LoadingLog;
+  tileBaseUrl?: string;
+  tileFetch?: (input: string, init?: RequestInit) => Promise<Response>;
+  tileRequestTimeoutMs?: number;
+  catalogCache?: Map<string, Promise<import('./tile-source').TileCatalogV1>>;
+  onSourceResult?: (
+    tileId: SourceTileId,
+    result: import('./tile-source').TileLoadResult,
+  ) => void;
   get: <T>(key: string) => Promise<T | undefined>;
   put: <T>(key: string, value: T) => Promise<void>;
   mapCell: (
@@ -77,7 +85,18 @@ export function createRegionTileSource(options: RegionTileSourceOptions) {
       put: (key, value) => options.put(key, value),
     },
     cache = new IndexedDbTileSource(store),
-    remote = new StaticTileSource(),
+    remote = new S3TileSource({
+      baseUrl:
+        options.tileBaseUrl ??
+        (
+          import.meta as ImportMeta & {
+            env?: Record<string, string | undefined>;
+          }
+        ).env?.VITE_MAP_TILE_BASE_URL,
+      fetch: options.tileFetch,
+      timeoutMs: options.tileRequestTimeoutMs,
+      catalogCache: options.catalogCache,
+    }),
     fallback = new OverpassTileSource(async (id, signal) => {
       signal.throwIfAborted();
       const coreBounds = sourceTileBounds(id),
@@ -112,6 +131,7 @@ export function createRegionTileSource(options: RegionTileSourceOptions) {
     [cache, remote, fallback],
     (id) => `${id.z}/${id.x}/${id.y}`,
     options.log,
+    options.onSourceResult,
   );
 }
 
@@ -120,10 +140,10 @@ export function tileElevationForSession(
   sessionCenter: Center,
 ): ElevationGrid {
   const local = toLocal(
-    (tile.coreBounds.south + tile.coreBounds.north) / 2,
-    (tile.coreBounds.west + tile.coreBounds.east) / 2,
-    sessionCenter,
-  ),
+      (tile.coreBounds.south + tile.coreBounds.north) / 2,
+      (tile.coreBounds.west + tile.coreBounds.east) / 2,
+      sessionCenter,
+    ),
     tileCenterLatitude = (tile.coreBounds.south + tile.coreBounds.north) / 2,
     xScale =
       Math.cos((sessionCenter.lat * Math.PI) / 180) /

@@ -203,9 +203,19 @@ export class RegionStream {
   private messages: {
     at: string;
     tile: string;
+    source?: string;
+    fallback?: string;
     error?: string;
     elements?: number;
   }[] = [];
+  private tileDiagnostics = new Map<
+    string,
+    { source?: string; fallback?: string }
+  >();
+  private catalogCache = new Map<
+    string,
+    Promise<import('./tile-source').TileCatalogV1>
+  >();
   readonly policy: MapStreamingPolicy;
   readonly maxElements: number;
   private blockingTileCount = 0;
@@ -283,6 +293,17 @@ export class RegionStream {
       elevationWidth: ELEVATION_TILE_WIDTH,
       tileMargin: MAP_TILE_MARGIN,
       log,
+      catalogCache: this.catalogCache,
+      onSourceResult: (id, result) => {
+        const key = sourceTileKey(id),
+          current = this.tileDiagnostics.get(key) ?? {};
+        if (result.kind === 'hit') {
+          current.source = result.source;
+          if (result.source !== 'overpass-dem') current.fallback = undefined;
+        } else if (result.source === 's3')
+          current.fallback = `${result.kind}: ${result.error ?? 'без деталей'}`;
+        this.tileDiagnostics.set(key, current);
+      },
       get: cacheGet,
       put: cachePut,
       mapCell: (box, stage) => this.source.cellSnapshot(box, stage, 0, true),
@@ -455,6 +476,8 @@ export class RegionStream {
           this.record({
             at: new Date().toISOString(),
             tile: key,
+            source: this.tileDiagnostics.get(key)?.source,
+            fallback: this.tileDiagnostics.get(key)?.fallback,
             error:
               result.reason instanceof Error
                 ? result.reason.message
@@ -498,6 +521,9 @@ export class RegionStream {
         return null;
       }
       this.tiles = kept;
+      for (const key of this.tileDiagnostics.keys())
+        if (!kept.has(key) && !wanted.has(key))
+          this.tileDiagnostics.delete(key);
       this.blockingTileCount = this.missingBlockingTiles(p, heading);
       this.status = '';
       for (const result of accepted)
@@ -506,6 +532,8 @@ export class RegionStream {
           this.record({
             at: new Date().toISOString(),
             tile: result.value.key,
+            source: this.tileDiagnostics.get(result.value.key)?.source,
+            fallback: this.tileDiagnostics.get(result.value.key)?.fallback,
             elements: result.value.tile.elements.length,
           });
         }
@@ -556,6 +584,12 @@ export class RegionStream {
       ),
       elementLimit: this.maxElements,
       status: this.status,
+      sources: [...this.tileDiagnostics.values()].reduce<
+        Record<string, number>
+      >((counts, item) => {
+        if (item.source) counts[item.source] = (counts[item.source] ?? 0) + 1;
+        return counts;
+      }, {}),
       recent: this.messages,
     };
   }
@@ -564,5 +598,6 @@ export class RegionStream {
     this.control.abort();
     this.tiles.clear();
     this.failures.clear();
+    this.tileDiagnostics.clear();
   }
 }
