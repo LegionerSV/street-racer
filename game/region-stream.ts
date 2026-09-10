@@ -6,16 +6,10 @@ import {
   regionKey,
 } from './data';
 import { MapSource, abortableDelay } from './map-source';
+import { createRegionTileSource, type MapTile } from './region-tile-source';
 import { sampleElevation, toGeo, bounds } from './geo';
 import { selectLegacyMap } from './legacy-map';
-import type {
-  Center,
-  ElevationGrid,
-  OSMElement,
-  Point,
-  RegionData,
-  Settings,
-} from './types';
+import type { Center, OSMElement, Point, RegionData, Settings } from './types';
 import type { LoadingLog } from './loading-log';
 
 export const MAP_TILE_SIZE = 1000;
@@ -23,11 +17,7 @@ export const MAP_TILE_MARGIN = 300;
 // до 520 м для открытия DEM, до 200 м для сглаживания и запас для интерполяции.
 export const ELEVATION_TILE_SIZE = 2600;
 export const ELEVATION_TILE_WIDTH = 131;
-export type MapTile = {
-  key: string;
-  elements: OSMElement[];
-  elevation: ElevationGrid;
-};
+export type { MapTile } from './region-tile-source';
 export const startupTiles = () => ['-1,-1', '0,-1', '-1,0', '0,0'];
 export const mapTileAt = (p: Pick<Point, 'x' | 'z'>) =>
   `${Math.floor((p.x + 1e-5) / 1000)},${Math.floor((p.z + 1e-5) / 1000)}`;
@@ -103,6 +93,7 @@ function countrySide(elements: OSMElement[]): RegionData['drivingSide'] {
 export class RegionStream {
   private tiles = new Map<string, MapTile>();
   private source: MapSource;
+  private tileSource: ReturnType<typeof createRegionTileSource>;
   private control = new AbortController();
   private side: RegionData['drivingSide'] = 'right';
   private datum?: number;
@@ -127,6 +118,7 @@ export class RegionStream {
       get: cacheGet,
       put: cachePut,
     });
+    this.tileSource = this.createTileSource(log);
   }
   private cacheKey(key: string) {
     return `stream:1:${this.center.lat.toFixed(7)}:${this.center.lon.toFixed(7)}:${key}`;
@@ -180,57 +172,30 @@ export class RegionStream {
     return restored === 4 ? legacy.drivingSide : undefined;
   }
   private async fetchTile(key: string): Promise<MapTile> {
+    const result = await this.tileSource.load(key, this.control.signal);
+    if (result.kind === 'hit') return result.tile;
     this.control.signal.throwIfAborted();
-    const cached = await cacheGet<{ tile: MapTile; savedAt: number }>(
-      this.cacheKey(key),
+    throw new Error(
+      result.error ?? `Не удалось получить участок карты ${key}.`,
     );
-    this.control.signal.throwIfAborted();
-    const fresh = cached && Date.now() - cached.savedAt < 7 * 86400000;
-    if (
-      fresh &&
-      cached.tile.elevation.size === ELEVATION_TILE_SIZE &&
-      cached.tile.elevation.width === ELEVATION_TILE_WIDTH
-    )
-      return cached.tile;
-    const [x, z] = key.split(',').map(Number),
-      size = 1000 + MAP_TILE_MARGIN * 2,
-      offsetX = (x + 0.5) * 1000,
-      offsetZ = (z + 0.5) * 1000;
-    const sw = toGeo(
-        { x: offsetX - size / 2, y: 0, z: offsetZ - size / 2 },
-        this.center,
-      ),
-      ne = toGeo(
-        { x: offsetX + size / 2, y: 0, z: offsetZ + size / 2 },
-        this.center,
-      );
-    validateCenter(sw);
-    validateCenter(ne);
-    // Старые OSM-данные остаются пригодны: обновляем только недостаточный запас DEM.
-    // Рельеф получает ту же сетку в метрах, независимо от широты центра клетки.
-    const [elements, elevation] = await Promise.all([
-      fresh
-        ? cached.tile.elements
-        : this.source.cell(
-            { south: sw.lat, west: sw.lon, north: ne.lat, east: ne.lon },
-            `Участок ${key}`,
-            0,
-            true,
-          ),
-      loadElevations(this.center, this.control.signal, () => {}, this.log, {
-        size: ELEVATION_TILE_SIZE,
-        width: ELEVATION_TILE_WIDTH,
-        offsetX,
-        offsetZ,
-      }),
-    ]);
-    this.control.signal.throwIfAborted();
-    const tile = { key, elements, elevation };
-    await cachePut(this.cacheKey(key), {
-      tile,
-      savedAt: fresh ? cached.savedAt : Date.now(),
+  }
+
+  private createTileSource(log?: LoadingLog) {
+    return createRegionTileSource({
+      center: this.center,
+      elevationSize: ELEVATION_TILE_SIZE,
+      elevationWidth: ELEVATION_TILE_WIDTH,
+      tileSize: MAP_TILE_SIZE,
+      tileMargin: MAP_TILE_MARGIN,
+      log,
+      cacheKey: (key) => this.cacheKey(key),
+      validateCenter,
+      get: cacheGet,
+      put: cachePut,
+      mapCell: (box, stage) => this.source.cell(box, stage, 0, true),
+      loadElevation: (center, signal, shape) =>
+        loadElevations(center, signal, () => {}, log, shape),
     });
-    return tile;
   }
   async start(
     signal: AbortSignal,
@@ -284,6 +249,7 @@ export class RegionStream {
         get: cacheGet,
         put: cachePut,
       });
+      this.tileSource = this.createTileSource();
       return this.snapshot({ x: 0, y: 0, z: 0 });
     } catch (error) {
       this.dispose();
@@ -381,6 +347,7 @@ export class RegionStream {
         get: cacheGet,
         put: cachePut,
       });
+      this.tileSource = this.createTileSource();
       return null;
     } finally {
       const wanted = new Set(order);
