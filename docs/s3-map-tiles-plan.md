@@ -812,6 +812,8 @@ OSM object -> source tiles / reference count
 
 ### MAP-S3-13. Ввести реестр source-тайлов и WorldPatch в worker
 
+**Статус:** ✅ Выполнено.
+
 **Зависимости:** MAP-S3-12.
 
 **Задание агенту:**

@@ -145,10 +145,10 @@ export function buildWorld(region: RegionData): World {
       const fallback = ['house', 'detached', 'garage', 'garages'].includes(t.building) ? 6 : 10 + Math.floor(seeded(e.id) * 6) * 3;
       const height = clamp(tagsNumber(t.height, tagsNumber(t['building:levels'], fallback / 3) * 3), 2.5, 260);
       buildings.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', footprint, holes, height, minHeight: clamp(tagsNumber(t.min_height, tagsNumber(t['building:min_level'], 0) * 3), 0, height - 1), part: !!t['building:part'], colour: seeded(e.id), roof: t['roof:shape'] || 'flat', material:t['building:material'],facadeColour:t['building:colour'],levels:tagsNumber(t['building:levels'],Math.max(1,Math.round(height/3))),kind:t.building,roofHeight:t['roof:height']?Math.max(0,tagsNumber(t['roof:height'],0)):undefined,roofDirection:t['roof:direction']?tagsNumber(t['roof:direction'],0):undefined,roofOrientation:t['roof:orientation'] });
-    } else if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir') areas.push({ id: e.id, points: footprint, holes, kind: 'water', railing:t.waterway === 'riverbank' || t.water === 'river' ? 'river' : undefined });
+    } else if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir') areas.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', points: footprint, holes, kind: 'water', railing:t.waterway === 'riverbank' || t.water === 'river' ? 'river' : undefined });
     else if (['grass', 'forest', 'recreation_ground', 'meadow'].includes(t.landuse) || t.leisure === 'park' || t.natural === 'wood') {
       const name=t['name:ru']||t.name||'',certainPark=t.leisure==='park'&&/(^|\s)парк(\s|$)/iu.test(name)&&!/сквер/iu.test(name);
-      areas.push({ id: e.id, points: footprint, holes, kind: 'park', railing:certainPark?'park':undefined });
+      areas.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', points: footprint, holes, kind: 'park', railing:certainPark?'park':undefined });
     }
   }
   for (const e of region.elements) if (e.type === 'relation' && e.tags?.type === 'multipolygon') {

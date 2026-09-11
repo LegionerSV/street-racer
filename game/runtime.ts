@@ -399,7 +399,7 @@ export class Game {
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;
           const prepareStarted=performance.now();
-          const next=await this.worker.prepare(region);
+          const prepared=await this.worker.prepare(region),next=prepared.world;
           const preparedAt=performance.now();
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;

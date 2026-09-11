@@ -2,25 +2,86 @@ import { buildWorld, createRaceRoute } from './network';
 import { reconcileWorld } from './world-update';
 import { buildChunk, ChunkBudget, indexWorld } from './chunks';
 import type { ChunkData, WorkerRequest, WorkerResponse, World } from './types';
+import {
+  buildIncrementalWorld,
+  SourceTileRegistry,
+} from './source-tile-registry';
+import { createWorldPatch } from './world-patch';
 let world: World | null = null;
 let prepared: World | null = null;
+let registry: SourceTileRegistry | null = null;
+let preparedRegistry: SourceTileRegistry | null = null;
 let cache = new ChunkBudget<ChunkData>(32);
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   try {
     let response: WorkerResponse;
-    if (request.type === 'world' || request.type === 'prepare') {
-      const next = buildWorld(request.region);
-      if (request.type === 'prepare' && world) {
-        prepared = reconcileWorld(world, next);
+    if (request.type === 'world') {
+      world = buildWorld(request.region);
+      registry = SourceTileRegistry.fromRegion(request.region);
+      prepared = null;
+      preparedRegistry = null;
+      cache = new ChunkBudget(32);
+      indexWorld(world);
+      response = { id: request.id, type: 'world', world };
+    } else if (request.type === 'prepare' || request.type === 'prepareTiles') {
+      if (!world) throw new Error('Район ещё не подготовлен.');
+      prepared = null;
+      preparedRegistry = null;
+      const updateRegion =
+        request.type === 'prepareTiles'
+          ? {
+              center: request.update.center,
+              elements: [],
+              elevation: { width: 2, size: 1, values: new Float32Array(4) },
+              drivingSide: request.update.drivingSide,
+              fetchedAt: request.update.fetchedAt,
+              focus: request.update.focus,
+              heightDatum: request.update.heightDatum,
+            }
+          : request.region;
+      if (
+        registry &&
+        (request.type === 'prepareTiles' || request.region.sourceTiles)
+      ) {
+        const staged =
+            request.type === 'prepareTiles'
+              ? registry.stageUpdate(request.update.add, request.update.remove)
+              : registry.stage(request.region),
+          affected = staged.registry.affectedTiles(
+            staged.changed,
+            staged.changedElements,
+          );
+        prepared = buildIncrementalWorld(
+          world,
+          staged.registry,
+          affected,
+          updateRegion,
+          staged.changedElements,
+        );
+        preparedRegistry = staged.registry;
         indexWorld(prepared);
-        response = { id: request.id, type: 'world', world: prepared };
+        response = {
+          id: request.id,
+          type: 'prepared',
+          prepared: {
+            world: prepared,
+            patch: createWorldPatch(world, prepared),
+          },
+        };
       } else {
-        world = next;
-        prepared = null;
-        cache = new ChunkBudget(32);
-        indexWorld(world);
-        response = { id: request.id, type: 'world', world };
+        if (request.type === 'prepareTiles')
+          throw new Error('Активный реестр source-тайлов ещё не подготовлен.');
+        prepared = reconcileWorld(world, buildWorld(request.region));
+        indexWorld(prepared);
+        response = {
+          id: request.id,
+          type: 'prepared',
+          prepared: {
+            world: prepared,
+            patch: createWorldPatch(world, prepared),
+          },
+        };
       }
     } else if (request.type === 'race') {
       if (!world) throw new Error('Район ещё не подготовлен.');
@@ -32,7 +93,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     } else if (request.type === 'commit') {
       if (!prepared) throw new Error('Новая часть района ещё не подготовлена.');
       world = prepared;
+      if (preparedRegistry) registry = preparedRegistry;
       prepared = null;
+      preparedRegistry = null;
       cache = new ChunkBudget(32);
       response = { id: request.id, type: 'committed' };
     } else if (request.type === 'chunk') {

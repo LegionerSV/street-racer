@@ -432,6 +432,12 @@ export class RegionStream {
       drivingSide: this.side,
       fetchedAt: new Date().toISOString(),
       loadedTiles: [...this.tiles.keys()],
+      sourceTiles: [...this.tiles.entries()].map(([key, tile]) => ({
+        key,
+        elements: tile.elements,
+        elevation: tileElevationForSession(tile, this.center),
+        checksum: tile.checksum,
+      })),
       focus: { ...focus },
       heightDatum: this.datum,
     };
