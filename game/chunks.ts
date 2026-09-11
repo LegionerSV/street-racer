@@ -19,6 +19,22 @@ export class ChunkBudget<T> {
   has(key: string) { return this.entries.has(key); }
   get(key: string) { const item = this.entries.get(key); if (item !== undefined) this.touch(key, item); return item; }
   touch(key: string, value: T) { this.entries.delete(key); this.entries.set(key, value); while (this.entries.size > this.limit) this.entries.delete(this.entries.keys().next().value!); }
+  invalidateChunks(keys:Iterable<string>){const dirty=new Set(keys);for(const key of this.entries.keys())if(dirty.has(key.slice(0,key.lastIndexOf('/'))))this.entries.delete(key);}
+}
+export class ChunkInstallQueue<T> {
+  private entries=new Map<string,T>();
+  constructor(readonly budgetMs=3){}
+  get size(){return this.entries.size;}
+  has(key:string){return this.entries.has(key);}
+  enqueue(key:string,value:T){this.entries.set(key,value);}
+  delete(key:string){this.entries.delete(key);}
+  drain(install:(value:T)=>void,now=()=>performance.now()){
+    const started=now();let installed=0,current=started;
+    while(this.entries.size&&(installed===0||current-started<this.budgetMs)){
+      const first=this.entries.entries().next().value as [string,T];this.entries.delete(first[0]);install(first[1]);installed++;current=now();
+    }
+    return {installed,installMs:current-started};
+  }
 }
 export function desiredChunks(p: Point, heading: number, quality: Settings['quality'], streaming = false) {
   const mobile=quality==='mobile',detail=mobile?250:500;

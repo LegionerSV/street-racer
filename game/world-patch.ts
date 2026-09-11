@@ -13,6 +13,7 @@ import type {
   WorldPatch,
 } from './types';
 import { changedChunks, edgeKey } from './world-update';
+import { routeHasCoverage } from './stream-coverage';
 
 const json = (value: unknown) => JSON.stringify(value);
 const restrictionKey = (restriction: Restriction) =>
@@ -87,7 +88,15 @@ export function createWorldPatch(previous: World, next: World): WorldPatch {
       next.elevation.patches ?? [next.elevation],
       elevationKey,
     ),
-    routes = delta<Route>(previous.routes, next.routes, (route) => route.id);
+    routes = delta<Route>(previous.routes, next.routes, (route) => route.id),
+    changedEdges=new Set([...edges.removed.map(edgeKey),...edges.addedOrUpdated.map(edgeKey)]),
+    previousRoutes=new Map(previous.routes.map(route=>[route.id,route])),
+    nextRoutes=new Map(next.routes.map(route=>[route.id,route])),
+    invalidatedRoutes=new Set([...routes.removed,...routes.addedOrUpdated].map(route=>route.id));
+  for(const id of new Set([...previousRoutes.keys(),...nextRoutes.keys()])){
+    const before=previousRoutes.get(id),after=nextRoutes.get(id),route=after??before;
+    if(route?.edges.some(edge=>changedEdges.has(edge))||(before&&after&&routeHasCoverage(before.points,previous.loadedTiles,previous.center)!==routeHasCoverage(after.points,next.loadedTiles,next.center)))invalidatedRoutes.add(id);
+  }
   return {
     coverageAdded: [...newCoverage].filter((key) => !oldCoverage.has(key)),
     coverageRemoved: [...oldCoverage].filter((key) => !newCoverage.has(key)),
@@ -112,9 +121,6 @@ export function createWorldPatch(previous: World, next: World): WorldPatch {
     elevationPatches: elevation.addedOrUpdated,
     elevationPatchesRemoved: elevation.removed.map(elevationKey),
     dirtyChunks: changedChunks(previous, next, candidateChunks(previous, next)),
-    invalidatedRoutes: [
-      ...routes.removed.map((route) => route.id),
-      ...routes.addedOrUpdated.map((route) => route.id),
-    ],
+    invalidatedRoutes: [...invalidatedRoutes],
   };
 }

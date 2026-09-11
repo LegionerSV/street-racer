@@ -115,6 +115,9 @@ export class WorldWorker {
   chunk(key: string, lod: number, cacheLimit = 32) {
     return this.request<ChunkData>({ type: 'chunk', key, lod, cacheLimit });
   }
+  preparedChunk(key: string, lod: number) {
+    return this.request<ChunkData>({ type: 'chunk', key, lod, prepared: true });
+  }
   dispose() {
     this.disposed = true;
     this.worker.terminate();

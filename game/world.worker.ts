@@ -1,7 +1,13 @@
 import { buildWorld, createRaceRoute } from './network';
 import { reconcileWorld } from './world-update';
 import { buildChunk, ChunkBudget, indexWorld } from './chunks';
-import type { ChunkData, WorkerRequest, WorkerResponse, World } from './types';
+import type {
+  ChunkData,
+  WorkerRequest,
+  WorkerResponse,
+  World,
+  WorldPatch,
+} from './types';
 import {
   buildIncrementalWorld,
   SourceTileRegistry,
@@ -9,6 +15,7 @@ import {
 import { createWorldPatch } from './world-patch';
 let world: World | null = null;
 let prepared: World | null = null;
+let preparedPatch: WorldPatch | null = null;
 let registry: SourceTileRegistry | null = null;
 let preparedRegistry: SourceTileRegistry | null = null;
 let cache = new ChunkBudget<ChunkData>(32);
@@ -20,6 +27,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       world = buildWorld(request.region);
       registry = SourceTileRegistry.fromRegion(request.region);
       prepared = null;
+      preparedPatch = null;
       preparedRegistry = null;
       cache = new ChunkBudget(32);
       indexWorld(world);
@@ -27,6 +35,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     } else if (request.type === 'prepare' || request.type === 'prepareTiles') {
       if (!world) throw new Error('Район ещё не подготовлен.');
       prepared = null;
+      preparedPatch = null;
       preparedRegistry = null;
       const updateRegion =
         request.type === 'prepareTiles'
@@ -61,12 +70,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         );
         preparedRegistry = staged.registry;
         indexWorld(prepared);
+        preparedPatch = createWorldPatch(world, prepared);
         response = {
           id: request.id,
           type: 'prepared',
           prepared: {
             world: prepared,
-            patch: createWorldPatch(world, prepared),
+            patch: preparedPatch,
           },
         };
       } else {
@@ -74,12 +84,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           throw new Error('Активный реестр source-тайлов ещё не подготовлен.');
         prepared = reconcileWorld(world, buildWorld(request.region));
         indexWorld(prepared);
+        preparedPatch = createWorldPatch(world, prepared);
         response = {
           id: request.id,
           type: 'prepared',
           prepared: {
             world: prepared,
-            patch: createWorldPatch(world, prepared),
+            patch: preparedPatch,
           },
         };
       }
@@ -96,14 +107,19 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       if (preparedRegistry) registry = preparedRegistry;
       prepared = null;
       preparedRegistry = null;
-      cache = new ChunkBudget(32);
+      cache.invalidateChunks(preparedPatch?.dirtyChunks ?? []);
+      preparedPatch = null;
       response = { id: request.id, type: 'committed' };
     } else if (request.type === 'chunk') {
       if (!world) throw new Error('Район ещё не подготовлен.');
+      if (request.prepared && !prepared)
+        throw new Error('Новая часть района ещё не подготовлена.');
       cache.setLimit(request.cacheLimit || 32);
       const id = `${request.key}/${request.lod}`,
-        chunk = cache.get(id) || buildChunk(world, request.key, request.lod);
-      cache.touch(id, chunk);
+        chunk = request.prepared
+          ? buildChunk(prepared!, request.key, request.lod)
+          : cache.get(id) || buildChunk(world, request.key, request.lod);
+      if (!request.prepared) cache.touch(id, chunk);
       response = { id: request.id, type: 'chunk', chunk };
     } else throw new Error('Неизвестная команда подготовки района.');
     self.postMessage(response);

@@ -7,6 +7,7 @@ import {
 import { MapSource } from './map-source';
 import { buildWorld } from './network';
 import { Traffic } from './traffic';
+import { createWorldPatch } from './world-patch';
 import { NullEngine, Scene } from '@babylonjs/core';
 import type { RegionData, WorkerRequest, WorkerResponse } from './types';
 import * as data from './data';
@@ -309,7 +310,7 @@ const fixture = (shift = 0): RegionData => ({
   drivingSide: 'right',
   fetchedAt: 'test',
 });
-it('подготовка нового мира не меняет текущие кварталы до commit и сбрасывает кэш после него', async () => {
+it('подготовка нового мира не меняет текущие кварталы до commit и инвалидирует только dirty chunks', async () => {
   // Arrange
   const replies: WorkerResponse[] = [];
   const surface = {
@@ -327,10 +328,13 @@ it('подготовка нового мира не меняет текущие 
   // Act
   call({ id: 1, type: 'world', region: fixture() });
   const before = call({ id: 2, type: 'chunk', key: '0,0', lod: 0 });
-  call({ id: 3, type: 'prepare', region: { ...fixture(1), elements: [] } });
+  const prepared=call({ id: 3, type: 'prepare', region: { ...fixture(1), elements: [] } });
   const during = call({ id: 4, type: 'chunk', key: '0,0', lod: 0 });
-  call({ id: 5, type: 'commit' });
-  const after = call({ id: 6, type: 'chunk', key: '0,0', lod: 0 });
+  const cleanBefore=call({id:5,type:'chunk',key:'8,8',lod:1});
+  const staged=call({id:6,type:'chunk',key:'0,0',lod:0,prepared:true});
+  call({ id: 7, type: 'commit' });
+  const after = call({ id: 8, type: 'chunk', key: '0,0', lod: 0 });
+  const cleanAfter=call({id:9,type:'chunk',key:'8,8',lod:1});
   // Assert
   expect(before.type).toBe('chunk');
   expect(during.type).toBe('chunk');
@@ -343,7 +347,13 @@ it('подготовка нового мира не меняет текущие 
     expect(during.chunk).toBe(before.chunk);
     expect(before.chunk.road.indices.length).toBeGreaterThan(0);
     expect(after.chunk.road.indices).toHaveLength(0);
+    expect(staged.type).toBe('chunk');
+    if(staged.type==='chunk')expect(staged.chunk.road.indices).toHaveLength(0);
   }
+  expect(prepared.type).toBe('prepared');
+  if(prepared.type==='prepared')expect(prepared.prepared.patch.dirtyChunks).toContain('0,0');
+  expect(cleanBefore.type).toBe('chunk');expect(cleanAfter.type).toBe('chunk');
+  if(cleanBefore.type==='chunk'&&cleanAfter.type==='chunk')expect(cleanAfter.chunk).toBe(cleanBefore.chunk);
 });
 it('переносит трафик на ту же дорогу после перестановки индексов и запрещает смену сети в гонке', () => {
   // Arrange
@@ -393,4 +403,20 @@ it('переносит трафик на ту же дорогу после пе�
     scene.dispose();
     engine.dispose();
   }
+});
+it('сохраняет план трафика, если WorldPatch не затронул его дорогу',()=>{
+  // Arrange
+  const before=buildWorld(fixture()),after=structuredClone(before),engine=new NullEngine(),scene=new Scene(engine),traffic=new Traffic(scene,before);
+  traffic.agents.push({id:1,edge:before.edges[0].stableId,distance:10,speed:5,point:{x:0,y:0,z:10},heading:0,stuck:0});
+  (traffic as unknown as {makePlan:(agent:typeof traffic.agents[number])=>void}).makePlan(traffic.agents[0]);
+  const plan=traffic.agents[0].plan;
+  after.buildings.push({id:99,footprint:[{x:1000,y:0,z:1000},{x:1010,y:0,z:1000},{x:1010,y:0,z:1010}],height:10,colour:0,roof:'flat'});
+  // Act
+  traffic.applyWorldPatch(after,createWorldPatch(before,after));
+  // Assert
+  expect(traffic.agents[0].plan).toBe(plan);
+  const roadChanged=structuredClone(after);roadChanged.edges[0].speed++;
+  traffic.applyWorldPatch(roadChanged,createWorldPatch(after,roadChanged));
+  expect(traffic.agents[0].plan).toBeUndefined();
+  traffic.dispose();scene.dispose();engine.dispose();
 });

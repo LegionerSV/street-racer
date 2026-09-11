@@ -7,9 +7,9 @@ import {
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import havokWasm from '@babylonjs/havok/lib/esm/HavokPhysics.wasm?url';
-import type { ChunkData, HUD, MeshData, Point, RaceState, Route, Settings, World, RegionData } from './types';
+import type { ChunkData, HUD, MeshData, Point, RaceState, Route, Settings, World, RegionData, WorldPatch } from './types';
 import { WorldWorker } from './worker-client';
-import { desiredChunks,criticalChunks } from './chunks';
+import { desiredChunks,criticalChunks,ChunkInstallQueue } from './chunks';
 import { distance2, pathLengths, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
 import { DrivingInput,drivingKeys,type DrivingKey } from './input';
@@ -29,13 +29,14 @@ import { worldLandmarks } from './landmarks';
 import {advanceDrivingPhysics,ChasePosition} from './driving-frame';
 import type {LoadingLog} from './loading-log';
 import {RegionStream,tileReady} from './region-stream';
-import {edgeKey,changedChunks} from './world-update';
+import {edgeKey} from './world-update';
 import {routeHasCoverage,needsRaceRecovery} from './stream-coverage';
 import {edgeById,edgeStableId} from './road-graph';
 import {nextRaceTurn} from './navigation';
 
 type BreakableLoaded = { mesh: Mesh; pole: boolean; broken: boolean; lamp?: Point; body?: PhysicsAggregate };
 type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; breakables: BreakableLoaded[]; lamps: Point[]; buildingBounds:BoundingBox[]; dispose: () => void };
+type MapUpdateTiming={fetchMs:number;prepareMs:number;commitMs:number;dirtyCount:number;installMs:number;maxFrameDelayMs:number;totalMs:number;tiles:number};
 export class Game {
   readonly engine: Engine;
   readonly scene: Scene;
@@ -44,6 +45,9 @@ export class Game {
   readonly camera: FreeCamera;
   private chunks = new Map<string, Loaded>();
   private pending = new Set<string>();
+  private installQueue=new ChunkInstallQueue<ChunkData>(3);
+  private patchInstallMetrics=new Map<string,MapUpdateTiming>();
+  private frameDelayMetric?:MapUpdateTiming;
   private wanted: ReturnType<typeof desiredChunks> = [];
   private materials: Record<string, StandardMaterial>;
   private atmosphere: Atmosphere;
@@ -84,7 +88,7 @@ export class Game {
   private suspendPump=false;
   private applyingMap=false;
   private staleChunks=new Set<string>();
-  private mapUpdateTimings:{fetchMs:number;buildWorldMs:number;commitMs:number;totalMs:number;tiles:number}[]=[];
+  private mapUpdateTimings:MapUpdateTiming[]=[];
   private streamingControl=new AbortController();
   paused = false;
   race: RaceState | null = null;
@@ -255,15 +259,16 @@ export class Game {
   private refreshWanted() {
     this.wanted = desiredChunks(this.player.position, this.player.heading, this.settings.quality,!!this.mapCoverage).filter(c=>!this.mapCoverage||tileReady(this.mapCoverage,c.key,this.world.center));
     const wanted = new Set(this.wanted.map(c => c.key));
-    for (const [key, chunk] of this.chunks) if (!wanted.has(key)) { chunk.dispose(); this.chunks.delete(key); this.staleChunks.delete(key); }
+    for (const [key, chunk] of this.chunks) if (!wanted.has(key)) { chunk.dispose(); this.chunks.delete(key); this.staleChunks.delete(key); this.installQueue.delete(key);this.patchInstallMetrics.delete(key); }
+    for(const key of this.patchInstallMetrics.keys())if(!wanted.has(key)){this.patchInstallMetrics.delete(key);this.installQueue.delete(key);}
   }
   private pump() {
     if (this.disposed || this.suspendPump || this.streamFailure || this.pending.size >= 2) return;
-    const next = this.wanted.find(c => !this.pending.has(c.key) && (this.chunks.get(c.key)?.lod !== c.lod||this.staleChunks.has(c.key)));
+    const next = this.wanted.find(c => !this.pending.has(c.key) && !this.installQueue.has(c.key) && (this.chunks.get(c.key)?.lod !== c.lod||this.staleChunks.has(c.key)));
     if (!next) return;
     this.pending.add(next.key);
     void this.worker.chunk(next.key, next.lod,this.settings.quality==='mobile'?8:32).then(chunk => {
-      if (!this.disposed && this.wanted.some(c => c.key === chunk.key && c.lod === chunk.lod)) this.install(chunk);
+      if (!this.disposed && this.wanted.some(c => c.key === chunk.key && c.lod === chunk.lod)) this.installQueue.enqueue(chunk.key,chunk);
     }).catch(e => { if (!this.disposed) { this.streamFailure = e instanceof Error ? e.message : 'Не удалось подготовить квартал.'; this.message = this.streamFailure; this.paused = true; this.clearControls(); } }).finally(() => this.pending.delete(next.key));
   }
   private updateSignals() {
@@ -309,7 +314,8 @@ export class Game {
   }
   private frame() {
     if (this.disposed) return;
-    if(!this.paused&&!document.hidden)this.frameTimings.add(this.engine.getDeltaTime(),this.loading||this.pending.size>0);
+    if(!this.paused&&!document.hidden)this.frameTimings.add(this.engine.getDeltaTime(),this.loading||this.pending.size>0||this.installQueue.size>0);
+    if(this.frameDelayMetric){this.frameDelayMetric.maxFrameDelayMs=Math.max(this.frameDelayMetric.maxFrameDelayMs,this.engine.getDeltaTime());this.frameDelayMetric=undefined;}
     const dt = Math.min(.25, this.engine.getDeltaTime() / 1000);
     if (this.driveTest && !this.paused) { this.driveTest.frames.push(this.engine.getDeltaTime()); this.driveTest.maxMeshes = Math.max(this.driveTest.maxMeshes, this.scene.meshes.length); this.driveTest.maxSpeed = Math.max(this.driveTest.maxSpeed, this.player.groundSpeed * 3.6); }
     this.streamClock -= dt; this.hudClock -= dt;
@@ -322,6 +328,7 @@ export class Game {
         if(nearest)this.lastSafeEdge=edgeStableId(nearest);
       }
     }
+    this.installQueue.drain(chunk=>{const metric=this.patchInstallMetrics.get(chunk.key);if(this.wanted.some(c=>c.key===chunk.key&&c.lod===chunk.lod)){const started=performance.now();this.install(chunk);if(metric){metric.installMs+=performance.now()-started;this.frameDelayMetric=metric;}}this.patchInstallMetrics.delete(chunk.key);});
     this.pump();
     const p = this.player.position, h = this.player.heading;
     const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage));
@@ -399,31 +406,43 @@ export class Game {
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;
           const prepareStarted=performance.now();
-          const prepared=await this.worker.prepare(region),next=prepared.world;
+          const prepared=await this.worker.prepare(region),next=prepared.world,patch=prepared.patch;
           const preparedAt=performance.now();
+          const updateMetric={fetchMs:Math.round(fetchedAt-updateStarted),prepareMs:Math.round(preparedAt-prepareStarted),commitMs:0,dirtyCount:patch.dirtyChunks.length,installMs:0,maxFrameDelayMs:0,totalMs:0,tiles:next.loadedTiles?.length??0};
+          this.mapUpdateTimings.push(updateMetric);
+          if(this.mapUpdateTimings.length>20)this.mapUpdateTimings.shift();
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;
           const nextCoverage=new Set(next.loadedTiles);
           if(criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true).some(k=>!tileReady(nextCoverage,k,this.world.center))){awaiting=null;continue;}
-          this.suspendPump=true;
+          this.suspendPump=true;this.applyingMap=true;this.clearControls();
           while(!this.disposed&&this.pending.size)await wait(20);
           if(this.disposed)return;
-          this.applyingMap=true;
+          const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true),dirty=new Set(patch.dirtyChunks);
+          const criticalData:ChunkData[]=[];
+          for(const key of criticalKeys)if(dirty.has(key))criticalData.push(await this.worker.preparedChunk(key,0));
+          if(this.disposed)return;
           const commitStarted=performance.now();
           await this.worker.commit();
           const committedAt=performance.now();
+          updateMetric.commitMs=Math.round(committedAt-commitStarted);
           if(this.disposed)return;
           const newCoverage=new Set(next.loadedTiles);
-          for(const key of changedChunks(this.world,next,this.chunks.keys()))this.staleChunks.add(key);
+          const activeDirty=patch.dirtyChunks.filter(key=>this.chunks.has(key)||this.wanted.some(chunk=>chunk.key===key));
+          for(const key of activeDirty){this.staleChunks.add(key);this.installQueue.delete(key);this.patchInstallMetrics.set(key,updateMetric);}
           const safe=this.lastSafeEdge?edgeById(this.world,this.lastSafeEdge):undefined;
-          this.traffic.replaceWorld(next);
+          this.traffic.applyWorldPatch(next,patch);
           this.world=next;this.mapCoverage=newCoverage;
+          const installStarted=performance.now();
+          for(const chunk of criticalData){this.install(chunk);this.patchInstallMetrics.delete(chunk.key);}
+          const criticalInstallMs=performance.now()-installStarted;
+          updateMetric.installMs+=criticalInstallMs;
+          if(criticalData.length)this.frameDelayMetric=updateMetric;
           const matchedSafe=safe?next.edges.find(e=>!e.blocked&&edgeKey(e)===edgeKey(safe)):undefined;
           this.lastSafeEdge=matchedSafe?edgeStableId(matchedSafe):next.spawnEdge;
-          this.replaceRouteMarkers();
+          this.replaceRouteMarkers(patch);
           this.refreshWanted();onWorld(next);awaiting=null;
-          this.mapUpdateTimings.push({fetchMs:Math.round(fetchedAt-updateStarted),buildWorldMs:Math.round(preparedAt-prepareStarted),commitMs:Math.round(committedAt-commitStarted),totalMs:Math.round(performance.now()-updateStarted),tiles:next.loadedTiles?.length??0});
-          if(this.mapUpdateTimings.length>20)this.mapUpdateTimings.shift();
+          updateMetric.totalMs=Math.round(performance.now()-updateStarted);
         }catch(error){
           if(this.disposed)return;
           this.message=error instanceof Error?error.message:'Не удалось подготовить следующий участок.';
@@ -433,10 +452,13 @@ export class Game {
       }
     })();
   }
-  private replaceRouteMarkers(){
-    for(const marker of this.markers){marker.mesh.dispose();marker.symbol.dispose();}
-    this.markers=[];this.nearRace=null;this.routeLengths.clear();
-    this.world.routes.forEach(route=>{
+  private replaceRouteMarkers(patch?:WorldPatch){
+    const invalidated=new Set(patch?.invalidatedRoutes??this.markers.map(marker=>marker.route.id));
+    const available=new Set(this.world.routes.map(route=>route.id));
+    this.markers=this.markers.filter(marker=>{if(!invalidated.has(marker.route.id)&&available.has(marker.route.id))return true;marker.mesh.dispose();marker.symbol.dispose();return false;});
+    this.nearRace=null;
+    const existing=new Set(this.markers.map(marker=>marker.route.id));
+    this.world.routes.filter(route=>!existing.has(route.id)).forEach(route=>{
       const sample={point:raceMarkerPosition(this.world,route)};
       const mesh=MeshBuilder.CreateCylinder(`marker-${route.kind}`,{diameter:8,height:.12,tessellation:40},this.scene);mesh.position.set(sample.point.x,sample.point.y+.12,sample.point.z);mesh.material=this.checkpoint.material;mesh.isPickable=false;
       const symbol=MeshBuilder.CreateTorus('marker-symbol',{diameter:3.2,thickness:.09,tessellation:30},this.scene);symbol.rotation.x=Math.PI/2;symbol.position.copyFrom(mesh.position).addInPlace(new Vector3(0,3,0));symbol.material=this.checkpoint.material;symbol.isPickable=false;

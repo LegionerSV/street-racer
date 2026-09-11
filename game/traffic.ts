@@ -1,6 +1,6 @@
 import {RACER_COLOURS} from './race-map-markers';
 import { PhysicsAggregate, PhysicsMotionType, PhysicsShapeType, Quaternion, Scene, Vector3 } from '@babylonjs/core';
-import type { Edge, EdgeStableId, Point, RacerTraits, Route, World } from './types';
+import type { Edge, EdgeStableId, Point, RacerTraits, Route, World, WorldPatch } from './types';
 import { allowedTurn, outgoing, advanceTurnHistory } from './network';
 import { clamp, distance2, seeded } from './geo';
 import { laneOffsets } from './lanes';
@@ -28,6 +28,18 @@ export class Traffic {
       a.plan=undefined;a.travel=a.distance;a.avoidanceOffset=undefined;a.avoidanceWay=undefined;return true;
     });
     this.world=world;this.signals=new Set(world.nodes.filter(n=>n.signal).map(n=>n.id));this.reservations.clear();
+  }
+  applyWorldPatch(world:World,patch:WorldPatch){
+    if(this.agents.some(a=>a.race))throw new Error('Нельзя менять дорожную сеть во время гонки.');
+    const affected=new Set<EdgeStableId>([...patch.edgesRemoved,...patch.edgesAddedOrUpdated.map(edgeStableId)]),restrictionWays=new Set([...patch.restrictionsAddedOrUpdated,...patch.restrictionsRemoved].flatMap(r=>[r.fromWay,r.toWay,...(r.viaWays??[])])),restrictionsChanged=restrictionWays.size>0;
+    this.agents=this.agents.filter(a=>{
+      const edge=edgeById(world,a.edge);if(!edge||edge.blocked){this.hide(a);return false;}
+      const planAffected=affected.has(a.edge)||a.plan?.ids.some(id=>affected.has(id)||restrictionWays.has(edgeById(world,id)?.way??-1));
+      if(planAffected){a.plan=undefined;a.travel=a.distance;a.avoidanceOffset=undefined;a.avoidanceWay=undefined;}
+      return true;
+    });
+    this.world=world;this.signals=new Set(world.nodes.filter(n=>n.signal).map(n=>n.id));
+    if(patch.nodesAddedOrUpdated.some(n=>n.signal)||patch.nodesRemoved.length||restrictionsChanged)this.reservations.clear();
   }
   setDensity(d:'light'|'city'|'rush'){this.density=d;this.spawnTimer=0;}
   private makePlan(agent:Agent){

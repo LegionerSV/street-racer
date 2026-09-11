@@ -43,3 +43,18 @@ it('возвращает типизированные изменения и то
   expect(patch.treesAdded).toEqual(after.trees);
   expect(patch.elevationPatchesRemoved).toEqual(['-500,0']);
 });
+it('инвалидирует только маршрут, ребро которого изменилось',()=>{
+  // Arrange
+  const before=buildWorld(region(10,['15/16384/16384']));
+  before.edges=[{id:0,stableId:'10/1/2/0',way:10,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Улица',bridge:false,tunnel:false,layer:0,points:[{x:0,y:0,z:0},{x:0,y:0,z:100}],blocked:false}];
+  const after=structuredClone(before),edge=before.edges[0].stableId;
+  const route=(id:string,edges:string[])=>({id,kind:'sprint' as const,title:id,edges,points:before.edges[0].points,cumulative:[0,before.edges[0].length],length:before.edges[0].length,laps:1});
+  before.routes=[route('changed',[edge]),route('untouched',['unrelated'])];after.routes=structuredClone(before.routes);after.edges[0].speed++;
+  // Act
+  const patch=createWorldPatch(before,after);
+  // Assert
+  expect(patch.invalidatedRoutes).toContain('changed');expect(patch.invalidatedRoutes).not.toContain('untouched');
+  const coverageBefore=structuredClone(before);delete coverageBefore.loadedTiles;
+  const coverageAfter=structuredClone(coverageBefore);coverageAfter.loadedTiles=[];
+  expect(createWorldPatch(coverageBefore,coverageAfter).invalidatedRoutes).toEqual(['changed','untouched']);
+});

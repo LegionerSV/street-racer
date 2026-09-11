@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { desiredChunks, criticalChunks, ChunkBudget, buildChunk } from './chunks';
+import { desiredChunks, criticalChunks, ChunkBudget, ChunkInstallQueue, buildChunk } from './chunks';
 import type { World } from './types';
 import { polygonContains } from './geo';
 
@@ -73,6 +73,25 @@ describe('Подготовка кварталов', () => {
     for (let i = 0; i < 1000; i++) budget.touch(String(i), i);
     // Assert
     expect(budget.size).toBe(64); expect(budget.has('999')).toBe(true); expect(budget.has('0')).toBe(false);
+  });
+  it('инвалидирует в кэше только указанные chunkKey на всех LOD', () => {
+    // Arrange
+    const budget = new ChunkBudget<number>(8);
+    budget.touch('0,0/0', 1); budget.touch('0,0/1', 2); budget.touch('1,0/0', 3);
+    // Act
+    budget.invalidateChunks(['0,0']);
+    // Assert
+    expect(budget.has('0,0/0')).toBe(false); expect(budget.has('0,0/1')).toBe(false); expect(budget.get('1,0/0')).toBe(3);
+  });
+  it('устанавливает фоновые chunks покадрово в пределах бюджета', () => {
+    // Arrange
+    const queue = new ChunkInstallQueue<number>(3), installed:number[]=[];
+    queue.enqueue('a',1); queue.enqueue('b',2); queue.enqueue('c',3);
+    const times=[0,2,4],now=()=>times.shift()??4;
+    // Act
+    const result=queue.drain(value=>installed.push(value),now);
+    // Assert
+    expect(result).toEqual({installed:2,installMs:4}); expect(installed).toEqual([1,2]); expect(queue.size).toBe(1);
   });
   it('подготавливает квартал под машиной и не выходит за пределы мира', () => {
     // Arrange / Act
