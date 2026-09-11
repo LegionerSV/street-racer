@@ -716,6 +716,8 @@ OSM object -> source tiles / reference count
 
 ### MAP-S3-10. Реализовать проверку и атомарную публикацию в Yandex Object Storage
 
+**Статус:** ✅ Выполнено.
+
 **Зависимости:** MAP-S3-06, MAP-S3-08.
 
 **Задание агенту:**

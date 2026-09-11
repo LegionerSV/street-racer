@@ -24,6 +24,8 @@ import {
   type SourceTileId,
 } from '../game/source-tiles.ts';
 import {
+  TILE_ARTIFACT_SCHEMA_VERSION,
+  TILE_BUILD_VERSION,
   decodeTileArtifact,
   encodeTileArtifact,
 } from '../game/tile-artifact.ts';
@@ -555,6 +557,47 @@ export async function generateMapTiles(
         elements: completed.reduce((sum, event) => sum + event.elements, 0),
         durationMs: performance.now() - started,
       };
+    const manifestTiles: Record<
+      string,
+      { path: string; bytes: number; checksum: string }
+    > = {};
+    for (const tile of tiles) {
+      const key = sourceTileKey(tile),
+        path = safeArtifactPath(staging, tile);
+      try {
+        const compressed = await readFile(path),
+          serialized = new TextDecoder().decode(await decompress(compressed)),
+          artifact = decodeTileArtifact(serialized, tile);
+        manifestTiles[key] = {
+          path: `${tile.z}/${tile.x}/${tile.y}.tile.json.br`,
+          bytes: compressed.byteLength,
+          checksum: artifact.checksum,
+        };
+      } catch {
+        // Ошибка уже сохранена в report; незавершённый manifest нельзя публиковать.
+      }
+    }
+    await atomicWrite(
+      staging,
+      resolve(staging, 'staging-manifest-v1.json'),
+      new TextEncoder().encode(
+        `${JSON.stringify(
+          {
+            schemaVersion: 1,
+            tileSchemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+            tileBuildVersion: TILE_BUILD_VERSION,
+            generatedAt,
+            complete:
+              report.failed.length === 0 &&
+              Object.keys(manifestTiles).length === report.planned,
+            planned: report.planned,
+            tiles: manifestTiles,
+          },
+          null,
+          2,
+        )}\n`,
+      ),
+    );
     await atomicWrite(
       staging,
       resolve(staging, 'report.json'),

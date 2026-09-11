@@ -159,6 +159,24 @@ it('генерирует Brotli-артефакты из локального fix
   expect(
     JSON.parse(await readFile(join(staging, 'report.json'), 'utf8')),
   ).toMatchObject({ planned: 2, generated: 0, skipped: 2 });
+  expect(
+    JSON.parse(
+      await readFile(join(staging, 'staging-manifest-v1.json'), 'utf8'),
+    ),
+  ).toMatchObject({
+    schemaVersion: 1,
+    tileSchemaVersion: 1,
+    tileBuildVersion: artifact.tileBuildVersion,
+    complete: true,
+    planned: 2,
+    tiles: {
+      '15/19808/10243': {
+        path: '15/19808/10243.tile.json.br',
+        bytes: compressed.byteLength,
+        checksum: artifact.checksum,
+      },
+    },
+  });
 });
 
 it('пересобирает повреждённый файл и сохраняет ошибки отдельных тайлов', async () => {
@@ -201,6 +219,11 @@ it('пересобирает повреждённый файл и сохраня
   const log = await readFile(join(staging, 'generation-log.ndjson'), 'utf8');
   expect(log).toContain('"kind":"generated"');
   expect(log).toContain('"kind":"failed"');
+  expect(
+    JSON.parse(
+      await readFile(join(staging, 'staging-manifest-v1.json'), 'utf8'),
+    ),
+  ).toMatchObject({ complete: false, planned: 2 });
 });
 
 it('отклоняет junction, выводящий артефакт за пределы staging', async () => {
