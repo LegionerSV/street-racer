@@ -83,6 +83,7 @@ export class Game {
   private suspendPump=false;
   private applyingMap=false;
   private staleChunks=new Set<string>();
+  private mapUpdateTimings:{fetchMs:number;buildWorldMs:number;commitMs:number;totalMs:number;tiles:number}[]=[];
   private streamingControl=new AbortController();
   paused = false;
   race: RaceState | null = null;
@@ -386,14 +387,18 @@ export class Game {
       while(!this.disposed){
         if(blocked()){await wait(1000);continue;}
         try{
+          const updateStarted=performance.now();
           const position=this.player.position;
           const region:RegionData|null=awaiting??await stream.next({x:position.x,y:position.y,z:position.z},this.player.heading,()=>({position:{x:this.player.position.x,y:this.player.position.y,z:this.player.position.z},heading:this.player.heading}));
+          const fetchedAt=performance.now();
           if(this.disposed)return;
           if(!region){await wait(1500);continue;}
           awaiting=region;
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;
+          const prepareStarted=performance.now();
           const next=await this.worker.prepare(region);
+          const preparedAt=performance.now();
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;
           const nextCoverage=new Set(next.loadedTiles);
@@ -402,7 +407,9 @@ export class Game {
           while(!this.disposed&&this.pending.size)await wait(20);
           if(this.disposed)return;
           this.applyingMap=true;
+          const commitStarted=performance.now();
           await this.worker.commit();
+          const committedAt=performance.now();
           if(this.disposed)return;
           const newCoverage=new Set(next.loadedTiles);
           for(const key of changedChunks(this.world,next,this.chunks.keys()))this.staleChunks.add(key);
@@ -412,6 +419,8 @@ export class Game {
           this.lastSafeEdge=(safe?next.edges.find(e=>!e.blocked&&edgeKey(e)===edgeKey(safe))?.id:undefined)??next.spawnEdge;
           this.replaceRouteMarkers();
           this.refreshWanted();onWorld(next);awaiting=null;
+          this.mapUpdateTimings.push({fetchMs:Math.round(fetchedAt-updateStarted),buildWorldMs:Math.round(preparedAt-prepareStarted),commitMs:Math.round(committedAt-commitStarted),totalMs:Math.round(performance.now()-updateStarted),tiles:next.loadedTiles?.length??0});
+          if(this.mapUpdateTimings.length>20)this.mapUpdateTimings.shift();
         }catch(error){
           if(this.disposed)return;
           this.message=error instanceof Error?error.message:'Не удалось подготовить следующий участок.';
@@ -479,7 +488,7 @@ export class Game {
     const data={recordedAt:new Date().toISOString(),center:this.world.center,settings:this.settings,device:navigator.userAgent,performance:this.performanceReport(),diagnostics:this.diagnostics(),map:mapDiagnostics(this.world,this.player.position),sceneChunks:{installed:[...this.chunks].map(([key,c])=>({key,lod:c.lod})),pending:[...this.pending]}};
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='street-racer-performance.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
-  diagnostics() { return { streaming:this.mapStream?.diagnostics(), performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
+  diagnostics() { return { streaming:this.mapStream?.diagnostics(), mapUpdates:this.mapUpdateTimings, performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
   startDriveTest() {
     if(this.suspendPump)return;
     if (this.driveTest) { this.endDriveTest(); return; }

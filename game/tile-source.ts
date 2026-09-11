@@ -18,7 +18,12 @@ export type TileLoadFailureKind =
   | 'aborted';
 
 export type TileLoadResult<TTile = TileArtifactV1> =
-  | { kind: 'hit'; source: string; tile: TTile }
+  | {
+      kind: 'hit';
+      source: string;
+      tile: TTile;
+      timings?: { fetchMs?: number; decodeMs?: number };
+    }
   | { kind: TileLoadFailureKind; source: string; error?: string };
 
 export interface TileSource<TTile = TileArtifactV1, TId = SourceTileId> {
@@ -171,12 +176,17 @@ export class CompositeTileSource<
         {
           result: result.kind,
           error: result.kind === 'hit' ? undefined : result.error,
+          ...(result.kind === 'hit' ? result.timings : undefined),
         },
       );
       if (result.kind === 'aborted') return result;
       if (result.kind !== 'hit') continue;
       if (index > 0 && this.sources[0].save) {
         if (signal.aborted) return aborted(source.name, signal);
+        const saveEnd = this.log?.start('Сохранение source-тайла', {
+          tile: key,
+          source: this.sources[0].name,
+        });
         try {
           await this.sources[0].save(
             tileId,
@@ -184,12 +194,10 @@ export class CompositeTileSource<
             signal,
             result.source,
           );
+          saveEnd?.('success');
         } catch (error) {
           if (signal.aborted) return aborted(source.name, signal, error);
-          this.log?.start('Сохранение source-тайла', {
-            tile: key,
-            source: this.sources[0].name,
-          })('error', {
+          saveEnd?.('error', {
             error: error instanceof Error ? error.message : String(error),
           });
         }
@@ -560,7 +568,9 @@ export class S3TileSource implements TileSource {
           continue;
         }
         const path = entry.path ?? `${dataset.path}/${key}.tile.json.br`,
-          { response, text } = await this.fetchText(path, signal);
+          fetchStarted = performance.now(),
+          { response, text } = await this.fetchText(path, signal),
+          fetched = performance.now();
         if (response.status === 404)
           return {
             kind: 'missing',
@@ -573,14 +583,23 @@ export class S3TileSource implements TileSource {
             source: this.name,
             error: `S3 GET source-тайла ${key} завершился с HTTP ${response.status}.`,
           };
-        const tile = decodeTileArtifact(text, tileId);
+        const tile = decodeTileArtifact(text, tileId),
+          decoded = performance.now();
         if (tile.checksum !== entry.checksum)
           return {
             kind: 'corrupt',
             source: this.name,
             error: `Контрольная сумма source-тайла ${key} не совпадает с каталогом S3.`,
           };
-        return { kind: 'hit', source: this.name, tile };
+        return {
+          kind: 'hit',
+          source: this.name,
+          tile,
+          timings: {
+            fetchMs: Math.round(fetched - fetchStarted),
+            decodeMs: Math.round(decoded - fetched),
+          },
+        };
       }
       if (incompatible)
         return {

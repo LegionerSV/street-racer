@@ -45,6 +45,7 @@ jobs:
         run: npm run build:pages
         env:
           PAGES_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_MAP_TILE_BASE_URL: https://storage.yandexcloud.net/street-racer-maps-legionersv
 
       - name: Настройка GitHub Pages
         uses: actions/configure-pages@v5

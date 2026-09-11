@@ -85,6 +85,15 @@ export const mapTileAt = (p: Pick<Point, 'x' | 'z'>, center: Center) => {
   return sourceTileKey(latLonToSourceTile(geo.lat, geo.lon));
 };
 
+const osmElementKey = (element: OSMElement) => `${element.type}/${element.id}`;
+
+function uniqueElementCount(tiles: Iterable<MapTile>) {
+  const keys = new Set<string>();
+  for (const tile of tiles)
+    for (const element of tile.elements) keys.add(osmElementKey(element));
+  return keys.size;
+}
+
 export function tileReady(loaded: Set<string>, chunk: string, center: Center) {
   return chunkHasCoverage(loaded, chunk, center);
 }
@@ -152,17 +161,21 @@ export function retainTiles(
   maxElements: number,
 ) {
   const kept = new Map<string, MapTile>();
-  let count = 0;
+  const elementKeys = new Set<string>();
   for (const key of [...pinned, ...order]) {
     const tile = tiles.get(key);
     if (!tile || kept.has(key)) continue;
+    const additionalKeys = tile.elements
+      .map(osmElementKey)
+      .filter((elementKey) => !elementKeys.has(elementKey));
     if (
       !pinned.has(key) &&
-      (kept.size >= limit || count + tile.elements.length > maxElements)
+      (kept.size >= limit ||
+        elementKeys.size + additionalKeys.length > maxElements)
     )
       continue;
     kept.set(key, tile);
-    count += tile.elements.length;
+    for (const elementKey of additionalKeys) elementKeys.add(elementKey);
   }
   return kept;
 }
@@ -353,6 +366,7 @@ export class RegionStream {
       this.center,
     ).length;
     try {
+      const startupElementKeys = new Set<string>();
       for (const [index, key] of initial.entries()) {
         progress(
           `Загружаем стартовый район · ${index + 1} из ${initial.length}`,
@@ -365,13 +379,10 @@ export class RegionStream {
               ? await this.sessionDrivingSide()
               : tile.drivingSide;
         this.tiles.set(key, tile);
+        for (const element of tile.elements)
+          startupElementKeys.add(osmElementKey(element));
         this.blockingTileCount = initial.length - this.tiles.size;
-        if (
-          [...this.tiles.values()].reduce(
-            (count, item) => count + item.elements.length,
-            0,
-          ) > this.maxElements
-        )
+        if (startupElementKeys.size > this.maxElements)
           throw new Error(
             'Стартовый район содержит слишком много объектов. Выберите менее плотный участок.',
           );
@@ -500,10 +511,7 @@ export class RegionStream {
           new Set([...order, ...pinned]).size,
           this.maxElements,
         ),
-        keptElements = [...kept.values()].reduce(
-          (count, tile) => count + tile.elements.length,
-          0,
-        ),
+        keptElements = uniqueElementCount(kept.values()),
         accepted = loaded.filter(
           (result) =>
             result.status === 'fulfilled' &&
@@ -578,10 +586,7 @@ export class RegionStream {
       targetTiles: this.targetTileCount,
       retainedTiles: this.tiles.size,
       policy: this.policy,
-      inputElements: [...this.tiles.values()].reduce(
-        (count, tile) => count + tile.elements.length,
-        0,
-      ),
+      inputElements: uniqueElementCount(this.tiles.values()),
       elementLimit: this.maxElements,
       status: this.status,
       sources: [...this.tileDiagnostics.values()].reduce<

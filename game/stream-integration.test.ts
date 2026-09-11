@@ -188,6 +188,31 @@ it('старт отдаёт глобальное окно, затем фон о�
     stream.dispose();
   }
 });
+it('фон принимает окно с halo-дубликатами в пределах уникального бюджета', async () => {
+  // Arrange
+  const { cells } = mockedDownloads(),
+    stream = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  await stream.start(new AbortController().signal, () => {});
+  (stream as unknown as { maxElements: number }).maxElements = 2;
+  cells.mockResolvedValue(
+    Array.from({ length: 100 }, () => ({
+      type: 'node' as const,
+      id: 1,
+      lat: 0,
+      lon: 0,
+    })),
+  );
+  try {
+    // Act
+    const result = await stream.next({ x: 1000, y: 0, z: 0 }, Math.PI / 2);
+
+    // Assert
+    expect(result).not.toBeNull();
+    expect(stream.diagnostics().inputElements).toBe(1);
+  } finally {
+    stream.dispose();
+  }
+});
 it('после обрыва старта берёт готовые клетки из кэша', async () => {
   // Arrange
   const { cells } = mockedDownloads();

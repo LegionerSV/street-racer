@@ -97,6 +97,39 @@ it('dry-run выводит план прямоугольника и ничего
   await expect(stat(staging)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it('dry-run объединяет прямоугольник с дополнительными клетками без дубликатов', async () => {
+  // Arrange
+  const parent = await temporaryDirectory(),
+    staging = join(parent, 'not-created'),
+    events: GeneratorEvent[] = [];
+
+  // Act
+  const report = await generateMapTiles(
+    {
+      staging,
+      dryRun: true,
+      center: { lat: 55.751244, lon: 37.618423 },
+      width: 2,
+      height: 2,
+      zoom: 15,
+      additionalTiles: [firstTile, { z: 15, x: 19814, y: 10243 }],
+      concurrency: 2,
+    },
+    (event) => events.push(event),
+  );
+
+  // Assert
+  expect(report).toMatchObject({ planned: 6, generated: 0, skipped: 0 });
+  expect(events).toEqual([
+    expect.objectContaining({
+      kind: 'plan',
+      count: 6,
+      tiles: expect.arrayContaining(['15/19808/10243', '15/19814/10243']),
+    }),
+  ]);
+  await expect(stat(staging)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
 it('реальный CLI-процесс выполняет dry-run без создания staging', async () => {
   // Arrange
   const parent = await temporaryDirectory(),
@@ -115,12 +148,14 @@ it('реальный CLI-процесс выполняет dry-run без соз
     '2',
     '--height',
     '2',
+    '--extra-tile',
+    '15/19814/10243',
     '--dry-run',
   ]);
 
   // Assert
-  expect(stdout).toContain('"kind":"plan","count":4');
-  expect(stdout).toContain('"planned": 4');
+  expect(stdout).toContain('"kind":"plan","count":5');
+  expect(stdout).toContain('"planned": 5');
   await expect(stat(staging)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 

@@ -1,15 +1,19 @@
 'use client';
 import { useEffect, useRef } from 'react';
-import type { HUD, World } from './types';
+import type { Center, HUD, World } from './types';
 import {minimapOpponent,raceMarkerPosition} from './race-map-markers';
+import {coverageBounds} from './stream-coverage';
+export function minimapWorldBounds(loadedTiles:string[]|undefined,center:Center){
+  const cells=coverageBounds(loadedTiles,center);
+  if(!cells?.length)return{minX:-2500,maxX:2500,minZ:-2500,maxZ:2500};
+  return{minX:Math.min(...cells.map(cell=>cell.minX)),maxX:Math.max(...cells.map(cell=>cell.maxX)),minZ:Math.min(...cells.map(cell=>cell.minZ)),maxZ:Math.max(...cells.map(cell=>cell.maxZ))};
+}
 export function Minimap({ world, hud, mobile=false }: { world: World; hud: HUD; mobile?:boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const base = useRef<{ world: World; canvas: HTMLCanvasElement; size:number } | null>(null);
   useEffect(() => {
     const ctx = ref.current?.getContext('2d'); if (!ctx) return;
-    const cells=world.loadedTiles?.map(k=>k.split(',').map(Number));
-    const minX=cells?Math.min(...cells.map(c=>c[0]))*1000:-2500,maxX=cells?(Math.max(...cells.map(c=>c[0]))+1)*1000:2500;
-    const minZ=cells?Math.min(...cells.map(c=>c[1]))*1000:-2500,maxZ=cells?(Math.max(...cells.map(c=>c[1]))+1)*1000:2500;
+    const {minX,maxX,minZ,maxZ}=minimapWorldBounds(world.loadedTiles,world.center);
     const originX=(minX+maxX)/2,originZ=(minZ+maxZ)/2;
     const width = 300, height = 240, scale = .23,size=mobile?1024:2000,mapScale=size/Math.max(maxX-minX,maxZ-minZ);
     ctx.clearRect(0, 0, width, height); ctx.fillStyle = '#101b20ed'; ctx.fillRect(0, 0, width, height);

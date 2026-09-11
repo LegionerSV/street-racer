@@ -9,6 +9,7 @@ import {
   type TileSource,
 } from './tile-source';
 import { sourceTileBounds } from './source-tiles';
+import type { LoadingLog } from './loading-log';
 import {
   TILE_ARTIFACT_SCHEMA_VERSION,
   TILE_BUILD_VERSION,
@@ -547,6 +548,11 @@ describe('источники TileArtifactV1', () => {
   it('при S3 hit делает GET без HEAD, проверяет артефакт и не вызывает fallback', async () => {
     // Arrange
     const encoded = encodeTileArtifact(artifact()),
+      endLogEntry = vi.fn(),
+      startLogEntry = vi.fn(() => endLogEntry),
+      log = {
+        start: startLogEntry,
+      } as unknown as LoadingLog,
       store = { get: vi.fn(async () => undefined), put: vi.fn(async () => {}) },
       request = vi
         .fn()
@@ -561,11 +567,11 @@ describe('источники TileArtifactV1', () => {
       fallback = new OverpassTileSource(build);
 
     // Act
-    const result = await new CompositeTileSource([
-      cache,
-      remote,
-      fallback,
-    ]).load(artifactId, new AbortController().signal);
+    const result = await new CompositeTileSource(
+      [cache, remote, fallback],
+      undefined,
+      log,
+    ).load(artifactId, new AbortController().signal);
 
     // Assert
     expect(result.kind).toBe('hit');
@@ -580,6 +586,17 @@ describe('источники TileArtifactV1', () => {
     ).toBe(true);
     expect(build).not.toHaveBeenCalled();
     expect(store.put).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      timings: {
+        fetchMs: expect.any(Number),
+        decodeMs: expect.any(Number),
+      },
+    });
+    expect(startLogEntry).toHaveBeenCalledWith('Сохранение source-тайла', {
+      tile: '15/19808/10243',
+      source: 'indexeddb',
+    });
+    expect(endLogEntry).toHaveBeenCalledWith('success');
   });
 
   it.each([

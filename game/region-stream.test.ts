@@ -124,3 +124,15 @@ it('выгружает дальние данные по бюджету, сохр
   expect([...kept.keys()]).toEqual([keys[0], keys[3], keys[2]]);
   expect(tiles.size).toBe(4);
 });
+
+it('считает повторяющиеся halo-объекты один раз при ограничении памяти', () => {
+  // Arrange
+  const keys = startupTiles(center).slice(0, 3),
+    tiles = new Map<string, MapTile>(keys.map((key) => [key, tile(key, 42)]));
+
+  // Act
+  const kept = retainTiles(tiles, keys, new Set(), 3, 1);
+
+  // Assert
+  expect([...kept.keys()]).toEqual(keys);
+});

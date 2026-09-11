@@ -68,6 +68,7 @@ export type GeneratorOptions = {
   commandRunner?: CommandRunner;
   demFetcher?: typeof fetch;
   tiles?: SourceTileId[];
+  additionalTiles?: SourceTileId[];
   center?: { lat: number; lon: number };
   width?: number;
   height?: number;
@@ -141,6 +142,7 @@ function selectedTiles(options: GeneratorOptions) {
         y,
       };
     });
+    tiles.push(...(options.additionalTiles ?? []));
   } else
     throw new Error(
       'Укажите хотя бы один --tile либо прямоугольник через --center.',
@@ -631,7 +633,10 @@ export function parseGeneratorArguments(
   const staging = argumentValue(arguments_, '--staging'),
     centerValue = argumentValue(arguments_, '--center'),
     centerParts = centerValue?.split(',').map(Number),
-    tiles = allArgumentValues(arguments_, '--tile').map(parseSourceTileKey);
+    tiles = allArgumentValues(arguments_, '--tile').map(parseSourceTileKey),
+    additionalTiles = allArgumentValues(arguments_, '--extra-tile').map(
+      parseSourceTileKey,
+    );
   if (!staging) throw new Error('Укажите --staging <каталог>.');
   if (centerValue && (!centerParts || centerParts.length !== 2))
     throw new Error('--center задаётся как <широта,долгота>.');
@@ -658,6 +663,7 @@ export function parseGeneratorArguments(
     drivingSide,
     downloadDem: arguments_.includes('--download-dem'),
     ...(tiles.length ? { tiles } : {}),
+    ...(additionalTiles.length ? { additionalTiles } : {}),
     ...(centerParts
       ? { center: { lat: centerParts[0], lon: centerParts[1] } }
       : {}),

@@ -1,5 +1,8 @@
 # Локальный генератор source-тайлов
 
+Фактическое размещение файлов и утилит пилотной генерации зафиксировано в
+[отчёте MAP-S3-11](./map-pilot-report.md#куда-сохранены-файлы).
+
 CLI `generate:map-tiles` создаёт возобновляемый staging-набор
 `TileArtifactV1` из явно указанного локального JSON-файла либо региональной
 OSM PBF-выгрузки и файлового кэша DEM. Массовый PBF-режим не обращается к
@@ -24,6 +27,14 @@ npm run generate:map-tiles -- --staging .\work\moscow-pilot --input .\work\mosco
 
 ```powershell
 npm run generate:map-tiles -- --staging .\work\pilot --input .\work\tiles.json --tile 15/19808/10243 --tile 15/19809/10243
+```
+
+К прямоугольнику можно добавить отдельные специальные клетки повторяемым
+параметром `--extra-tile`. Совпавшие с прямоугольником или друг с другом XYZ
+автоматически дедуплицируются:
+
+```powershell
+npm run generate:map-tiles -- --staging .\work\moscow-pilot --center 55.751244,37.618423 --width 10 --height 10 --extra-tile 15/19814/10243 --extra-tile 15/19800/10244 --dry-run
 ```
 
 Все пути артефактов строятся только внутри явно заданного `--staging`. Файлы
@@ -132,6 +143,13 @@ ways и relations. Последующий `extract` со стратегией `s
 по `bufferedBounds`, то есть содержит точный core и halo 300 м. Полученный XML
 кэшируется по bbox и преобразуется в тот же массив `OSMElement`, что возвращает
 Overpass.
+
+Завершённый набор можно проверить без сети, включая совпадение общей OSM-
+геометрии и рельефа на всех соседних швах:
+
+```powershell
+npm run verify:map-pilot -- .\work\moscow-pilot
+```
 
 Для полностью локального повтора используйте ту же команду без
 `--download-dem`. Смена PBF, её размера/mtime или набора фильтров автоматически
