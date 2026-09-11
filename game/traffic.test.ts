@@ -32,7 +32,7 @@ it('стартовая решётка проходит короткие OSM-се
   for (let i = 0; i <= 30; i++) elements.push({ type: 'node', id: i + 1, lat: i * .00009, lon: 0 });
   elements.push({ type: 'way', id: 1, nodes: Array.from({ length: 31 }, (_, i) => i + 1), tags: { highway: 'primary', oneway: 'yes' } });
   const world = buildWorld({ center: { lat: 0, lon: 0 }, elements, elevation: { width: 2, size: 5600, values: new Float32Array(4) }, drivingSide: 'right', fetchedAt: 'test' });
-  const points = world.nodes, route = { id: 'short', kind: 'sprint' as const, title: 'Короткие сегменты', edges: world.edges.map(e => e.id), points, cumulative: points.map((_, i) => i * 10), length: 300, laps: 1 };
+  const points = world.nodes, route = { id: 'short', kind: 'sprint' as const, title: 'Короткие сегменты', edges: world.edges.map(e => e.stableId!), points, cumulative: points.map((_, i) => i * 10), length: 300, laps: 1 };
   const havok = await HavokPhysics({ wasmBinary: Uint8Array.from(await readFile(new URL('../node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm', import.meta.url))).buffer });
   const engine = new NullEngine(), scene = new Scene(engine); scene.enablePhysics(new Vector3(0, -9.81, 0), new HavokPlugin(true, havok));
   const traffic = new Traffic(scene, world); traffic.startRace(route);
@@ -67,7 +67,7 @@ it('заполняет городской район плотным потоко
     for (let i=0;i<900;i++) traffic.update(1/60,i/60,{x:0,y:1,z:0},0,false);
     // Assert
     expect(traffic.agents.length).toBeGreaterThan(80); expect(traffic.agents.length).toBeLessThanOrEqual(144);
-    const lanes = new Set(traffic.agents.map(a => Math.round((a.point.z-world.edges[a.edge].points[0].z)*10)));
+    const lanes = new Set(traffic.agents.map(a => Math.round((a.point.z-world.edges.find(e=>e.stableId===a.edge)!.points[0].z)*10)));
     expect(lanes.size).toBeGreaterThan(1);
     expect(scene.materials.length).toBeLessThan(60);
     const camera = new FreeCamera('verification', new Vector3(250, 350, -500), scene); camera.setTarget(new Vector3(250,0,0)); scene.activeCamera = camera; scene.render();

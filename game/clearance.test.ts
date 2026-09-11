@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { validateClearance, fitBridgeClearance, roadCrossings, crossingClearance } from './clearance';
 import type { Edge } from './types';
 
-const road = (id: number, points: Edge['points'], bridge = false): Edge => ({ id, way: id, from: id * 2, to: id * 2 + 1, points, bridge, tunnel: false, layer: bridge ? 1 : 0, width: 7, lanes: 2, length: 100, speed: 15, name: 'Дорога', blocked: false });
+const road = (id: number, points: Edge['points'], bridge = false): Edge => ({ id, stableId:`${id}/${id*2}/${id*2+1}/0`, way: id, from: id * 2, to: id * 2 + 1, points, bridge, tunnel: false, layer: bridge ? 1 : 0, width: 7, lanes: 2, length: 100, speed: 15, name: 'Дорога', blocked: false });
 
 it('закрывает оба направления моста при недостаточном просвете', () => {
   // Arrange

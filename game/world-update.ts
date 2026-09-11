@@ -2,7 +2,8 @@ import type { Edge, Point, World } from './types';
 import { boundsOf, overlaps, type Bounds } from './geometry';
 import { coverageBounds } from './stream-coverage';
 import { createRaceLocations, invalidateRaceRoutes } from './network';
-export const edgeKey = (e: Edge) => `${e.way}/${e.from}/${e.to}`;
+import { edgeById, edgeStableId } from './road-graph';
+export const edgeKey = edgeStableId;
 // Уже построенную поверхность не меняем под автомобилями из-за нового
 // соседнего перекрёстка. Доступность дороги берём из новой карты покрытия.
 export function reconcileWorld(previous: World, next: World): World {
@@ -14,15 +15,14 @@ export function reconcileWorld(previous: World, next: World): World {
       edge.length = existing.length;
     }
   }
-  const remap = new Map(next.edges.map((e) => [edgeKey(e), e.id]));
   const preferred = previous.routes.flatMap((route) => {
-    const start = previous.edges[route.edges[0]],
-      id = start ? remap.get(edgeKey(start)) : undefined;
-    return id === undefined ? [] : [id];
+    const start = edgeById(previous, route.edges[0]),
+      edge = start ? edgeById(next, edgeStableId(start)) : undefined;
+    return edge ? [edgeStableId(edge)] : [];
   });
-  const spawn = previous.edges[previous.spawnEdge],
-    id = spawn ? remap.get(edgeKey(spawn)) : undefined;
-  if (id !== undefined && !next.edges[id].blocked) next.spawnEdge = id;
+  const spawn = previous.spawnEdge ? edgeById(previous, previous.spawnEdge) : undefined,
+    nextSpawn = spawn ? edgeById(next, edgeStableId(spawn)) : undefined;
+  if (nextSpawn && !nextSpawn.blocked) next.spawnEdge = edgeStableId(nextSpawn);
   // Сохраняем места старта, но обновляем трассы и добавляем старты новых клеток.
   invalidateRaceRoutes(next);
   next.routes = createRaceLocations(next, preferred);

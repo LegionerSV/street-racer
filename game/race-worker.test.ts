@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { raceGrid } from './fixtures/race-grid';
 import type { WorkerRequest, WorkerResponse } from './types';
+import { edgeById } from './road-graph';
 afterEach(() => vi.unstubAllGlobals());
 it('строит гонку по активной карте и включает новую территорию только после commit', async () => {
   // Arrange
@@ -17,11 +18,11 @@ it('строит гонку по активной карте и включает
   };
   const first = call({ type: 'world', id: 1, region: raceGrid() });
   if (first.type !== 'world') throw new Error('Не построен мир');
-  const edge =
-    first.world.edges[
-      first.world.routes.find((r) => r.kind === 'sprint')!.edges[0]
-    ];
-  const start = { way: edge.way, from: edge.from, to: edge.to };
+  const edge = edgeById(
+    first.world,
+    first.world.routes.find((r) => r.kind === 'sprint')!.edges[0],
+  )!;
+  const start = edge.stableId;
   // Act
   call({ type: 'prepare', id: 2, region: raceGrid(4, 3) });
   const before = call({ type: 'race', id: 3, start, kind: 'sprint' });

@@ -9,6 +9,7 @@ it('экспортирует причину заграждения, конфли
   // Arrange — физически недостаточный просвет, без автоматического исправления.
   const make = (id: number, bridge: boolean): Edge => ({
     id,
+    stableId: `${100 + id}/${id * 2}/${id * 2 + 1}/0`,
     way: 100 + id,
     from: id * 2,
     to: id * 2 + 1,

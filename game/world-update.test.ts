@@ -85,6 +85,12 @@ it('сохраняет высоту готовой дороги и сопост�
     result.edges.find((e) => edgeKey(e) === edgeKey(before.edges[0]))?.points,
   ).toEqual(before.edges[0].points);
   expect(result.edges.every((e, i) => e.id === i)).toBe(true);
+  expect(result.spawnEdge).toBe(before.spawnEdge);
+  expect(
+    result.routes.every((route) =>
+      route.edges.every((id) => result.edges.some((edge) => edge.stableId === id)),
+    ),
+  ).toBe(true);
 });
 it('составной рельеф использует абсолютные координаты клеток и сохраняет стык после выгрузки', () => {
   // Arrange

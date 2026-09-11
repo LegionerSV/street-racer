@@ -3,7 +3,7 @@ import { createRacerTraits, racerTraitWords, racingLineOffset } from './racing-a
 import { smoothPath } from './driving-path';
 import type { Edge } from './types';
 
-const edge: Edge = { id: 0, way: 1, from: 1, to: 2, length: 120, width: 8, lanes: 2, oneWay: true, speed: 25, name: 'Поворот', bridge: false, tunnel: false, layer: 0, blocked: false, sidewalkLeft: true, sidewalkRight: true, points: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 60 }, { x: 60, y: 0, z: 60 }] };
+const edge: Edge = { id: 0, stableId:'1/1/2/0', way: 1, from: 1, to: 2, length: 120, width: 8, lanes: 2, oneWay: true, speed: 25, name: 'Поворот', bridge: false, tunnel: false, layer: 0, blocked: false, sidewalkLeft: true, sidewalkRight: true, points: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 60 }, { x: 60, y: 0, z: 60 }] };
 
 describe('характер соперника', () => {
   it('один раз задаёт непредельные точность, агрессию и реакцию', () => {

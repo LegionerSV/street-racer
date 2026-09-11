@@ -6,6 +6,7 @@ import { roadLayout, directedLanes,roadTypes } from './lanes';
 import {buildingCoveredByParts} from './buildings';
 import {SpatialGrid,boundsOf,overlaps} from './geometry';
 import {coverageBounds,pointHasCoverage,routeHasCoverage} from './stream-coverage';
+import { edgeById, edgeIndex, edgeStableId, makeEdgeStableId } from './road-graph';
 
 const adjacencyCache = new WeakMap<World, Map<number, Edge[]>>();
 export function outgoing(world: World, id: number): Edge[] {
@@ -108,8 +109,8 @@ export function buildWorld(region: RegionData): World {
       const blockedReasons: NonNullable<Edge['blockedReasons']> = outside ? ['coverage'] : [];
       const walk = sidewalks(tags);
       const base = { sourceHeightRange:[Math.min(...rawHeights),Math.max(...rawHeights)] as [number,number], blockedReasons, way: way.id, length: pathLengths(points).at(-1)!, width, lanes, speed, name: tags.name || 'Безымянная улица', category: tags.highway, oneWay: oneWay || reverse, passage: tags.tunnel === 'building_passage', bridge, tunnel, layer, blocked, unloaded: !!coverage&&outside };
-      if (!reverse && layout.forward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i], to: way.nodes[i + 1], sidewalkLeft:walk.left,sidewalkRight:walk.right,laneProfile: directedLanes(layout, region.drivingSide, 1), markingStart: lengths[i], points });
-      if ((!oneWay || reverse) && layout.backward > 0) edges.push({ ...base, id: edges.length, from: way.nodes[i + 1], to: way.nodes[i], sidewalkLeft:walk.right,sidewalkRight:walk.left,laneProfile: directedLanes(layout, region.drivingSide, -1), markingStart: lengths[i + 1], points: [...points].reverse() });
+      if (!reverse && layout.forward > 0) edges.push({ ...base, id: edges.length, stableId: makeEdgeStableId(way.id, way.nodes[i], way.nodes[i + 1], i), from: way.nodes[i], to: way.nodes[i + 1], sidewalkLeft:walk.left,sidewalkRight:walk.right,laneProfile: directedLanes(layout, region.drivingSide, 1), markingStart: lengths[i], points });
+      if ((!oneWay || reverse) && layout.backward > 0) edges.push({ ...base, id: edges.length, stableId: makeEdgeStableId(way.id, way.nodes[i + 1], way.nodes[i], i), from: way.nodes[i + 1], to: way.nodes[i], sidewalkLeft:walk.right,sidewalkRight:walk.left,laneProfile: directedLanes(layout, region.drivingSide, -1), markingStart: lengths[i + 1], points: [...points].reverse() });
     }
   }
   const restrictions: Restriction[] = [];
@@ -197,12 +198,12 @@ export function buildWorld(region: RegionData): World {
     const score = (e: Edge) => Math.hypot(e.points[0].x-(region.focus?.x||0), e.points[0].z-(region.focus?.z||0)) + (e.bridge || e.tunnel ? 1500 : 0) + (e.width < 6 ? 500 : 0) + (e.category === 'service' ? 4000 : e.category === 'living_street' ? 2000 : e.category === 'residential' ? 300 : 0) + (e.length < 45 ? 200 : 0);
     return score(a) - score(b);
   });
-  const world: World = { heightDatum:originHeight, center: region.center, nodes, edges, restrictions, buildings, areas, trees, elevation, drivingSide: region.drivingSide, warnings: [...new Set(warnings)].slice(0, 10), spawnEdge: candidates[0]?.id ?? -1, routes: [], loadedTiles: region.loadedTiles };
+  const world: World = { heightDatum:originHeight, center: region.center, nodes, edges, restrictions, buildings, areas, trees, elevation, drivingSide: region.drivingSide, warnings: [...new Set(warnings)].slice(0, 10), spawnEdge: candidates[0]?.stableId ?? null, routes: [], loadedTiles: region.loadedTiles };
   // Выбираем старт в связном компоненте, из которого действительно можно ехать.
   for (const candidate of candidates.slice(0, 100)) {
     const seen = new Set<number>(), stack = [candidate.from]; let length = 0;
     while (stack.length && seen.size < 1500) { const id = stack.pop()!; if (seen.has(id)) continue; seen.add(id); for (const e of outgoing(world, id)) { length += e.length; if (!seen.has(e.to)) stack.push(e.to); } }
-    if (length > 800) { world.spawnEdge = candidate.id; break; }
+    if (length > 800) { world.spawnEdge = edgeStableId(candidate); break; }
   }
   if (usable.reduce((sum, e) => sum + e.length, 0) < 500) world.warnings.push('Недостаточно связанных дорог для заезда. Выберите другой участок.');
   world.routes = createRoutes(world);
@@ -211,9 +212,9 @@ export function buildWorld(region: RegionData): World {
     let best = world.routes;
     let bestSpawn = world.spawnEdge;
     for (const candidate of candidates.slice(0, 80)) {
-      world.spawnEdge = candidate.id;
+      world.spawnEdge = edgeStableId(candidate);
       const routes = createRoutes(world);
-      if (routes.length > best.length) { best = routes; bestSpawn = candidate.id; }
+      if (routes.length > best.length) { best = routes; bestSpawn = edgeStableId(candidate); }
       if (best.length === 2) break;
     }
     world.spawnEdge = bestSpawn; world.routes = best;
@@ -343,8 +344,11 @@ export function createRoutes(
   startEdge = world.spawnEdge,
   expandCircuit = false,
 ): Route[] {
+  if (startEdge === null) return [];
+  const startIndex = edgeIndex(world, startEdge);
+  if (startIndex === undefined) return [];
   const safe = safeRaceEdges(world);
-  if (!safe.has(startEdge)) return [];
+  if (!safe.has(startIndex)) return [];
   let cache = routeCache.get(world);
   if (!cache) {
     cache = new Map();
@@ -352,7 +356,7 @@ export function createRoutes(
   }
   const cacheKey = `${startEdge}/${expandCircuit}`;
   if (cache.has(cacheKey)) return cache.get(cacheKey)!;
-  const first = world.edges[startEdge],
+  const first = world.edges[startIndex],
     routes: Route[] = [];
   function add(kind: 'sprint' | 'circuit', ids: number[]) {
     if (kind === 'circuit') {
@@ -401,7 +405,7 @@ export function createRoutes(
       id: `${kind}-${first.way}-${first.from}-${first.to}-${(hash >>> 0).toString(36)}`,
       title: kind === 'circuit' ? 'Ночной круг' : 'Через район',
       kind,
-      edges: ids,
+      edges: ids.map((id) => edgeStableId(world.edges[id])),
       points,
       cumulative,
       length,
@@ -462,7 +466,7 @@ export function createRoutes(
 // оставляем оба вида гонки. Выбор детерминирован, старые доступные старты сохраняются.
 export function createRaceLocations(
   world: World,
-  preferredStarts: number[] = [],
+  preferredStarts: string[] = [],
 ): Route[] {
   const safe = safeRaceEdges(world),
     groups = new Map<string, Edge[]>();
@@ -470,9 +474,9 @@ export function createRaceLocations(
     `${Math.floor(e.points[0].x / 1000)},${Math.floor(e.points[0].z / 1000)}`;
   const preferred = new Map<string, number>();
   for (const id of preferredStarts) {
-    const e = world.edges[id];
-    if (e && safe.has(id) && !preferred.has(cell(e)))
-      preferred.set(cell(e), id);
+    const e = edgeById(world, id);
+    if (e && safe.has(e.id) && !preferred.has(cell(e)))
+      preferred.set(cell(e), e.id);
   }
   for (const e of world.edges)
     if (safe.has(e.id) && !e.bridge && !e.tunnel && e.length >= 15) {
@@ -481,7 +485,7 @@ export function createRaceLocations(
       list.push(e);
       groups.set(key, list);
     }
-  const spawn = world.edges[world.spawnEdge];
+  const spawn = world.spawnEdge ? edgeById(world, world.spawnEdge) : undefined;
   if (spawn && safe.has(spawn.id)) {
     const key = cell(spawn);
     if (!preferred.has(key)) preferred.set(key, spawn.id);
@@ -513,7 +517,7 @@ export function createRaceLocations(
     const old = preferred.get(key);
     if (old !== undefined) candidates.unshift(old);
     for (const id of new Set(candidates)) {
-      const routes = createRoutes(world, id);
+      const routes = createRoutes(world, edgeStableId(world.edges[id]));
       if (!routes.length) continue;
       if (spawn && key === cell(spawn)) result.push(...routes);
       else {
@@ -528,12 +532,10 @@ export function createRaceLocations(
 
 export function createRaceRoute(
   world: World,
-  start: Pick<Edge, 'way' | 'from' | 'to'>,
+  start: string,
   kind: Route['kind'],
 ): Route | undefined {
-  const edge = world.edges.find(
-    (e) => e.way === start.way && e.from === start.from && e.to === start.to,
-  );
+  const edge = edgeById(world, start);
   if (!edge) return;
-  return createRoutes(world, edge.id, true).find((r) => r.kind === kind);
+  return createRoutes(world, edgeStableId(edge), true).find((r) => r.kind === kind);
 }

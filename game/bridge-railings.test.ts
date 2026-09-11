@@ -35,6 +35,7 @@ function railVertices(mesh: MeshData): Point[] {
 function fixture(separation = 8, height = 0, layer = 1): World {
   const edge: Edge = {
     id: 0,
+    stableId: '10/1/2/0',
     way: 10,
     from: 1,
     to: 2,
@@ -77,7 +78,7 @@ function fixture(separation = 8, height = 0, layer = 1): World {
     elevation: { width: 2, size: 5600, values: new Float32Array(4) },
     drivingSide: 'right',
     warnings: [],
-    spawnEdge: 0,
+    spawnEdge: null,
     routes: [],
   };
 }

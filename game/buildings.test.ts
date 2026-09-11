@@ -28,7 +28,7 @@ const world = (b = building) =>
     elevation: { width: 2, size: 5600, values: new Float32Array(4) },
     drivingSide: 'right',
     warnings: [],
-    spawnEdge: -1,
+    spawnEdge: null,
     routes: [],
   }) as World;
 it('использует фасадные текстуры вблизи и силуэты вдали без прямоугольника на каждое окно', () => {

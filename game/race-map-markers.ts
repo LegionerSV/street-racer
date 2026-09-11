@@ -1,5 +1,6 @@
 import { pathLengths, pointAt } from './geo';
 import type { Point, Route, World } from './types';
+import { edgeById } from './road-graph';
 import type { RacerTraits } from './types';
 import { DEFAULT_RACER_TRAITS } from './racing-ai';
 
@@ -36,8 +37,9 @@ export function opponentMarkers(
 }
 // Позиция одна для трёхмерного маркера и миникарты; индекс списка на неё не влияет.
 export function raceMarkerPosition(world: World, route: Route): Point {
-  const edge = world.edges[route.edges[0]],
+  const edge = edgeById(world, route.edges[0]),
     sprint = route.kind === 'sprint';
+  if (!edge) throw new Error(`Маршрут ${route.id} ссылается на отсутствующую дорогу.`);
   return pointAt(
     edge.points,
     pathLengths(edge.points),

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildWorld, outgoing, allowedTurn, createRoutes, advanceTurnHistory } from './network';
 import type { RegionData, OSMElement } from './types';
+import { edgeById, edgeStableId } from './road-graph';
 
 const node = (id: number, lon: number, lat: number, signal = false): OSMElement => ({ type: 'node', id, lon, lat, tags: signal ? { highway: 'traffic_signals' } : {} });
 const road = (id: number, nodes: number[], tags = {}): OSMElement => ({ type: 'way', id, nodes, tags: { highway: 'residential', ...tags } });
@@ -45,11 +46,11 @@ describe('Дорожная сеть', () => {
       road(20, [1, 3], { highway: 'service', oneway: 'yes' }),
     ]);
     // Act
-    const w = buildWorld(input), routes = createRoutes(w, w.edges.find(e => e.way === 10)!.id, true);
+    const w = buildWorld(input), routes = createRoutes(w, edgeStableId(w.edges.find(e => e.way === 10)!), true);
     // Assert
     expect(w.edges.some(e => e.way === 20 && !e.blocked)).toBe(true);
     expect(routes.length).toBeGreaterThan(0);
-    expect(routes.flatMap(r => r.edges).every(id => w.edges[id].way !== 20)).toBe(true);
+    expect(routes.flatMap(r => r.edges).every(id => edgeById(w, id)!.way !== 20)).toBe(true);
   });
   it('сохраняет запрет поворота через промежуточную дорогу только для нужного въезда', () => {
     // Arrange

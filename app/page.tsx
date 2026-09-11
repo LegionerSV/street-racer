@@ -110,7 +110,7 @@ export default function Home() {
       const worker = new WorldWorker(); workerRef.current = worker;
       update('Соединяем дороги и строим маршруты', 84);
       const generated = await log.measure('Построение мира в worker',()=>worker.build(region),{elements:region.elements.length}); abort.signal.throwIfAborted();
-      if (generated.spawnEdge < 0) throw new Error('В стартовом районе нет доступных дорог. Выберите другой участок.');
+      if (!generated.spawnEdge) throw new Error('В стартовом районе нет доступных дорог. Выберите другой участок.');
       setWorld(generated);
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
       const game = await Game.create(canvasRef.current!, generated, worker, settings, next => {

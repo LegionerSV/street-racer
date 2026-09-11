@@ -12,7 +12,7 @@ it('возвращает гонщика к контрольной точке и 
     id: 'test',
     kind: 'circuit',
     title: 'Заезд',
-    edges: [0],
+    edges: ['test-edge'],
     points: [
       { x: 500, y: 0, z: 500 },
       { x: 700, y: 0, z: 500 },

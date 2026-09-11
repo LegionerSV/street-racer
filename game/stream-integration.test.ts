@@ -356,7 +356,7 @@ it('переносит трафик на ту же дорогу после пе�
     traffic = new Traffic(scene, before);
   traffic.agents.push({
     id: 1,
-    edge: 0,
+    edge: before.edges[0].stableId!,
     distance: 25,
     speed: 10,
     point: { x: 0, y: 0, z: 25 },
@@ -367,14 +367,14 @@ it('переносит трафик на ту же дорогу после пе�
     // Act
     traffic.replaceWorld(after);
     // Assert
-    expect(traffic.agents[0].edge).toBe(1);
+    expect(traffic.agents[0].edge).toBe(before.edges[0].stableId);
     expect(traffic.agents[0].distance).toBe(25);
     traffic.agents[0].race = {
       route: {
         id: 'r',
         kind: 'sprint',
         title: 'Заезд',
-        edges: [1],
+        edges: [before.edges[0].stableId!],
         points: [],
         cumulative: [],
         length: 100,

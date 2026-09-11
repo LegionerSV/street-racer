@@ -4,7 +4,7 @@ import type {
   WorkerRequest,
   WorkerResponse,
   World,
-  Edge,
+  EdgeStableId,
   Route,
 } from './types';
 // oxlint-disable-next-line import/default -- Vite создаёт конструктор Worker для импорта с ?worker.
@@ -62,7 +62,7 @@ export class WorldWorker {
   prepare(region: RegionData) {
     return this.request<World>({ type: 'prepare', region });
   }
-  raceRoute(start: Pick<Edge, 'way' | 'from' | 'to'>, kind: Route['kind']) {
+  raceRoute(start: EdgeStableId, kind: Route['kind']) {
     return this.request<Route | null>({ type: 'race', start, kind });
   }
   commit() {

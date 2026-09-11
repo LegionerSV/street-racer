@@ -25,7 +25,7 @@ const world: World = {
   elevation: { width: 2, size: 5600, values: new Float32Array(4) },
   drivingSide: 'right',
   warnings: [],
-  spawnEdge: -1,
+  spawnEdge: null,
   routes: [],
 };
 const model: LandmarkAsset = {

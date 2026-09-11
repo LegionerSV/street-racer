@@ -31,6 +31,7 @@ import type {LoadingLog} from './loading-log';
 import {RegionStream,tileReady} from './region-stream';
 import {edgeKey,changedChunks} from './world-update';
 import {routeHasCoverage,needsRaceRecovery} from './stream-coverage';
+import {edgeById,edgeStableId} from './road-graph';
 import {nextRaceTurn} from './navigation';
 
 type BreakableLoaded = { mesh: Mesh; pole: boolean; broken: boolean; lamp?: Point; body?: PhysicsAggregate };
@@ -88,7 +89,7 @@ export class Game {
   paused = false;
   race: RaceState | null = null;
   nearRace: Route | null = null;
-  private lastSafeEdge: number;
+  private lastSafeEdge: string | null;
   private routeLengths = new Map<number, number[]>();
   private driveTest: { route: Route; target: number; elapsed: number; distance: number; last: Point; frames: number[]; maxMeshes: number; maxSpeed: number; samples: number[] } | null = null;
   private testReport: Record<string, unknown> | null = null;
@@ -114,7 +115,7 @@ export class Game {
     const game = await (log?log.measure('Создание игровой сцены',createScene):createScene());
     const abort = () => game.dispose(); signal.addEventListener('abort', abort, { once: true });
     try {
-      const spawn = world.edges[world.spawnEdge]; if (!spawn) throw new Error('В этом участке нет дорог для машины. Выберите другой район.');
+      const spawn = world.spawnEdge ? edgeById(world, world.spawnEdge) : undefined; if (!spawn) throw new Error('В этом участке нет дорог для машины. Выберите другой район.');
       game.player.reset(spawn, world.drivingSide);
       game.refreshWanted();
       const critical=new Set(criticalChunks(game.player.position,game.player.heading,!!world.loadedTiles));
@@ -318,7 +319,7 @@ export class Game {
       this.lampLights.forEach((light, i) => { if (lamps[i] && !isLightQuality(this.settings.quality)) { light.position.copyFromFloats(lamps[i].x, lamps[i].y, lamps[i].z); light.intensity = 2 * (1-this.atmosphere.state.daylight); } else light.intensity = 0; });
       if (this.player.grounded && !this.race) {
         const nearest=drivingEdgeAt(this.world,this.player.position,this.player.heading);
-        if(nearest)this.lastSafeEdge=nearest.id;
+        if(nearest)this.lastSafeEdge=edgeStableId(nearest);
       }
     }
     this.pump();
@@ -364,7 +365,8 @@ export class Game {
     if (this.hudClock <= 0) { this.hudClock = .1; this.emit(); }
   }
   private emit() {
-    this.onHUD({ opponents:this.race?opponentMarkers(this.traffic.racers):[], speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.preparingRace?'Прокладываем маршрут по загруженной карте…':this.mapStream?.status, race: this.race ? { ...this.race } : null, navigation:this.settings.navigator&&this.race?nextRaceTurn(this.race,this.player.position):null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: this.world.edges[this.lastSafeEdge]?.name, lanes: this.world.edges[this.lastSafeEdge] ? laneCaption(this.world.edges[this.lastSafeEdge]) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
+    const safeEdge=this.lastSafeEdge?edgeById(this.world,this.lastSafeEdge):undefined;
+    this.onHUD({ opponents:this.race?opponentMarkers(this.traffic.racers):[], speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.preparingRace?'Прокладываем маршрут по загруженной карте…':this.mapStream?.status, race: this.race ? { ...this.race } : null, navigation:this.settings.navigator&&this.race?nextRaceTurn(this.race,this.player.position):null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: safeEdge?.name, lanes: safeEdge ? laneCaption(safeEdge) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
   }
   private recoverAtMapBoundary(critical:string[]){
     if(!needsRaceRecovery(!!this.race||!!this.driveTest,this.mapCoverage,critical,this.world.center))return critical;
@@ -413,10 +415,11 @@ export class Game {
           if(this.disposed)return;
           const newCoverage=new Set(next.loadedTiles);
           for(const key of changedChunks(this.world,next,this.chunks.keys()))this.staleChunks.add(key);
-          const safe=this.world.edges[this.lastSafeEdge];
+          const safe=this.lastSafeEdge?edgeById(this.world,this.lastSafeEdge):undefined;
           this.traffic.replaceWorld(next);
           this.world=next;this.mapCoverage=newCoverage;
-          this.lastSafeEdge=(safe?next.edges.find(e=>!e.blocked&&edgeKey(e)===edgeKey(safe))?.id:undefined)??next.spawnEdge;
+          const matchedSafe=safe?next.edges.find(e=>!e.blocked&&edgeKey(e)===edgeKey(safe)):undefined;
+          this.lastSafeEdge=matchedSafe?edgeStableId(matchedSafe):next.spawnEdge;
           this.replaceRouteMarkers();
           this.refreshWanted();onWorld(next);awaiting=null;
           this.mapUpdateTimings.push({fetchMs:Math.round(fetchedAt-updateStarted),buildWorldMs:Math.round(preparedAt-prepareStarted),commitMs:Math.round(committedAt-commitStarted),totalMs:Math.round(performance.now()-updateStarted),tiles:next.loadedTiles?.length??0});
@@ -453,21 +456,21 @@ export class Game {
     if (this.race) {
       const p = this.race.route.points[Math.max(0, this.race.checkpoint - 1)], next = this.race.route.points[this.race.checkpoint];
       this.player.teleport({ ...p, y: p.y + .88 }, Math.atan2(next.x - p.x, next.z - p.z));
-    } else { const edge=this.world.edges[id];if(!edge){this.message='Поблизости пока нет загруженной дороги для возвращения.';return;}this.player.reset(edge,this.world.drivingSide); }
+    } else { const edge=id?edgeById(this.world,id):undefined;if(!edge){this.message='Поблизости пока нет загруженной дороги для возвращения.';return;}this.player.reset(edge,this.world.drivingSide); }
     this.clearControls(); this.refreshWanted(); this.streamClock = 0; this.camera.position.setAll(0);
   }
   async startRace(invitation: Route) {
     if (this.race || this.paused || this.suspendPump || this.preparingRace || this.loading) return;
-    const start=this.world.edges[invitation.edges[0]];
+    const start=edgeById(this.world,invitation.edges[0]);
     if(!start||start.blocked)return;
     this.preparingRace=true;this.loading=true;this.clearControls();this.emit();
     try {
-      const route=await this.worker.raceRoute({way:start.way,from:start.from,to:start.to},invitation.kind);
+      const route=await this.worker.raceRoute(edgeStableId(start),invitation.kind);
       if(this.disposed)return;
       if(this.paused)return;
-      if(!route||!routeHasCoverage(route.points,this.world.loadedTiles,this.world.center,Math.max(120,...route.edges.map(id=>this.world.edges[id].width/2+110))))
+      if(!route||!routeHasCoverage(route.points,this.world.loadedTiles,this.world.center,Math.max(120,...route.edges.map(id=>edgeById(this.world,id)!.width/2+110))))
         throw new Error('Для этого заезда пока не хватает связанных загруженных дорог. Попробуйте другой старт или дождитесь подгрузки карты.');
-      this.race = makeRace(route);this.message='';this.player.reset(this.world.edges[route.edges[0]], this.world.drivingSide, 2);
+      this.race = makeRace(route);this.message='';this.player.reset(edgeById(this.world,route.edges[0])!, this.world.drivingSide, 2);
       this.traffic.startRace(route);this.refreshWanted();this.clearControls();
     }catch(error){if(!this.disposed){this.message=error instanceof Error?error.message:'Не удалось построить маршрут заезда.';this.paused=true;}}
     finally{this.preparingRace=false;if(!this.disposed)this.emit();}
@@ -494,7 +497,7 @@ export class Game {
     if (this.driveTest) { this.endDriveTest(); return; }
     const route = this.world.routes.find(r => r.kind === 'sprint') || this.world.routes[0];
     if (!route) { this.message = 'Нет маршрута для испытания.'; return; }
-    this.race = null; this.traffic.clearRacers(); this.player.reset(this.world.edges[route.edges[0]], this.world.drivingSide, 2);
+    this.race = null; this.traffic.clearRacers(); this.player.reset(edgeById(this.world,route.edges[0])!, this.world.drivingSide, 2);
     this.paused = false; this.clearControls(); this.resetPerformance();this.testReport = null;
     this.driveTest = { route, target: 1, elapsed: 0, distance: 0, last: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, frames: [], maxMeshes: 0, maxSpeed: 0, samples: [] };
     this.refreshWanted();
@@ -520,9 +523,9 @@ export class Game {
     if(this.suspendPump)return;
     const candidates = this.world.edges.filter(e => e[kind] && !e.blocked).sort((a, b) => b.length - a.length);
     if (!candidates.length) { this.message = 'В этом районе нет доступных сооружений этого типа.'; return; }
-    this.driveTest = null; this.race = null; this.traffic.clearRacers(); const edge = candidates[0]; this.lastSafeEdge = edge.id; this.player.reset(edge, this.world.drivingSide); this.paused = false; this.refreshWanted(); this.streamClock = 0; this.camera.position.setAll(0);
+    this.driveTest = null; this.race = null; this.traffic.clearRacers(); const edge = candidates[0]; this.lastSafeEdge = edgeStableId(edge); this.player.reset(edge, this.world.drivingSide); this.paused = false; this.refreshWanted(); this.streamClock = 0; this.camera.position.setAll(0);
     const lengths = pathLengths(edge.points);
-    const route: Route = { id: `test-${kind}`, kind: 'sprint', title: kind === 'bridge' ? 'Испытание моста' : 'Испытание тоннеля', edges: [edge.id], points: edge.points, cumulative: lengths, length: lengths.at(-1)!, laps: 1 };
+    const route: Route = { id: `test-${kind}`, kind: 'sprint', title: kind === 'bridge' ? 'Испытание моста' : 'Испытание тоннеля', edges: [edgeStableId(edge)], points: edge.points, cumulative: lengths, length: lengths.at(-1)!, laps: 1 };
     this.testReport = null;
     this.driveTest = { route, target: 1, elapsed: 0, distance: 0, last: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, frames: [], maxMeshes: 0, maxSpeed: 0, samples: [] };
   }

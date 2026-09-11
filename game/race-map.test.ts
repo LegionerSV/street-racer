@@ -8,11 +8,13 @@ import {
 import { reconcileWorld } from './world-update';
 import { routeHasCoverage } from './stream-coverage';
 import { raceGrid } from './fixtures/race-grid';
+import { edgeById } from './road-graph';
+import { edgeStableId } from './road-graph';
 
 it('размещает старты по загруженным километровым участкам', () => {
   // Arrange / Act
   const world = buildWorld(raceGrid(4, 3));
-  const starts = world.routes.map((r) => world.edges[r.edges[0]].points[0]);
+  const starts = world.routes.map((r) => edgeById(world, r.edges[0])!.points[0]);
   // Assert
   expect(
     new Set(
@@ -34,15 +36,15 @@ it.each(['sprint', 'circuit'] as const)(
     const before = buildWorld(raceGrid()),
       after = buildWorld(raceGrid(4, 3));
     const invitation = before.routes.find((r) => r.kind === kind)!;
-    const start = before.edges[invitation.edges[0]];
+    const start = edgeById(before, invitation.edges[0])!;
     const next = reconcileWorld(before, after);
     // Act
-    const route = createRaceRoute(next, start, kind);
+    const route = createRaceRoute(next, edgeStableId(start), kind);
     // Assert
     expect(route).toBeDefined();
     expect(route!.points.some((p) => p.x > 2000 || p.z > 2000)).toBe(true);
     expect(route!.length).toBeGreaterThan(invitation.length);
-    expect(next.edges[route!.edges[0]]).toMatchObject({
+    expect(edgeById(next, route!.edges[0])).toMatchObject({
       way: start.way,
       from: start.from,
       to: start.to,
@@ -63,7 +65,7 @@ it('после подгрузки добавляет другие старты, 
   // Assert
   expect(next.routes.length).toBeGreaterThan(before.routes.length);
   expect(
-    next.routes.some((r) => next.edges[r.edges[0]].points[0].x > 2000),
+    next.routes.some((r) => edgeById(next, r.edges[0])!.points[0].x > 2000),
   ).toBe(true);
   expect(
     smaller.routes.every((r) =>
@@ -72,7 +74,7 @@ it('после подгрузки добавляет другие старты, 
   ).toBe(true);
   expect(
     smaller.routes.every((r) =>
-      r.edges.every((id) => smaller.edges[id] && !smaller.edges[id].blocked),
+      r.edges.every((id) => !edgeById(smaller, id)?.blocked),
     ),
   ).toBe(true);
 });
@@ -89,7 +91,7 @@ it('обходит незагруженную клетку, даже когда 
   const world = buildWorld(region),
     start = world.edges.find((e) => e.from === 1 && e.to === 2)!;
   // Act
-  const route = createRaceRoute(world, start, 'sprint');
+  const route = createRaceRoute(world, edgeStableId(start), 'sprint');
   // Assert
   expect(route).toBeDefined();
   expect(route!.points.some((p) => p.x > 2000)).toBe(true);
@@ -113,14 +115,14 @@ it('сохраняет ограничения поворотов при пост
   const world = buildWorld(region),
     start = world.edges.find((e) => e.from === 1 && e.to === 101)!;
   // Act
-  const route = createRaceRoute(world, start, 'circuit')!;
+  const route = createRaceRoute(world, edgeStableId(start), 'circuit')!;
   // Assert
   expect(route).toBeDefined();
   expect(route.length).toBeGreaterThan(4000);
   let history = advanceTurnHistory(world, [], start.way);
   for (let i = 1; i < route.edges.length * 2; i++) {
-    const from = world.edges[route.edges[(i - 1) % route.edges.length]],
-      to = world.edges[route.edges[i % route.edges.length]];
+    const from = edgeById(world, route.edges[(i - 1) % route.edges.length])!,
+      to = edgeById(world, route.edges[i % route.edges.length])!;
     expect(allowedTurn(world, from, to, history)).toBe(true);
     history = advanceTurnHistory(world, history, to.way);
   }
@@ -135,5 +137,5 @@ it('после сохранения старой геометрии обновл
   const next = reconcileWorld(old, fresh);
   // Assert
   for (const route of next.routes)
-    expect(route.points[0]).toEqual(next.edges[route.edges[0]].points[0]);
+    expect(route.points[0]).toEqual(edgeById(next, route.edges[0])!.points[0]);
 });

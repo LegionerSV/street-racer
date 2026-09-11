@@ -3,6 +3,7 @@ import { Game } from './runtime';
 import { buildWorld, createRaceRoute } from './network';
 import { raceGrid } from './fixtures/race-grid';
 import type { Route } from './types';
+import { edgeById, edgeStableId } from './road-graph';
 
 function gameFixture() {
   const world = buildWorld(raceGrid(4, 3));
@@ -28,7 +29,7 @@ it('при старте запрашивает новый маршрут в work
   // Arrange
   const before = buildWorld(raceGrid()),
     invitation = before.routes.find((r) => r.kind === 'sprint')!;
-  const start = before.edges[invitation.edges[0]],
+  const start = edgeById(before, invitation.edges[0])!,
     game = gameFixture();
   const current = game.world.edges.find(
     (e: typeof start) =>
@@ -36,9 +37,9 @@ it('при старте запрашивает новый маршрут в work
   )!;
   const stale = {
     ...invitation,
-    edges: [current.id, ...invitation.edges.slice(1)],
+    edges: [edgeStableId(current), ...invitation.edges.slice(1)],
   };
-  const fresh = createRaceRoute(game.world, current, 'sprint')!;
+  const fresh = createRaceRoute(game.world, edgeStableId(current), 'sprint')!;
   let finish!: (route: Route) => void;
   game.worker.raceRoute.mockImplementation(
     () =>
@@ -54,7 +55,7 @@ it('при старте запрашивает новый маршрут в work
   expect(game.loading).toBe(true);
   expect(game.race).toBeNull();
   expect(game.worker.raceRoute).toHaveBeenCalledExactlyOnceWith(
-    { way: start.way, from: start.from, to: start.to },
+    edgeStableId(start),
     'sprint',
   );
   // Act

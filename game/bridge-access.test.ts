@@ -15,6 +15,7 @@ it('не объединяет короткие мосты, расположен�
     bridge: boolean,
   ): Edge => ({
     id,
+    stableId: `${id}/${from}/${to}/0`,
     way: id,
     from,
     to,
