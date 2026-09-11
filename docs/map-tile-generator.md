@@ -1,9 +1,10 @@
 # Локальный генератор source-тайлов
 
 CLI `generate:map-tiles` создаёт возобновляемый staging-набор
-`TileArtifactV1` из явно указанного локального JSON-файла. Команда не обращается
-к Overpass, DEM или S3 и не принимает облачные ключи. Чтение PBF и локального
-кэша DEM добавляется отдельно в MAP-S3-09.
+`TileArtifactV1` из явно указанного локального JSON-файла либо региональной
+OSM PBF-выгрузки и файлового кэша DEM. Массовый PBF-режим не обращается к
+Overpass и не принимает облачные ключи. Многогигабайтная PBF-выгрузка никогда
+не скачивается CLI автоматически.
 
 ## Быстрый старт
 
@@ -66,3 +67,75 @@ checksum: валидный файл пропускается, повреждён
 `size` необязательно; по умолчанию используется 700 метров. Точный
 `generatedAt` для воспроизводимых fixture можно задать параметром
 `--generated-at` в ISO-формате.
+
+## Массовая генерация из PBF и DEM
+
+Требуется `osmium-tool` версии 1.19.x. В воспроизводимом окружении Conda его
+можно установить и проверить так:
+
+```powershell
+conda install --channel conda-forge osmium-tool=1.19.0
+osmium --version
+```
+
+Официальная документация также описывает пакет `osmium-tool` для Debian/Ubuntu,
+Homebrew и сборку из исходников для Windows. Если `osmium` не находится в
+`PATH`, передайте полный путь через `--osmium`.
+
+PBF-файл нужно получить отдельно у поставщика региональных OSM-выгрузок. До
+генерации зафиксируйте на странице поставщика URL/название набора, дату снимка и
+условия Open Database License. Эти значения обязательны для команды и
+записываются в `input-data.json`; путь к локальному файлу в метаданные не
+попадает.
+
+```powershell
+npm run generate:map-tiles -- `
+  --staging .\work\moscow-pilot `
+  --pbf D:\map-data\central-russia-2026-09-01.osm.pbf `
+  --osm-cache D:\map-cache\osm `
+  --dem-cache D:\map-cache\terrarium `
+  --osm-timestamp 2026-09-01T00:00:00Z `
+  --input-source https://example.org/central-russia-2026-09-01.osm.pbf `
+  --input-license ODbL-1.0 `
+  --dem-timestamp 2026-08-01T00:00:00Z `
+  --dem-license https://github.com/tilezen/joerd/blob/master/docs/attribution.md `
+  --driving-side right `
+  --center 55.751244,37.618423 --width 10 --height 10 `
+  --concurrency 4 --download-dem
+```
+
+`--dem-timestamp` фиксирует дату снимка локального DEM-кэша, а `--dem-license` —
+применимую страницу лицензий и атрибуции исходных наборов Tilezen.
+`--download-dem` — отдельное разрешение скачать только недостающие исходные
+Terrarium z12 PNG. Без него отсутствующий DEM завершает соответствующий тайл
+ошибкой. Каждый PNG хранится как `dem-cache/12/x/y.png`, поэтому соседние
+source-тайлы используют одни и те же исходные пиксели на общей границе, а
+повторный запуск не выполняет сетевой запрос. После первичного заполнения кэша
+тот же набор воспроизводится полностью офлайн, если убрать `--download-dem`.
+
+Перед извлечением CLI один раз создаёт в `--osm-cache` отфильтрованную копию
+региональной PBF. Набор выражений строится из того же `roadTypes`, что и
+`mapCellQuery`, и включает светофоры, ограничения поворотов, здания и их части,
+воду, леса, траву, луга, водохранилища и парки. Фактически вызываются команды
+следующего вида (точные пути и bbox выводятся из параметров):
+
+```text
+osmium tags-filter <input.osm.pbf> <зафиксированные выражения> --overwrite -o <filtered.osm.pbf>
+osmium extract --bbox <west,south,east,north> --strategy smart --option types=any --overwrite <filtered.osm.pbf> --output-format osm -o <tile.osm>
+```
+
+`tags-filter` по умолчанию добавляет объекты, на которые ссылаются совпавшие
+ways и relations. Последующий `extract` со стратегией `smart` и
+`types=any` сохраняет полные ways, relation members и их nodes. Bbox строится
+по `bufferedBounds`, то есть содержит точный core и halo 300 м. Полученный XML
+кэшируется по bbox и преобразуется в тот же массив `OSMElement`, что возвращает
+Overpass.
+
+Для полностью локального повтора используйте ту же команду без
+`--download-dem`. Смена PBF, её размера/mtime или набора фильтров автоматически
+создаёт новые региональную запись и extract-кэш. `input-data.json` содержит
+fingerprint PBF, provenance и существенных параметров генерации; рядом с каждым
+артефактом записывается `.source-fingerprint`. Поэтому незавершённый повтор с
+другим входом не может принять старый валидный артефакт за новый. Исходные PBF и DEM должны
+использоваться с соблюдением лицензий их поставщиков; публикация карты должна
+содержать атрибуцию OpenStreetMap и конкретного источника DEM.

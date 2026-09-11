@@ -29,6 +29,13 @@ import {
 } from '../game/tile-artifact.ts';
 import { prepareTileArtifact } from '../game/tile-preparation.ts';
 import type { OSMElement, RegionData } from '../game/types.ts';
+import {
+  createDemElevationSource,
+  createPbfMapSource,
+  inputDataMetadata,
+  inputFingerprint,
+  type CommandRunner,
+} from './local-map-data.ts';
 
 const compress = promisify(brotliCompress),
   decompress = promisify(brotliDecompress);
@@ -45,6 +52,19 @@ type LocalInput = { tiles: Record<string, LocalTile> };
 export type GeneratorOptions = {
   staging: string;
   input?: string;
+  pbf?: string;
+  osmCache?: string;
+  demCache?: string;
+  osmiumPath?: string;
+  osmTimestamp?: string;
+  inputSource?: string;
+  inputLicense?: string;
+  demTimestamp?: string;
+  demLicense?: string;
+  drivingSide?: RegionData['drivingSide'];
+  downloadDem?: boolean;
+  commandRunner?: CommandRunner;
+  demFetcher?: typeof fetch;
   tiles?: SourceTileId[];
   center?: { lat: number; lon: number };
   width?: number;
@@ -55,6 +75,7 @@ export type GeneratorOptions = {
   generatedAt?: string;
   tileMargin?: number;
   elevationSize?: number;
+  elevationWidth?: number;
 };
 
 export type GeneratorEvent =
@@ -186,11 +207,21 @@ async function readLocalInput(path: string | undefined): Promise<LocalInput> {
   return parsed;
 }
 
-async function validExisting(path: string, tile: SourceTileId) {
+async function validExisting(
+  path: string,
+  tile: SourceTileId,
+  sourceFingerprint?: string,
+) {
   try {
     const compressed = await readFile(path),
       serialized = new TextDecoder().decode(await decompress(compressed)),
       artifact = decodeTileArtifact(serialized, tile);
+    if (
+      sourceFingerprint &&
+      (await readFile(`${path}.source-fingerprint`, 'utf8')).trim() !==
+        sourceFingerprint
+    )
+      return undefined;
     return {
       bytes: compressed.byteLength,
       elements: artifact.elements.length,
@@ -311,12 +342,94 @@ export async function generateMapTiles(
 
   const releaseStaging = await acquireStagingLock(options.staging);
   try {
-    const input = await readLocalInput(options.input),
+    if (options.input && options.pbf)
+      throw new Error('Укажите только один источник OSM: --input или --pbf.');
+    const control = new AbortController(),
+      pbfMode = !!options.pbf,
+      input = pbfMode ? undefined : await readLocalInput(options.input),
+      pbfRequired = (value: string | undefined, argument: string) => {
+        if (!value?.trim())
+          throw new Error(`Для PBF-режима укажите ${argument}.`);
+        return value;
+      },
+      osmCache = pbfMode
+        ? pbfRequired(options.osmCache, '--osm-cache')
+        : undefined,
+      demCache = pbfMode
+        ? pbfRequired(options.demCache, '--dem-cache')
+        : undefined,
+      osmTimestamp = pbfMode
+        ? pbfRequired(options.osmTimestamp, '--osm-timestamp')
+        : undefined,
+      inputSource = pbfMode
+        ? pbfRequired(options.inputSource, '--input-source')
+        : undefined,
+      inputLicense = pbfMode
+        ? pbfRequired(options.inputLicense, '--input-license')
+        : undefined,
+      demTimestamp = pbfMode
+        ? pbfRequired(options.demTimestamp, '--dem-timestamp')
+        : undefined,
+      demLicense = pbfMode
+        ? pbfRequired(options.demLicense, '--dem-license')
+        : undefined,
+      pbfDrivingSide = pbfMode
+        ? pbfRequired(options.drivingSide, '--driving-side right|left')
+        : undefined,
+      pbfMap = pbfMode
+        ? await createPbfMapSource(
+            {
+              pbf: options.pbf!,
+              cache: osmCache!,
+              osmTimestamp: osmTimestamp!,
+              osmiumPath: options.osmiumPath,
+            },
+            control.signal,
+            options.commandRunner,
+          )
+        : undefined,
+      demElevation = pbfMode
+        ? createDemElevationSource({
+            cache: demCache!,
+            downloadMissing: !!options.downloadDem,
+            fetcher: options.demFetcher,
+          })
+        : undefined,
+      sourceFingerprint = pbfMode
+        ? inputFingerprint({
+            pbf: pbfMap!.fingerprint,
+            osmTimestamp,
+            inputSource,
+            inputLicense,
+            demTimestamp,
+            demLicense,
+            drivingSide: pbfDrivingSide,
+            tileMargin: options.tileMargin ?? 300,
+            elevationSize: options.elevationSize ?? 700,
+            elevationWidth: options.elevationWidth ?? 257,
+          })
+        : undefined,
       staging = resolve(options.staging),
       logPath = resolve(staging, 'generation-log.ndjson'),
       results: GeneratorEvent[] = [],
       generatedAt = options.generatedAt ?? new Date().toISOString();
     await mkdir(staging, { recursive: true });
+    if (pbfMode) {
+      const metadata = inputDataMetadata({
+        pbf: options.pbf!,
+        osmTimestamp: osmTimestamp!,
+        source: inputSource!,
+        license: inputLicense!,
+        fingerprint: sourceFingerprint!,
+        demTimestamp: demTimestamp!,
+        demLicense: demLicense!,
+      });
+      await atomicWrite(
+        staging,
+        resolve(staging, 'input-data.json'),
+        new TextEncoder().encode(`${JSON.stringify(metadata, null, 2)}\n`),
+      );
+    }
     let logQueue = Promise.resolve();
     const record = async (event: GeneratorEvent) => {
       logQueue = logQueue.then(() =>
@@ -339,14 +452,14 @@ export async function generateMapTiles(
           key = sourceTileKey(tile),
           output = safeArtifactPath(staging, tile);
         await assertNoLinks(staging, output);
-        const existing = await validExisting(output, tile);
+        const existing = await validExisting(output, tile, sourceFingerprint);
         if (existing) {
           await record({ kind: 'skipped', tile: key, ...existing });
           continue;
         }
         try {
-          const local = input.tiles[key];
-          if (!local)
+          const local = input?.tiles[key];
+          if (!pbfMode && !local)
             throw new Error(
               `В локальном input отсутствует source-тайл ${key}.`,
             );
@@ -356,22 +469,29 @@ export async function generateMapTiles(
               {
                 tileMargin: options.tileMargin ?? 300,
                 elevationSize:
-                  options.elevationSize ?? local.elevation.size ?? 700,
-                elevationWidth: local.elevation.width,
+                  options.elevationSize ?? local?.elevation.size ?? 700,
+                elevationWidth:
+                  options.elevationWidth ?? local?.elevation.width ?? 257,
                 generatedAt,
               },
               {
-                map: async () => ({
-                  savedAt: Date.parse(local.osmTimestamp),
-                  elements: local.elements,
-                }),
-                elevation: async (_center, _signal, shape) => ({
-                  ...shape,
-                  size: local.elevation.size ?? shape.size,
-                  values: new Float32Array(local.elevation.values),
-                }),
+                map: pbfMap
+                  ? async (bounds) => pbfMap.load(bounds)
+                  : async () => ({
+                      savedAt: Date.parse(local!.osmTimestamp),
+                      elements: local!.elements,
+                    }),
+                elevation: demElevation
+                  ? demElevation
+                  : async (_center, _signal, shape) => ({
+                      ...shape,
+                      size: local!.elevation.size ?? shape.size,
+                      values: new Float32Array(local!.elevation.values),
+                    }),
                 drivingSide: async () => ({
-                  side: local.drivingSide,
+                  side:
+                    (pbfDrivingSide as RegionData['drivingSide'] | undefined) ??
+                    local!.drivingSide,
                   resolved: true,
                 }),
               },
@@ -383,6 +503,12 @@ export async function generateMapTiles(
               },
             });
           await atomicWrite(staging, output, compressed);
+          if (sourceFingerprint)
+            await atomicWrite(
+              staging,
+              `${output}.source-fingerprint`,
+              new TextEncoder().encode(`${sourceFingerprint}\n`),
+            );
           await record({
             kind: 'generated',
             tile: key,
@@ -466,9 +592,28 @@ export function parseGeneratorArguments(
   if (!staging) throw new Error('Укажите --staging <каталог>.');
   if (centerValue && (!centerParts || centerParts.length !== 2))
     throw new Error('--center задаётся как <широта,долгота>.');
+  const drivingSideValue = argumentValue(arguments_, '--driving-side');
+  if (
+    drivingSideValue &&
+    drivingSideValue !== 'right' &&
+    drivingSideValue !== 'left'
+  )
+    throw new Error('--driving-side должен быть right или left.');
+  const drivingSide = drivingSideValue as RegionData['drivingSide'] | undefined;
   return {
     staging,
     input: argumentValue(arguments_, '--input'),
+    pbf: argumentValue(arguments_, '--pbf'),
+    osmCache: argumentValue(arguments_, '--osm-cache'),
+    demCache: argumentValue(arguments_, '--dem-cache'),
+    osmiumPath: argumentValue(arguments_, '--osmium'),
+    osmTimestamp: argumentValue(arguments_, '--osm-timestamp'),
+    inputSource: argumentValue(arguments_, '--input-source'),
+    inputLicense: argumentValue(arguments_, '--input-license'),
+    demTimestamp: argumentValue(arguments_, '--dem-timestamp'),
+    demLicense: argumentValue(arguments_, '--dem-license'),
+    drivingSide,
+    downloadDem: arguments_.includes('--download-dem'),
     ...(tiles.length ? { tiles } : {}),
     ...(centerParts
       ? { center: { lat: centerParts[0], lon: centerParts[1] } }

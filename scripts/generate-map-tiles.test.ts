@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import { decodeTileArtifact } from '../game/tile-artifact';
 import { generateMapTiles, type GeneratorEvent } from './generate-map-tiles';
+import type { CommandRunner } from './local-map-data';
 
 const decompress = promisify(brotliDecompress),
   execute = promisify(execFile),
@@ -59,9 +60,14 @@ async function fixtureFile(directory: string, includeSecond = true) {
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 50,
+      }),
+    ),
   );
 });
 
@@ -249,4 +255,90 @@ it('не запускает два генератора одновременно
     `Staging уже используется процессом ${process.pid}. Дождитесь завершения генерации.`,
   );
   expect(await readFile(lock, 'utf8')).toBe(`${process.pid}:другой-запуск\n`);
+});
+
+it('интеграционно генерирует fixture из PBF и локально кэшируемого DEM без Overpass', async () => {
+  // Arrange
+  const root = await temporaryDirectory(),
+    staging = join(root, 'staging'),
+    pbf = join(root, 'region.osm.pbf'),
+    demFixture = await readFile('game/fixtures/dem-12-2475-1280.png'),
+    fetcher = vi.fn(async (url: string | URL | Request) => {
+      const address =
+        typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      expect(address).toContain('/elevation-tiles-prod/terrarium/');
+      return new Response(demFixture, { status: 200 });
+    }),
+    commands: string[][] = [],
+    runner: CommandRunner = async (_executable, arguments_) => {
+      commands.push(arguments_);
+      const output = arguments_[arguments_.indexOf('-o') + 1];
+      await writeFile(
+        output,
+        arguments_[0] === 'tags-filter'
+          ? 'fixture-filtered-pbf'
+          : '<osm><node id="1" lat="55.75" lon="37.61"/><way id="2"><nd ref="1"/><tag k="highway" v="service"/><tag k="name" v="Локальный проезд"/></way></osm>',
+      );
+    };
+  await writeFile(pbf, 'fixture-pbf');
+
+  const options = {
+    staging,
+    pbf,
+    osmCache: join(root, 'osm-cache'),
+    demCache: join(root, 'dem-cache'),
+    osmTimestamp: '2026-09-01T00:00:00Z',
+    inputSource: 'Локальный тестовый extract',
+    inputLicense: 'ODbL-1.0',
+    demTimestamp: '2026-08-01T00:00:00Z',
+    demLicense: 'Tilezen data source licences and attribution',
+    drivingSide: 'right' as const,
+    downloadDem: true,
+    commandRunner: runner,
+    demFetcher: fetcher,
+    tiles: [firstTile],
+    concurrency: 1,
+    elevationWidth: 2,
+    generatedAt: '2026-09-11T10:00:00Z',
+  };
+
+  // Act
+  const report = await generateMapTiles(options),
+    changedInput = await generateMapTiles({
+      ...options,
+      demLicense: 'Обновлённая лицензия fixture DEM',
+    });
+  const compressed = await readFile(
+      join(staging, '15', '19808', '10243.tile.json.br'),
+    ),
+    artifact = decodeTileArtifact(
+      new TextDecoder().decode(await decompress(compressed)),
+      firstTile,
+    );
+
+  // Assert
+  expect(report).toMatchObject({ generated: 1, failed: [] });
+  expect(changedInput).toMatchObject({ generated: 1, skipped: 0, failed: [] });
+  expect(commands.map((arguments_) => arguments_[0])).toEqual([
+    'tags-filter',
+    'extract',
+  ]);
+  expect(artifact.bufferedBounds.south).toBeLessThan(artifact.coreBounds.south);
+  expect(
+    artifact.elements.find((element) => element.type === 'way'),
+  ).toMatchObject({
+    nodes: [1],
+    tags: { highway: 'service', name: 'Локальный проезд' },
+  });
+  expect(artifact.osmTimestamp).toBe('2026-09-01T00:00:00.000Z');
+  expect(
+    JSON.parse(await readFile(join(staging, 'input-data.json'), 'utf8')),
+  ).toMatchObject({
+    osm: {
+      file: 'region.osm.pbf',
+      source: 'Локальный тестовый extract',
+      license: 'ODbL-1.0',
+    },
+    dem: { license: 'Обновлённая лицензия fixture DEM' },
+  });
 });

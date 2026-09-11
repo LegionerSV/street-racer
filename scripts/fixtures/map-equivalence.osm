@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="street-racer-fixture">
+  <node id="1" lat="55.7500" lon="37.6000" />
+  <node id="2" lat="55.7500" lon="37.6200" />
+  <node id="3" lat="55.7550" lon="37.6000">
+    <tag k="highway" v="traffic_signals" />
+  </node>
+  <node id="4" lat="55.7550" lon="37.6200" />
+  <node id="5" lat="55.7450" lon="37.5990" />
+  <node id="6" lat="55.7450" lon="37.6010" />
+  <node id="7" lat="55.7460" lon="37.6010" />
+  <node id="8" lat="55.7460" lon="37.5990" />
+  <way id="100">
+    <nd ref="1" />
+    <nd ref="2" />
+    <tag k="highway" v="service" />
+  </way>
+  <way id="101">
+    <nd ref="3" />
+    <nd ref="4" />
+    <tag k="highway" v="residential" />
+  </way>
+  <way id="102">
+    <nd ref="5" />
+    <nd ref="6" />
+    <nd ref="7" />
+    <nd ref="8" />
+    <nd ref="5" />
+    <tag k="building:part" v="yes" />
+  </way>
+  <relation id="200">
+    <member type="way" ref="100" role="from" />
+    <member type="node" ref="3" role="via" />
+    <member type="way" ref="101" role="to" />
+    <tag k="type" v="restriction" />
+    <tag k="restriction" v="no_right_turn" />
+  </relation>
+</osm>
