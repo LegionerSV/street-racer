@@ -88,9 +88,50 @@ it('сохраняет высоту готовой дороги и сопост�
   expect(result.spawnEdge).toBe(before.spawnEdge);
   expect(
     result.routes.every((route) =>
-      route.edges.every((id) => result.edges.some((edge) => edge.stableId === id)),
+      route.edges.every((id) =>
+        result.edges.some((edge) => edge.stableId === id),
+      ),
     ),
   ).toBe(true);
+});
+it('стыкует высоту нового продолжения с уже построенной дорогой', () => {
+  // Arrange
+  const before = buildWorld(region(0)),
+    after = buildWorld(region(0)),
+    ready = before.edges[0],
+    continuation = structuredClone(ready);
+  ready.points = [
+    { x: 0, y: 2, z: 0 },
+    { x: 100, y: 2, z: 0 },
+  ];
+  continuation.stableId = '10/2/3/1';
+  continuation.from = 2;
+  continuation.to = 3;
+  continuation.unloaded = true;
+  continuation.blocked = true;
+  continuation.points = [
+    { x: 100, y: 12, z: 0 },
+    { x: 200, y: 12, z: 0 },
+  ];
+  before.edges = [ready, continuation];
+  after.edges = [
+    structuredClone(ready),
+    {
+      ...structuredClone(continuation),
+      unloaded: false,
+      blocked: false,
+    },
+  ];
+
+  // Act
+  const result = reconcileWorld(before, after);
+
+  // Assert
+  const joined = result.edges.find(
+    (edge) => edge.stableId === continuation.stableId,
+  )!;
+  expect(joined.points[0].y).toBe(2);
+  expect(joined.points[1].y).toBe(12);
 });
 it('составной рельеф использует абсолютные координаты клеток и сохраняет стык после выгрузки', () => {
   // Arrange
