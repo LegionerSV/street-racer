@@ -71,3 +71,40 @@ export function bridgeRailingSpans(
       b: mixPoint(a, b, end),
     }));
 }
+
+export function embankmentRailingSpans(
+  a: Point,
+  b: Point,
+  candidates: Segment[],
+): { a: Point; b: Point }[] {
+  // Мостовая маска работает во всём диапазоне высот: береговая секция должна
+  // закончиться у устоя независимо от того, проходит дорога сверху или снизу.
+  let spans: [number, number][] = [[0, 1]];
+  for (const other of candidates) {
+    if (!other.edge.bridge) continue;
+    const length = distance2(other.a, other.b) || 1;
+    const mask = roadPrism(
+      mixPoint(other.a, other.b, -0.15 / length),
+      mixPoint(other.a, other.b, 1 + 0.15 / length),
+      other.edge.width + 2 * (SIDEWALK_WIDTH + CURB_WIDTH) + 0.3,
+      10_000,
+      10_000,
+    );
+    const cut = coveredInterval(a, b, mask);
+    if (!cut) continue;
+    spans = spans.flatMap(([start, end]) => {
+      if (cut[1] <= start || cut[0] >= end)
+        return [[start, end] as [number, number]];
+      const pieces: [number, number][] = [];
+      if (cut[0] > start) pieces.push([start, cut[0]]);
+      if (cut[1] < end) pieces.push([cut[1], end]);
+      return pieces;
+    });
+  }
+  return spans
+    .filter(([start, end]) => (end - start) * distance2(a, b) > 0.05)
+    .map(([start, end]) => ({
+      a: mixPoint(a, b, start),
+      b: mixPoint(a, b, end),
+    }));
+}

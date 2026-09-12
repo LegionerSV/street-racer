@@ -36,6 +36,30 @@ describe('Подготовка кварталов', () => {
     expect(fenced.breakables.filter(p=>p.kind==='fence').length).toBeGreaterThan(0);
     expect(open.breakables).toHaveLength(0);
   });
+  it('привязывает речное ограждение к тротуару набережной и прерывает его у моста', () => {
+    // Arrange
+    const road={id:0,stableId:'1/1/2/0',way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Тестовая набережная',bridge:false,tunnel:false,layer:0,points:[{x:20,y:2,z:15},{x:120,y:2,z:15}],blocked:false};
+    const bridge={...road,id:1,stableId:'2/3/4/0',way:2,from:3,to:4,width:10,name:'Мост',bridge:true,layer:1,points:[{x:70,y:7,z:0},{x:70,y:7,z:50}]};
+    const water={id:1,kind:'water' as const,railing:'river' as const,points:[{x:10,y:0,z:21},{x:130,y:0,z:21},{x:130,y:0,z:80},{x:10,y:0,z:80}]};
+    const world={center:{lat:0,lon:0},nodes:[],edges:[road,bridge],restrictions:[],buildings:[],areas:[water],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:null,routes:[]} as World;
+    // Act
+    const fences=buildChunk(world,'0,0',0).breakables.filter(p=>p.kind==='fence');
+    // Assert — секции идут по внешней стороне тротуара на высоте дороги, а не по OSM-контуру воды.
+    expect(fences.length).toBeGreaterThan(0);
+    expect(fences.every(f=>Math.abs(f.point.z-20.7)<1e-6&&Math.abs(f.point.y-2.15)<1e-6)).toBe(true);
+    expect(fences.every(f=>Math.abs(f.point.x-70)>6)).toBe(true);
+  });
+  it('не превращает прилегающую к реке набережную в яму', () => {
+    // Arrange
+    const road={id:0,stableId:'1/1/2/0',way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Тестовая набережная',bridge:false,tunnel:false,layer:0,points:[{x:100,y:5,z:20},{x:100,y:5,z:120}],blocked:false};
+    const water={id:1,kind:'water' as const,railing:'river' as const,points:[{x:99,y:0,z:10},{x:180,y:0,z:10},{x:180,y:0,z:130},{x:99,y:0,z:130}]};
+    const world={center:{lat:0,lon:0},nodes:[],edges:[road],restrictions:[],buildings:[],areas:[water],trees:[],elevation:{width:2,size:5600,values:new Float32Array([5,5,5,5])},drivingSide:'right',warnings:[],spawnEdge:null,routes:[]} as World;
+    // Act
+    const terrain=buildChunk(world,'0,0',0).terrain.positions;
+    const bank=Array.from({length:terrain.length/3},(_,i)=>terrain.slice(i*3,i*3+3)).filter(p=>p[0]===100&&p[2]>=25&&p[2]<=112.5);
+    // Assert
+    expect(Math.min(...bank.map(p=>p[1]))).toBeGreaterThan(4);
+  });
   it('ждёт только стартовую зону и путь на 70 м вперёд с запасом у границ',()=>{
     // Arrange / Act / Assert
     expect(criticalChunks({x:125,y:0,z:125},0)).toEqual(['0,0']);

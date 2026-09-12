@@ -1,5 +1,5 @@
 import earcut from 'earcut';
-import { bridgeRailingSpans } from './bridge-railings';
+import { bridgeRailingSpans, embankmentRailingSpans } from './bridge-railings';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
@@ -209,7 +209,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     for (const area of index.waters.query(query)) {
       const inside = polygonContains(p, area.points) && !(area.holes || []).some(h => polygonContains(p, h));
       const bank = [area.points, ...(area.holes || [])].some(ring => ring.some((a, i) => projectOnSegment(p, a, ring[(i + 1) % ring.length]).distance < 18));
-      if (inside || bank) roadHeight = Math.min(roadHeight, waterLevel(area) - 3);
+      if ((inside || bank) && best === Infinity) roadHeight = Math.min(roadHeight, waterLevel(area) - 3);
     }
     index.ground.set(cacheKey,roadHeight);return roadHeight;
   }
@@ -315,6 +315,22 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       const free = segments.every(other => Math.abs(other.a.y-p.y)>3 || projectOnSegment(p,other.a,other.b).distance > other.edge.width/2+.6);
       if (free) { result.breakables.push({kind:'pole',point:p,heading:0}); result.lamps.push({ ...p, y: p.y + 6.7 }); }
     }
+    // Речное ограждение принадлежит дороге: так оно следует тротуару и его высоте,
+    // а неточный контур воды используется только для выбора стороны набережной.
+    if(lod===0&&!edge.bridge&&!edge.tunnel&&/набережн/iu.test(edge.name)){
+      const length=distance2(a,b)||1,nx=(b.z-a.z)/length,nz=-(b.x-a.x)/length;
+      const choices=[-1,1].filter(side=>s.join?.side!==side&&sidewalkOn(edge,side)).map(side=>{
+        const outer=w+CURB_WIDTH+SIDEWALK_WIDTH,aa={x:a.x+(s.na?.x??nx)*outer*side,y:a.y+CURB_HEIGHT,z:a.z+(s.na?.z??nz)*outer*side},bb={x:b.x+(s.nb?.x??nx)*outer*side,y:b.y+CURB_HEIGHT,z:b.z+(s.nb?.z??nz)*outer*side},mid=mixPoint(aa,bb,.5);
+        const waters=index.waters.query(boundsOf([aa,bb],24)).filter(area=>area.railing==='river');
+        const score=Math.min(...waters.map(area=>polygonContains(mid,area.points)?0:Math.min(...[area.points,...(area.holes||[])].flatMap(ring=>ring.map((p,i)=>projectOnSegment(mid,p,ring[(i+1)%ring.length]).distance)))),Infinity);
+        return {aa,bb,score};
+      }).sort((x,y)=>x.score-y.score);
+      const bank=choices[0];
+      if(bank&&bank.score<24)for(const span of embankmentRailingSpans(bank.aa,bank.bb,index.spatial.query(boundsOf([bank.aa,bank.bb],20)))){
+        const spanLength=distance2(span.a,span.b),parts=Math.max(1,Math.ceil(spanLength/10));
+        for(let j=0;j<parts;j++){const p=mixPoint(span.a,span.b,j/parts),q=mixPoint(span.a,span.b,(j+1)/parts),mid=mixPoint(p,q,.5);result.breakables.push({kind:'fence',point:mid,heading:Math.atan2(q.x-p.x,q.z-p.z),length:distance2(p,q)});}
+      }
+    }
   }
   const models=worldLandmarks(world).filter(model=>model.key===key&&(lod===0||model.asset.far));
   for(const model of models)appendLandmark(result.landmarks!,model,lod);
@@ -360,12 +376,11 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
         p.y = ground(p.x, p.z); result.trees.push(p);
       }
     }
-    if(lod===0&&area.railing)for(const ring of [area.points])for(let i=0;i<ring.length;i++){
+    if(lod===0&&area.railing&&area.railing!=='river')for(const ring of [area.points])for(let i=0;i<ring.length;i++){
       const a=ring[i],b=ring[(i+1)%ring.length],length=distance2(a,b),parts=Math.max(1,Math.ceil(length/10));
       for(let j=0;j<parts;j++){
         const p=mixPoint(a,b,j/parts),q=mixPoint(a,b,(j+1)/parts),mid=mixPoint(p,q,.5);
         if(tileKey(mid.x,mid.z)!==key)continue;
-        if(area.railing==='river'&&!segments.some(s=>/набережн/iu.test(s.edge.name)&&projectOnSegment(mid,s.a,s.b).distance<s.edge.width/2+24))continue;
         result.breakables.push({kind:'fence',point:mid,heading:Math.atan2(q.x-p.x,q.z-p.z),length:distance2(p,q)});
       }
     }
