@@ -41,28 +41,28 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       blockingRadiusMeters: 800,
       targetRadiusMeters: 2500,
       forwardTileRows: 1,
-      maxConcurrentTiles: 2,
+      maxConcurrentTiles: 4,
       maxElements: 180000,
     },
     low: {
       blockingRadiusMeters: 900,
       targetRadiusMeters: 2700,
       forwardTileRows: 1,
-      maxConcurrentTiles: 2,
+      maxConcurrentTiles: 6,
       maxElements: 360000,
     },
     medium: {
       blockingRadiusMeters: 1000,
       targetRadiusMeters: 3000,
       forwardTileRows: 2,
-      maxConcurrentTiles: 3,
+      maxConcurrentTiles: 8,
       maxElements: 360000,
     },
     high: {
       blockingRadiusMeters: 1000,
       targetRadiusMeters: 3000,
       forwardTileRows: 2,
-      maxConcurrentTiles: 4,
+      maxConcurrentTiles: 12,
       maxElements: 360000,
     },
   };
@@ -367,25 +367,24 @@ export class RegionStream {
     ).length;
     try {
       const startupElementKeys = new Set<string>();
-      for (const [index, key] of initial.entries()) {
-        progress(
-          `Загружаем стартовый район · ${index + 1} из ${initial.length}`,
-          5 + (72 * index) / initial.length,
-        );
-        const tile = await this.fetchTile(key);
-        if (key === centerTile)
-          this.side =
-            tile.drivingSideSource === 'default'
-              ? await this.sessionDrivingSide()
-              : tile.drivingSide;
-        this.tiles.set(key, tile);
-        for (const element of tile.elements)
-          startupElementKeys.add(osmElementKey(element));
+      let completed = 0;
+      for (let offset = 0; offset < initial.length; offset += this.policy.maxConcurrentTiles) {
+        const batch = initial.slice(offset, offset + this.policy.maxConcurrentTiles);
+        const loaded = await Promise.all(batch.map(async key => {
+          const tile = await this.fetchTile(key);
+          completed++;
+          progress(`Загружаем стартовый район · ${completed} из ${initial.length}`, 5 + (72 * completed) / initial.length);
+          return {key,tile};
+        }));
+        for (const {key,tile} of loaded) {
+          if (key === centerTile)
+            this.side = tile.drivingSideSource === 'default' ? await this.sessionDrivingSide() : tile.drivingSide;
+          this.tiles.set(key, tile);
+          for (const element of tile.elements) startupElementKeys.add(osmElementKey(element));
+        }
         this.blockingTileCount = initial.length - this.tiles.size;
         if (startupElementKeys.size > this.maxElements)
-          throw new Error(
-            'Стартовый район содержит слишком много объектов. Выберите менее плотный участок.',
-          );
+          throw new Error('Стартовый район содержит слишком много объектов. Выберите менее плотный участок.');
       }
       const elevation = {
         width: 2,

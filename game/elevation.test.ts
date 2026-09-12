@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorld } from './network';
+import { buildWorld, repairSharpRoadProfile } from './network';
 import { distance2, sampleElevation, sampleRoadElevation, smoothElevation, toLocal } from './geo';
 import bridgeDEM from './fixtures/bolsheokhtinsky-elevation.json';
 import { buildChunk, indexWorld } from './chunks';
@@ -12,6 +12,15 @@ const region = (elements: OSMElement[]): RegionData => ({ center: { lat: 0, lon:
 const grade = (points: { x: number; y: number; z: number }[]) => Math.max(...points.slice(1).map((p, i) => Math.abs(p.y - points[i].y) / distance2(p, points[i])));
 
 describe('Профили высот дорог', () => {
+  it('убирает локальный излом обычной дороги, не меняя высоты её торцов',()=>{
+    // Arrange
+    const points=[{x:0,y:1,z:0},{x:0,y:7,z:10},{x:0,y:4,z:100}];
+    // Act
+    const repaired=repairSharpRoadProfile(points);
+    // Assert
+    expect(repaired[0].y).toBe(1);expect(repaired.at(-1)!.y).toBe(4);
+    expect(grade(repaired)).toBeLessThan(.38);
+  });
   it('не оставляет ступень, если короткий подход переходит в другое сооружение',()=>{
     // Arrange
     const input=region([node(1,-450),node(2,-150),node(3,150),node(4,180),node(5,480),{...node(6,-130),lat:-100/111320},{...node(7,-130),lat:100/111320},way(10,[2,3]),way(11,[1,2],{bridge:'no'}),way(12,[3,4],{bridge:'no'}),way(13,[4,5],{bridge:'no',tunnel:'yes'}),way(14,[6,7],{bridge:'no'})]);

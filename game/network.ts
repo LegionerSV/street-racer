@@ -8,6 +8,13 @@ import {SpatialGrid,boundsOf,overlaps} from './geometry';
 import {coverageBounds,pointHasCoverage,routeHasCoverage} from './stream-coverage';
 import { edgeById, edgeIndex, edgeStableId, makeEdgeStableId } from './road-graph';
 
+export function repairSharpRoadProfile(points:Point[],limit=.38){
+  if(points.length<3||!points.slice(1).some((p,i)=>Math.abs(p.y-points[i].y)/(distance2(p,points[i])||1)>limit))return points;
+  const distances=pathLengths(points),total=distances.at(-1)!;
+  if(!total||Math.abs(points.at(-1)!.y-points[0].y)/total>limit)return points;
+  return points.map((point,i)=>({...point,y:points[0].y+(points.at(-1)!.y-points[0].y)*distances[i]/total}));
+}
+
 const adjacencyCache = new WeakMap<World, Map<number, Edge[]>>();
 export function outgoing(world: World, id: number): Edge[] {
   let map = adjacencyCache.get(world);
@@ -186,6 +193,7 @@ export function buildWorld(region: RegionData): World {
   fitTunnelDepth(edges, elevation);
   fitBridgeClearance(edges);
   for(const edge of edges){
+    if(!edge.bridge&&!edge.tunnel)edge.points=repairSharpRoadProfile(edge.points);
     edge.length=pathLengths(edge.points).at(-1)!;
     edge.blockedReasons = (edge.blockedReasons || []).filter(r=>r!=='grade');
     if(edge.points.slice(1).some((p,i)=>Math.abs(p.y-edge.points[i].y)/(distance2(p,edge.points[i])||1)>.38))edge.blockedReasons.push('grade');

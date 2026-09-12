@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { mapTransitionChunks } from './runtime';
+import { mapTransitionBlocksDriving, mapTransitionChunks } from './runtime';
 
 it('prepares all visible dirty chunks before switching the map', () => {
   // Arrange
@@ -24,4 +24,12 @@ it('prepares all visible dirty chunks before switching the map', () => {
     { key: '4,0', lod: 2 },
     { key: '3,0', lod: 0 },
   ]);
+});
+
+it('не останавливает машину ради перестройки далёких кварталов', () => {
+  // Arrange
+  const critical = ['0,0', '0,1'];
+  // Act / Assert
+  expect(mapTransitionBlocksDriving(['4,4', '5,4'], critical)).toBe(false);
+  expect(mapTransitionBlocksDriving(['4,4', '0,1'], critical)).toBe(true);
 });

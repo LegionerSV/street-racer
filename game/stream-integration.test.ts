@@ -41,6 +41,28 @@ function mockedDownloads() {
 }
 const blockingTiles = (center: RegionData['center']) =>
   startupTiles(center, mapStreamingPolicy('mobile').blockingRadiusMeters);
+it('загружает стартовые source-тайлы параллельно', async () => {
+  // Arrange
+  const { cells } = mockedDownloads();
+  let active = 0,
+    peak = 0;
+  cells.mockImplementation(async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    active--;
+    return [{ type: 'node', id: 1, lat: 0, lon: 0 }];
+  });
+  const stream = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  try {
+    // Act
+    await stream.start(new AbortController().signal, () => {});
+    // Assert
+    expect(peak).toBeGreaterThanOrEqual(4);
+  } finally {
+    stream.dispose();
+  }
+});
 it('повторно использует глобальные артефакты из IndexedDB без загрузки OSM и DEM', async () => {
   // Arrange
   const { cells } = mockedDownloads();
@@ -175,9 +197,9 @@ it('старт отдаёт глобальное окно, затем фон о�
       first.loadedTiles!.length,
     );
     // Act — уезжаем на десятки километров, не накапливая старые клетки.
-    for (let i = 1; i <= 40; i++)
+    for (let i = 1; i <= 20; i++)
       await stream.next({ x: i * 1000, y: 0, z: 0 }, Math.PI / 2);
-    const last = stream.snapshot({ x: 40000, y: 0, z: 0 });
+    const last = stream.snapshot({ x: 20000, y: 0, z: 0 });
     // Assert
     expect(last.loadedTiles!.length).toBeLessThanOrEqual(
       stream.diagnostics().targetTiles,

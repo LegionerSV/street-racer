@@ -49,6 +49,10 @@ export function mapTransitionChunks(
   for (const key of criticalChunks) if (dirty.has(key)) result.set(key, 0);
   return [...result].map(([key, lod]) => ({ key, lod }));
 }
+export function mapTransitionBlocksDriving(dirtyChunks:Iterable<string>,criticalChunks:Iterable<string>){
+  const dirty=new Set(dirtyChunks);
+  return [...criticalChunks].some(key=>dirty.has(key));
+}
 export class Game {
   readonly engine: Engine;
   readonly scene: Scene;
@@ -427,10 +431,12 @@ export class Game {
           if(this.disposed)return;
           const nextCoverage=new Set(next.loadedTiles);
           if(criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true).some(k=>!tileReady(nextCoverage,k,this.world.center))){awaiting=null;continue;}
-          this.suspendPump=true;this.applyingMap=true;this.clearControls();
+          this.suspendPump=true;
           while(!this.disposed&&this.pending.size)await wait(20);
           if(this.disposed)return;
           const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true);
+          this.applyingMap=mapTransitionBlocksDriving(patch.dirtyChunks,criticalKeys);
+          if(this.applyingMap)this.clearControls();
           const visibleChunks=new Map<string,{lod:number}>();
           for(const [key,chunk] of this.chunks)visibleChunks.set(key,chunk);
           for(const chunk of desiredChunks(this.player.position,this.player.heading,this.settings.quality,true))

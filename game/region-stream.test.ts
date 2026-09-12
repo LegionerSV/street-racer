@@ -42,6 +42,21 @@ it('метровое стартовое окно не сужается на вы
   expect(northTiles.length).toBeGreaterThanOrEqual(equatorTiles.length);
 });
 
+it('загружает подготовленные тайлы крупными пакетами на мощных устройствах', () => {
+  // Arrange / Act
+  const mobile = mapStreamingPolicy('mobile'),
+    low = mapStreamingPolicy('low'),
+    medium = mapStreamingPolicy('medium'),
+    high = mapStreamingPolicy('high');
+  // Assert
+  expect([
+    mobile.maxConcurrentTiles,
+    low.maxConcurrentTiles,
+    medium.maxConcurrentTiles,
+    high.maxConcurrentTiles,
+  ]).toEqual([4, 6, 8, 12]);
+});
+
 it('сохраняет полный запас рядов по направлению движения на высокой широте', () => {
   // Arrange
   const north = { lat: 70, lon: 30 },
