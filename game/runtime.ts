@@ -37,6 +37,18 @@ import {nextRaceTurn} from './navigation';
 type BreakableLoaded = { mesh: Mesh; pole: boolean; broken: boolean; lamp?: Point; body?: PhysicsAggregate };
 type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; breakables: BreakableLoaded[]; lamps: Point[]; buildingBounds:BoundingBox[]; dispose: () => void };
 type MapUpdateTiming={fetchMs:number;prepareMs:number;commitMs:number;dirtyCount:number;installMs:number;maxFrameDelayMs:number;totalMs:number;tiles:number};
+export function mapTransitionChunks(
+  dirtyChunks: Iterable<string>,
+  criticalChunks: Iterable<string>,
+  visibleChunks: Iterable<[string, { lod: number }]>,
+) {
+  const dirty = new Set(dirtyChunks),
+    result = new Map<string, number>();
+  for (const [key, chunk] of visibleChunks)
+    if (dirty.has(key)) result.set(key, chunk.lod);
+  for (const key of criticalChunks) if (dirty.has(key)) result.set(key, 0);
+  return [...result].map(([key, lod]) => ({ key, lod }));
+}
 export class Game {
   readonly engine: Engine;
   readonly scene: Scene;
@@ -418,9 +430,14 @@ export class Game {
           this.suspendPump=true;this.applyingMap=true;this.clearControls();
           while(!this.disposed&&this.pending.size)await wait(20);
           if(this.disposed)return;
-          const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true),dirty=new Set(patch.dirtyChunks);
-          const criticalData:ChunkData[]=[];
-          for(const key of criticalKeys)if(dirty.has(key))criticalData.push(await this.worker.preparedChunk(key,0));
+          const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true);
+          const visibleChunks=new Map<string,{lod:number}>();
+          for(const [key,chunk] of this.chunks)visibleChunks.set(key,chunk);
+          for(const chunk of desiredChunks(this.player.position,this.player.heading,this.settings.quality,true))
+            if(tileReady(nextCoverage,chunk.key,this.world.center))visibleChunks.set(chunk.key,chunk);
+          const transition=mapTransitionChunks(patch.dirtyChunks,criticalKeys,visibleChunks);
+          const transitionData:ChunkData[]=[];
+          for(const chunk of transition)transitionData.push(await this.worker.preparedChunk(chunk.key,chunk.lod));
           if(this.disposed)return;
           const commitStarted=performance.now();
           await this.worker.commit();
@@ -434,10 +451,10 @@ export class Game {
           this.traffic.applyWorldPatch(next,patch);
           this.world=next;this.mapCoverage=newCoverage;
           const installStarted=performance.now();
-          for(const chunk of criticalData){this.install(chunk);this.patchInstallMetrics.delete(chunk.key);}
-          const criticalInstallMs=performance.now()-installStarted;
-          updateMetric.installMs+=criticalInstallMs;
-          if(criticalData.length)this.frameDelayMetric=updateMetric;
+          for(const chunk of transitionData){this.install(chunk);this.patchInstallMetrics.delete(chunk.key);}
+          const transitionInstallMs=performance.now()-installStarted;
+          updateMetric.installMs+=transitionInstallMs;
+          if(transitionData.length)this.frameDelayMetric=updateMetric;
           const matchedSafe=safe?next.edges.find(e=>!e.blocked&&edgeKey(e)===edgeKey(safe)):undefined;
           this.lastSafeEdge=matchedSafe?edgeStableId(matchedSafe):next.spawnEdge;
           this.replaceRouteMarkers(patch);
