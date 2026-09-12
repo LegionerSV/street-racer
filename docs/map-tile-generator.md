@@ -29,6 +29,34 @@ npm run generate:map-tiles -- --staging .\work\moscow-pilot --input .\work\mosco
 npm run generate:map-tiles -- --staging .\work\pilot --input .\work\tiles.json --tile 15/19808/10243 --tile 15/19809/10243
 ```
 
+Полное покрытие административного региона задаётся зафиксированной границей
+GeoJSON. Генератор включает только те XYZ, которые пересекают `Polygon` или
+`MultiPolygon`; сухой запуск печатает точное число тайлов до создания staging:
+
+```powershell
+npm run generate:map-tiles -- --staging .\work\map-full\moscow --boundary .\scripts\map-coverage\moscow.geojson --zoom 15 --concurrency 8 --max-tile-bytes 4194304 --dry-run
+```
+
+Границы Москвы, Санкт-Петербурга и коридора Олонец — Ильинский, их OSM relation
+ID, checksum, PBF-снимки, прогнозы, лимит 4 МиБ и допустимый параллелизм для
+каждого региона зафиксированы в `scripts/map-full-coverage-config.ts`. Файлы границ получены из Nominatim на
+условиях ODbL 1.0 с `polygon_threshold=0.0005`; карельская граница — коридор с
+буфером 10 км между relations 6360163 и 14089320. Checksum защищает план от
+незаметного изменения. Полная команда воспроизводится заменой параметров PBF и
+provenance значениями соответствующего региона из конфигурации.
+
+Чтобы исключить ручное расхождение параметров с конфигурацией, полный набор
+запускается обёрткой (допустимые `--region`: `moscow`, `saint-petersburg`,
+`olonetsky-district`):
+
+```powershell
+npm run generate:map-full -- --region moscow --data-root .\work\map-data --cache-root .\work\map-cache --staging-root .\work\map-full --osmium C:\path\to\osmium.exe --download-dem
+```
+
+Перед dry-run или генерацией обёртка потоково сверяет SHA-256 boundary и MD5
+PBF с зафиксированной конфигурацией. Несовпадение останавливает запуск до чтения
+resume manifest.
+
 К прямоугольнику можно добавить отдельные специальные клетки повторяемым
 параметром `--extra-tile`. Совпавшие с прямоугольником или друг с другом XYZ
 автоматически дедуплицируются:

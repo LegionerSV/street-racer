@@ -214,6 +214,39 @@ it('генерирует Brotli-артефакты из локального fix
   });
 });
 
+it('не публикует тайл, превышающий зафиксированный лимит размера', async () => {
+  // Arrange
+  const root = await temporaryDirectory(),
+    staging = join(root, 'staging'),
+    input = await fixtureFile(root, false);
+
+  // Act
+  const report = await generateMapTiles({
+    staging,
+    input,
+    tiles: [firstTile],
+    concurrency: 1,
+    maxTileBytes: 1,
+  });
+
+  // Assert
+  expect(report.generated).toBe(0);
+  expect(report.failed).toEqual([
+    {
+      tile: '15/19808/10243',
+      error: expect.stringMatching(/превышает лимит 1 Б/),
+    },
+  ]);
+  await expect(
+    stat(join(staging, '15', '19808', '10243.tile.json.br')),
+  ).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(
+    JSON.parse(
+      await readFile(join(staging, 'staging-manifest-v1.json'), 'utf8'),
+    ),
+  ).toMatchObject({ complete: false, planned: 1, tiles: {} });
+});
+
 it('пересобирает повреждённый файл и сохраняет ошибки отдельных тайлов', async () => {
   // Arrange
   const root = await temporaryDirectory(),

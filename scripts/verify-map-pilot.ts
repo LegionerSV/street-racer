@@ -197,16 +197,54 @@ export async function verifyMapPilot(stagingDirectory: string) {
     Object.keys(manifest.tiles).length !== manifest.planned
   )
     throw new Error('Staging manifest не завершён или содержит не все тайлы.');
-  const tiles = await Promise.all(
-    Object.entries(manifest.tiles).map(async ([key, descriptor]) => {
+  const entries = new Map(Object.entries(manifest.tiles)),
+    load = async (key: string) => {
+      const descriptor = entries.get(key);
+      if (!descriptor) return undefined;
       const compressed = await readFile(resolve(staging, descriptor.path));
       return decodeTileArtifact(
         new TextDecoder().decode(brotliDecompressSync(compressed)),
         parseSourceTileKey(key),
       );
-    }),
-  );
-  return verifyTileSeams(tiles);
+    };
+  let seams = 0,
+    geometrySharedElements = 0,
+    maxElevationDeltaMeters = 0,
+    prefetchedEast:
+      | { key: string; tile: TileArtifactV1 }
+      | undefined;
+  for (const key of entries.keys()) {
+    const tile =
+        prefetchedEast?.key === key
+          ? prefetchedEast.tile
+          : (await load(key))!,
+      neighbours: [SourceTileId, 'east' | 'south'][] = [
+        [{ z: tile.z, x: tile.x + 1, y: tile.y }, 'east'],
+        [{ z: tile.z, x: tile.x, y: tile.y + 1 }, 'south'],
+      ];
+    prefetchedEast = undefined;
+    for (const [id, direction] of neighbours) {
+      const neighbourKey = sourceTileKey(id),
+        neighbour = await load(neighbourKey);
+      if (!neighbour) continue;
+      if (direction === 'east')
+        prefetchedEast = { key: neighbourKey, tile: neighbour };
+      seams++;
+      geometrySharedElements += verifyGeometry(tile, neighbour);
+      maxElevationDeltaMeters = Math.max(
+        maxElevationDeltaMeters,
+        elevationDelta(tile, neighbour, direction),
+      );
+    }
+  }
+  if (!seams)
+    throw new Error('В наборе нет соседних source-тайлов для проверки.');
+  return {
+    tiles: entries.size,
+    seams,
+    geometrySharedElements,
+    maxElevationDeltaMeters,
+  };
 }
 
 async function main() {

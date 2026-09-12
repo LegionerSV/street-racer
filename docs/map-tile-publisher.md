@@ -34,12 +34,12 @@ npm run publish:map-tiles -- --staging .\work\moscow-pilot --dry-run
 $env:AWS_ACCESS_KEY_ID = '<static-access-key-id>'
 $env:AWS_SECRET_ACCESS_KEY = '<static-secret-key>'
 $env:AWS_REGION = 'ru-central1'
-npm run publish:map-tiles -- --staging .\work\moscow-pilot --sample-size 3
+npm run publish:map-tiles -- --staging .\work\moscow-pilot --sample-size 3 --concurrency 4
 ```
 
 Эквивалентные явные параметры: `--endpoint`, `--bucket`, `--prefix`,
-`--dataset-id`, `--region`, `--access-key`, `--secret-key` и необязательный
-`--session-token`. CLI не выводит credentials, заголовок Authorization или тело
+`--dataset-id`, `--region`, `--access-key`, `--secret-key`, `--concurrency` и
+необязательный `--session-token`. CLI не выводит credentials, заголовок Authorization или тело
 ошибки S3. Для тайлов выставляются `Content-Type: application/json`,
 `Content-Encoding: br`, `Cache-Control: public, max-age=31536000, immutable` и
 metadata `tile-checksum`. Совпадающий объект пропускается; коллизия существующего
@@ -56,6 +56,15 @@ Endpoint с обычными credentials должен использовать H
 Повторный запуск безопасен: загруженные тайлы пропускаются, снова проходят
 контрольное чтение, а dataset с тем же содержимым остаётся активным. Не используйте
 один `datasetId` для разных снимков.
+
+Сетевые ошибки и ответы HTTP 408, 429 и 5xx повторяются до пяти попыток с
+экспоненциальной задержкой. Ошибки валидации, авторизации и конфликты immutable
+объектов не повторяются. Число попыток и начальную задержку можно изменить
+параметрами API `maxAttempts` и `retryDelayMs`; CLI использует безопасные
+значения по умолчанию. После сетевого обрыва условного PUT клиент читает объект
+и сверяет заголовки, метаданные и ETag с MD5 отправленного тела (для несжатого
+ответа допустима побайтовая сверка): уже применённая запись считается успешной,
+а отличающийся объект остаётся конфликтом.
 
 ## Режим генерации команд
 

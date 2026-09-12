@@ -14,6 +14,7 @@
     "preview:pages": "vite preview --config vite.pages.config.ts",
     "format": "oxfmt",
     "generate:map-tiles": "node --experimental-transform-types scripts/generate-map-tiles.ts",
+    "generate:map-full": "node --experimental-transform-types scripts/generate-full-map-coverage.ts",
     "verify:map-pilot": "node --experimental-transform-types scripts/verify-map-pilot.ts",
     "publish:map-tiles": "node --experimental-transform-types scripts/publish-map-tiles.ts",
     "test": "vitest run",

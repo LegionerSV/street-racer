@@ -38,6 +38,7 @@ import {
   inputFingerprint,
   type CommandRunner,
 } from './local-map-data.ts';
+import { readBoundaryTiles } from './map-coverage.ts';
 
 const compress = promisify(brotliCompress),
   decompress = promisify(brotliDecompress);
@@ -68,6 +69,7 @@ export type GeneratorOptions = {
   commandRunner?: CommandRunner;
   demFetcher?: typeof fetch;
   tiles?: SourceTileId[];
+  boundary?: string;
   additionalTiles?: SourceTileId[];
   center?: { lat: number; lon: number };
   width?: number;
@@ -79,6 +81,7 @@ export type GeneratorOptions = {
   tileMargin?: number;
   elevationSize?: number;
   elevationWidth?: number;
+  maxTileBytes?: number;
 };
 
 export type GeneratorEvent =
@@ -116,9 +119,14 @@ function validatePositiveInteger(value: number, name: string) {
     throw new Error(`${name} должен быть положительным целым числом.`);
 }
 
-function selectedTiles(options: GeneratorOptions) {
+async function selectedTiles(options: GeneratorOptions) {
   let tiles: SourceTileId[];
   if (options.tiles?.length) tiles = options.tiles;
+  else if (options.boundary)
+    tiles = await readBoundaryTiles(
+      resolve(options.boundary),
+      options.zoom ?? SOURCE_TILE_ZOOM,
+    );
   else if (options.center) {
     const width = options.width ?? 10,
       height = options.height ?? 10,
@@ -145,7 +153,7 @@ function selectedTiles(options: GeneratorOptions) {
     tiles.push(...(options.additionalTiles ?? []));
   } else
     throw new Error(
-      'Укажите хотя бы один --tile либо прямоугольник через --center.',
+      'Укажите хотя бы один --tile, --boundary либо прямоугольник через --center.',
     );
 
   const unique = new Map<string, SourceTileId>();
@@ -215,11 +223,14 @@ async function validExisting(
   path: string,
   tile: SourceTileId,
   sourceFingerprint?: string,
+  maxTileBytes?: number,
 ) {
   try {
     const compressed = await readFile(path),
       serialized = new TextDecoder().decode(await decompress(compressed)),
       artifact = decodeTileArtifact(serialized, tile);
+    if (maxTileBytes !== undefined && compressed.byteLength > maxTileBytes)
+      return undefined;
     if (
       sourceFingerprint &&
       (await readFile(`${path}.source-fingerprint`, 'utf8')).trim() !==
@@ -229,6 +240,7 @@ async function validExisting(
     return {
       bytes: compressed.byteLength,
       elements: artifact.elements.length,
+      checksum: artifact.checksum,
     };
   } catch {
     return undefined;
@@ -328,7 +340,9 @@ export async function generateMapTiles(
   if (!options.staging.trim())
     throw new Error('Staging-каталог должен быть указан явно.');
   validatePositiveInteger(options.concurrency, 'Параллелизм');
-  const tiles = selectedTiles(options),
+  if (options.maxTileBytes !== undefined)
+    validatePositiveInteger(options.maxTileBytes, 'Максимальный размер тайла');
+  const tiles = await selectedTiles(options),
     keys = tiles.map(sourceTileKey),
     started = performance.now();
   onEvent({ kind: 'plan', count: tiles.length, tiles: keys });
@@ -416,6 +430,10 @@ export async function generateMapTiles(
       staging = resolve(options.staging),
       logPath = resolve(staging, 'generation-log.ndjson'),
       results: GeneratorEvent[] = [],
+      manifestTiles: Record<
+        string,
+        { path: string; bytes: number; checksum: string }
+      > = {},
       generatedAt = options.generatedAt ?? new Date().toISOString();
     await mkdir(staging, { recursive: true });
     if (pbfMode) {
@@ -456,9 +474,24 @@ export async function generateMapTiles(
           key = sourceTileKey(tile),
           output = safeArtifactPath(staging, tile);
         await assertNoLinks(staging, output);
-        const existing = await validExisting(output, tile, sourceFingerprint);
+        const existing = await validExisting(
+          output,
+          tile,
+          sourceFingerprint,
+          options.maxTileBytes,
+        );
         if (existing) {
-          await record({ kind: 'skipped', tile: key, ...existing });
+          manifestTiles[key] = {
+            path: `${tile.z}/${tile.x}/${tile.y}.tile.json.br`,
+            bytes: existing.bytes,
+            checksum: existing.checksum,
+          };
+          await record({
+            kind: 'skipped',
+            tile: key,
+            bytes: existing.bytes,
+            elements: existing.elements,
+          });
           continue;
         }
         try {
@@ -501,11 +534,20 @@ export async function generateMapTiles(
               },
             ),
             serialized = encodeTileArtifact(artifact),
+            encodedChecksum = (JSON.parse(serialized) as { checksum: string })
+              .checksum,
             compressed = await compress(Buffer.from(serialized, 'utf8'), {
               params: {
                 [constants.BROTLI_PARAM_QUALITY]: 6,
               },
             });
+          if (
+            options.maxTileBytes !== undefined &&
+            compressed.byteLength > options.maxTileBytes
+          )
+            throw new Error(
+              `Source-тайл ${key} занимает ${compressed.byteLength} Б и превышает лимит ${options.maxTileBytes} Б.`,
+            );
           await atomicWrite(staging, output, compressed);
           if (sourceFingerprint)
             await atomicWrite(
@@ -513,6 +555,11 @@ export async function generateMapTiles(
               `${output}.source-fingerprint`,
               new TextEncoder().encode(`${sourceFingerprint}\n`),
             );
+          manifestTiles[key] = {
+            path: `${tile.z}/${tile.x}/${tile.y}.tile.json.br`,
+            bytes: compressed.byteLength,
+            checksum: encodedChecksum,
+          };
           await record({
             kind: 'generated',
             tile: key,
@@ -559,26 +606,6 @@ export async function generateMapTiles(
         elements: completed.reduce((sum, event) => sum + event.elements, 0),
         durationMs: performance.now() - started,
       };
-    const manifestTiles: Record<
-      string,
-      { path: string; bytes: number; checksum: string }
-    > = {};
-    for (const tile of tiles) {
-      const key = sourceTileKey(tile),
-        path = safeArtifactPath(staging, tile);
-      try {
-        const compressed = await readFile(path),
-          serialized = new TextDecoder().decode(await decompress(compressed)),
-          artifact = decodeTileArtifact(serialized, tile);
-        manifestTiles[key] = {
-          path: `${tile.z}/${tile.x}/${tile.y}.tile.json.br`,
-          bytes: compressed.byteLength,
-          checksum: artifact.checksum,
-        };
-      } catch {
-        // Ошибка уже сохранена в report; незавершённый manifest нельзя публиковать.
-      }
-    }
     await atomicWrite(
       staging,
       resolve(staging, 'staging-manifest-v1.json'),
@@ -660,6 +687,7 @@ export function parseGeneratorArguments(
     inputLicense: argumentValue(arguments_, '--input-license'),
     demTimestamp: argumentValue(arguments_, '--dem-timestamp'),
     demLicense: argumentValue(arguments_, '--dem-license'),
+    boundary: argumentValue(arguments_, '--boundary'),
     drivingSide,
     downloadDem: arguments_.includes('--download-dem'),
     ...(tiles.length ? { tiles } : {}),
@@ -673,6 +701,7 @@ export function parseGeneratorArguments(
     concurrency: numberArgument(arguments_, '--concurrency', 4),
     dryRun: arguments_.includes('--dry-run'),
     generatedAt: argumentValue(arguments_, '--generated-at'),
+    maxTileBytes: numberArgument(arguments_, '--max-tile-bytes', 1_048_576),
   };
 }
 

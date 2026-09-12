@@ -75,6 +75,7 @@ export type PublisherOptions = {
   store: ObjectStore;
   dryRun?: boolean;
   sampleSize?: number;
+  concurrency?: number;
   generatedAt?: string;
 };
 
@@ -105,7 +106,17 @@ type S3Options = {
   fetcher?: typeof fetch;
   now?: () => Date;
   allowInsecureLocal?: boolean;
+  maxAttempts?: number;
+  retryDelayMs?: number;
 };
+
+class S3HttpError extends Error {
+  constructor(readonly status: number, method: string, key: string) {
+    super(`S3 вернул HTTP ${status} для ${method} ${key}.`);
+  }
+}
+
+class S3NetworkError extends Error {}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -233,7 +244,6 @@ async function readManifest(stagingValue: string) {
   const validated: Array<{
     tileKey: string;
     descriptor: ManifestTile;
-    body: Uint8Array;
   }> = [];
   for (const [tileKey, value] of entries.sort(([left], [right]) =>
     left.localeCompare(right),
@@ -282,7 +292,6 @@ async function readManifest(stagingValue: string) {
     validated.push({
       tileKey,
       descriptor: value as ManifestTile,
-      body,
     });
   }
   const actualFiles = await artifactFiles(staging),
@@ -291,7 +300,7 @@ async function readManifest(stagingValue: string) {
     throw new Error(
       'Staging содержит TileArtifactV1, отсутствующий в manifest.',
     );
-  return { manifest, tiles: validated };
+  return { manifest, staging, tiles: validated };
 }
 
 function bodyEtag(body: Uint8Array) {
@@ -375,8 +384,13 @@ export async function publishMapTiles(
   if (!options.staging.trim())
     throw new Error('Staging-каталог должен быть указан явно.');
   validateDatasetId(options.datasetId);
+  const concurrency = options.concurrency ?? 1;
+  if (!Number.isInteger(concurrency) || concurrency < 1)
+    throw new Error(
+      'Параллелизм публикации должен быть положительным целым числом.',
+    );
   const prefix = normalizePrefix(options.prefix),
-    { manifest, tiles } = await readManifest(options.staging),
+    { manifest, staging, tiles } = await readManifest(options.staging),
     datasetPath = `maps/v1/${manifest.tileBuildVersion}/${options.datasetId}`,
     catalogKey = objectKey(prefix, 'maps/catalog-v1.json'),
     verification = verificationIndexes(tiles.length, options.sampleSize ?? 3),
@@ -415,37 +429,50 @@ export async function publishMapTiles(
       `Dataset ${options.datasetId} уже зарегистрирован с другим содержимым.`,
     );
 
-  for (const { descriptor, body } of tiles) {
-    const key = objectKey(prefix, `${datasetPath}/${descriptor.path}`),
-      existing = await options.store.head(key);
-    if (existing) {
-      if (!samePublishedObject(existing, descriptor, body))
-        throw new Error(
-          `Immutable объект ${key} уже существует с другим содержимым или заголовками.`,
-        );
-      report.skipped++;
-      continue;
+  let nextTile = 0;
+  const uploadWorker = async () => {
+    while (nextTile < tiles.length) {
+      const { descriptor } = tiles[nextTile++],
+        body = await readFile(
+          resolve(staging, ...descriptor.path.split('/')),
+        ),
+        key = objectKey(prefix, `${datasetPath}/${descriptor.path}`),
+        existing = await options.store.head(key);
+      if (existing) {
+        if (!samePublishedObject(existing, descriptor, body))
+          throw new Error(
+            `Immutable объект ${key} уже существует с другим содержимым или заголовками.`,
+          );
+        report.skipped++;
+        continue;
+      }
+      await options.store.put(
+        key,
+        {
+          body,
+          contentLength: body.byteLength,
+          contentType: 'application/json',
+          contentEncoding: 'br',
+          cacheControl: TILE_CACHE_CONTROL,
+          metadata: { 'tile-checksum': descriptor.checksum },
+        },
+        { ifNoneMatch: '*' },
+      );
+      report.uploaded++;
     }
-    await options.store.put(
-      key,
-      {
-        body,
-        contentLength: body.byteLength,
-        contentType: 'application/json',
-        contentEncoding: 'br',
-        cacheControl: TILE_CACHE_CONTROL,
-        metadata: { 'tile-checksum': descriptor.checksum },
-      },
-      { ifNoneMatch: '*' },
-    );
-    report.uploaded++;
-  }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, tiles.length) }, uploadWorker),
+  );
 
   for (const index of verification) {
     const tile = tiles[index],
+      localBody = await readFile(
+        resolve(staging, ...tile.descriptor.path.split('/')),
+      ),
       key = objectKey(prefix, `${datasetPath}/${tile.descriptor.path}`),
       remote = await options.store.get(key);
-    if (!remote || !samePublishedObject(remote, tile.descriptor, tile.body))
+    if (!remote || !samePublishedObject(remote, tile.descriptor, localBody))
       throw new Error(`Контрольное чтение ${key} вернуло неверные метаданные.`);
     const id = parseSourceTileKey(tile.tileKey),
       artifact = await decodePublishedArtifact(remote.body, id);
@@ -500,7 +527,7 @@ export async function emitPublishCommands(options: CommandOptions) {
   validateDatasetId(options.datasetId);
   validateEndpoint(options.endpoint, options.allowInsecureLocal);
   const prefix = normalizePrefix(options.prefix),
-    { manifest, tiles } = await readManifest(options.staging),
+    { manifest, staging, tiles } = await readManifest(options.staging),
     datasetPath = `maps/v1/${manifest.tileBuildVersion}/${options.datasetId}`,
     catalogKey = objectKey(prefix, 'maps/catalog-v1.json'),
     currentCatalogBody = options.currentCatalog
@@ -581,8 +608,11 @@ export async function emitPublishCommands(options: CommandOptions) {
       'New-Item -ItemType Directory -Path $publishTemp | Out-Null',
       'try {',
     ];
-  for (const [index, { descriptor, body }] of tiles.entries()) {
-    const key = objectKey(prefix, `${datasetPath}/${descriptor.path}`),
+  for (const [index, { descriptor }] of tiles.entries()) {
+    const body = await readFile(
+        resolve(staging, ...descriptor.path.split('/')),
+      ),
+      key = objectKey(prefix, `${datasetPath}/${descriptor.path}`),
       path = resolve(options.staging, ...descriptor.path.split('/')),
       variable = `$tileHead${index}`,
       expectedEtag = bodyEtag(body),
@@ -652,18 +682,49 @@ function responseHeaders(response: Response, body: Uint8Array): StoredObject {
   };
 }
 
+function storedObjectMatches(actual: StoredObject, expected: StoredObject) {
+  if (
+    actual.contentLength !== expected.contentLength ||
+    actual.contentType !== expected.contentType ||
+    actual.contentEncoding !== expected.contentEncoding ||
+    actual.cacheControl !== expected.cacheControl
+  )
+    return false;
+  if (
+    !Object.entries(expected.metadata ?? {}).every(
+      ([name, value]) => actual.metadata?.[name] === value,
+    )
+  )
+    return false;
+  const expectedEtag = createHash('md5')
+    .update(expected.body)
+    .digest('hex');
+  if (actual.etag?.replaceAll('"', '').toLowerCase() === expectedEtag)
+    return true;
+  if (actual.body.length !== expected.body.length) return false;
+  for (let index = 0; index < actual.body.length; index++)
+    if (actual.body[index] !== expected.body[index]) return false;
+  return true;
+}
+
 export function createS3ObjectStore(options: S3Options): ObjectStore {
   const endpoint = validateEndpoint(
       options.endpoint,
       options.allowInsecureLocal,
     ),
     fetcher = options.fetcher ?? fetch,
-    now = options.now ?? (() => new Date());
+    now = options.now ?? (() => new Date()),
+    maxAttempts = options.maxAttempts ?? 5,
+    retryDelayMs = options.retryDelayMs ?? 250;
   if (!options.bucket.trim()) throw new Error('S3 bucket должен быть указан.');
   if (!options.accessKey || !options.secretKey)
     throw new Error('Для публикации нужны S3 credentials.');
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1)
+    throw new Error('Число попыток S3 должно быть положительным целым числом.');
+  if (!Number.isFinite(retryDelayMs) || retryDelayMs < 0)
+    throw new Error('Задержка повтора S3 не может быть отрицательной.');
 
-  const request = async (
+  const requestOnce = async (
     method: 'GET' | 'HEAD' | 'PUT',
     key: string,
     object?: StoredObject,
@@ -733,22 +794,65 @@ export function createS3ObjectStore(options: S3Options): ObjectStore {
       'authorization',
       `AWS4-HMAC-SHA256 Credential=${options.accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
     );
-    const response = await fetcher(url, {
-      method,
-      headers,
-      ...(body ? { body: Buffer.from(body) } : {}),
-    });
+    let response: Response;
+    try {
+      response = await fetcher(url, {
+        method,
+        headers,
+        ...(body ? { body: Buffer.from(body) } : {}),
+      });
+    } catch (error) {
+      throw new S3NetworkError(`Сетевая ошибка S3 для ${method} ${key}.`, {
+        cause: error,
+      });
+    }
     if (response.status === 404 && method !== 'PUT') return undefined;
-    if (!response.ok)
-      throw new Error(
-        `S3 вернул HTTP ${response.status} для ${method} ${key}.`,
-      );
+    if (!response.ok) throw new S3HttpError(response.status, method, key);
     const responseBody =
       method === 'GET'
         ? new Uint8Array(await response.arrayBuffer())
         : new Uint8Array();
     return responseHeaders(response, responseBody);
-  };
+  },
+    request = async (
+      method: 'GET' | 'HEAD' | 'PUT',
+      key: string,
+      object?: StoredObject,
+      conditions?: PutConditions,
+    ) => {
+      let ambiguousPut = false;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          return await requestOnce(method, key, object, conditions);
+        } catch (error) {
+          if (method === 'PUT' && object) {
+            if (error instanceof S3NetworkError) ambiguousPut = true;
+            if (
+              ambiguousPut &&
+              (error instanceof S3NetworkError ||
+                (error instanceof S3HttpError && error.status === 412))
+            )
+              try {
+                const written = await requestOnce('GET', key);
+                if (written && storedObjectMatches(written, object)) return written;
+              } catch {
+                // Сверка best-effort: исходная ошибка определяет дальнейший retry.
+              }
+          }
+          const retryable =
+            error instanceof S3NetworkError ||
+            (error instanceof S3HttpError &&
+              (error.status === 408 ||
+                error.status === 429 ||
+                error.status >= 500));
+          if (!retryable || attempt === maxAttempts) throw error;
+          await new Promise((resolveDelay) =>
+            setTimeout(resolveDelay, retryDelayMs * 2 ** (attempt - 1)),
+          );
+        }
+      }
+      throw new Error('S3-запрос завершился без результата.');
+    };
   return {
     head: (key) => request('HEAD', key),
     get: (key) => request('GET', key),
@@ -845,6 +949,7 @@ async function main() {
         store,
         dryRun,
         sampleSize: Number(argumentValue(arguments_, '--sample-size') ?? 3),
+        concurrency: Number(argumentValue(arguments_, '--concurrency') ?? 1),
       });
     console.log(JSON.stringify({ kind: 'publish-report', ...report }, null, 2));
   } catch (error) {

@@ -360,6 +360,132 @@ it('S3-клиент подписывает запрос SigV4 и не помещ
   expect(putHeaders.get('content-md5')).toBe('Uonfc331cyb83SJZevsfrA==');
 });
 
+it('повторяет временную сетевую ошибку S3', async () => {
+  // Arrange
+  const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 200,
+          headers: { 'content-length': '0' },
+        }),
+      ),
+    store = createS3ObjectStore({
+      endpoint: 'https://storage.yandexcloud.net',
+      bucket: 'example-bucket',
+      region: 'ru-central1',
+      accessKey: 'public-id',
+      secretKey: 'secret-value',
+      fetcher: fetcher as typeof fetch,
+      retryDelayMs: 0,
+    });
+
+  // Act
+  await store.head('maps/retry.json');
+
+  // Assert
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('сверяет условный PUT после потери успешного ответа', async () => {
+  // Arrange
+  const body = new TextEncoder().encode('new'),
+    fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('response lost'))
+      .mockResolvedValueOnce(
+        new Response(body, {
+          status: 200,
+          headers: {
+            'content-length': String(body.length),
+            'content-type': 'application/json',
+            'cache-control': 'no-cache',
+          },
+        }),
+      ),
+    store = createS3ObjectStore({
+      endpoint: 'https://storage.yandexcloud.net',
+      bucket: 'example-bucket',
+      region: 'ru-central1',
+      accessKey: 'public-id',
+      secretKey: 'secret-value',
+      fetcher: fetcher as typeof fetch,
+      retryDelayMs: 0,
+    });
+
+  // Act
+  await store.put(
+    'maps/catalog-v1.json',
+    {
+      body,
+      contentLength: body.length,
+      contentType: 'application/json',
+      cacheControl: 'no-cache',
+    },
+    { ifMatch: '"old-etag"' },
+  );
+
+  // Assert
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher.mock.calls.map((call) => call[1]?.method)).toEqual([
+    'PUT',
+    'GET',
+  ]);
+});
+
+it('сверяет потерянный PUT Brotli-тайла по ETag сжатого тела', async () => {
+  // Arrange
+  const decoded = new TextEncoder().encode('{"tile":true}'),
+    body = new Uint8Array(await compress(decoded)),
+    etag = `"${createHash('md5').update(body).digest('hex')}"`,
+    fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('response lost'))
+      .mockResolvedValueOnce(
+        new Response(decoded, {
+          status: 200,
+          headers: {
+            'content-length': String(body.length),
+            'content-type': 'application/json',
+            'content-encoding': 'br',
+            'cache-control': 'public, max-age=31536000, immutable',
+            'x-amz-meta-tile-checksum': 'crc32:12345678',
+            etag,
+          },
+        }),
+      ),
+    store = createS3ObjectStore({
+      endpoint: 'https://storage.yandexcloud.net',
+      bucket: 'example-bucket',
+      region: 'ru-central1',
+      accessKey: 'public-id',
+      secretKey: 'secret-value',
+      fetcher: fetcher as typeof fetch,
+      retryDelayMs: 0,
+    });
+
+  // Act
+  await store.put(
+    'maps/v1/build/dataset/15/1/2.tile.json.br',
+    {
+      body,
+      contentLength: body.length,
+      contentType: 'application/json',
+      contentEncoding: 'br',
+      cacheControl: 'public, max-age=31536000, immutable',
+      metadata: { 'tile-checksum': 'crc32:12345678' },
+    },
+    { ifNoneMatch: '*' },
+  );
+
+  // Assert
+  expect(fetcher.mock.calls.map((call) => call[1]?.method)).toEqual([
+    'PUT',
+    'GET',
+  ]);
+});
+
 it('не отправляет credentials по HTTP вне явно разрешённого loopback', async () => {
   // Arrange / Act / Assert
   expect(() =>
