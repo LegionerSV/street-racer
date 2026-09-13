@@ -2,12 +2,16 @@ import type { Edge, Point, World } from './types';
 import { boundsOf, overlaps, type Bounds } from './geometry';
 import { coverageBounds } from './stream-coverage';
 import { createRaceLocations, invalidateRaceRoutes } from './network';
-import { edgeById, edgeStableId } from './road-graph';
+import { edgeById, edgeStableId, updateRoadMetrics } from './road-graph';
 import { distance, distance2, smoother } from './geo';
+import { alignCarriagewayElevations } from './carriageways';
+import { validateClearance } from './clearance';
 export const edgeKey = edgeStableId;
 // Уже построенную поверхность не меняем под автомобилями из-за нового
 // соседнего перекрёстка. Доступность дороги берём из новой карты покрытия.
 export function reconcileWorld(previous: World, next: World): World {
+  // Инкрементальное слияние переиспользует узлы; подготовка не меняет активный мир.
+  next.nodes = next.nodes.map(node => ({ ...node }));
   const old = new Map(previous.edges.map((e) => [edgeKey(e), e]));
   const preserved = new Set<string>();
   for (const edge of next.edges) {
@@ -64,6 +68,10 @@ export function reconcileWorld(previous: World, next: World): World {
     edge.length = edge.points
       .slice(1)
       .reduce((sum, point, i) => sum + distance(edge.points[i], point), 0);
+  }
+  if (alignCarriagewayElevations(next.edges, new Map(next.nodes.map(node => [node.id, node])), next.elevation, next.drivingSide, preserved)) {
+    for (const edge of next.edges) if (!preserved.has(edgeKey(edge))) updateRoadMetrics(edge);
+    next.warnings = [...new Set([...next.warnings, ...validateClearance(next.edges)])].slice(0, 10);
   }
   for (const node of next.nodes) {
     const y = anchorHeight(node.id);

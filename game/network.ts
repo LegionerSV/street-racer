@@ -1,12 +1,14 @@
+import { MinHeap } from './min-heap';
 import type { Area, Building, Edge, OSMElement, Point, RegionData, Restriction, RoadNode, Route, World } from './types';
 import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, sampleRoadElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment, offsetElevation } from './geo';
 import { structureProfiles } from './elevation';
+import { alignCarriagewayElevations } from './carriageways';
 import { fitBridgeClearance, fitTunnelDepth, validateClearance } from './clearance';
 import { roadLayout, directedLanes,roadTypes } from './lanes';
 import {buildingCoveredByParts} from './buildings';
 import {SpatialGrid,boundsOf,overlaps} from './geometry';
 import {coverageBounds,pointHasCoverage,routeHasCoverage} from './stream-coverage';
-import { edgeById, edgeIndex, edgeStableId, makeEdgeStableId } from './road-graph';
+import { edgeById, edgeIndex, edgeStableId, makeEdgeStableId, updateRoadMetrics } from './road-graph';
 
 export function repairSharpRoadProfile(points:Point[],limit=.38){
   if(points.length<3||!points.slice(1).some((p,i)=>Math.abs(p.y-points[i].y)/(distance2(p,points[i])||1)>limit))return points;
@@ -180,6 +182,7 @@ export function buildWorld(region: RegionData): World {
   // Поднимать или удалять целый дом ради одной арки нельзя.
   buildings.splice(0,buildings.length,...filteredBuildings);
   const nodes = [...roadNodes.values()];
+  alignCarriagewayElevations(edges, roadNodes, elevation, region.drivingSide);
   const neighbours = new Map<number, Set<number>>();
   for (const edge of edges) for (const [a, b] of [[edge.from, edge.to], [edge.to, edge.from]]) { const list = neighbours.get(a) || new Set<number>(); list.add(b); neighbours.set(a, list); }
   for (const edge of edges) {
@@ -194,10 +197,7 @@ export function buildWorld(region: RegionData): World {
   fitBridgeClearance(edges);
   for(const edge of edges){
     if(!edge.bridge&&!edge.tunnel)edge.points=repairSharpRoadProfile(edge.points);
-    edge.length=pathLengths(edge.points).at(-1)!;
-    edge.blockedReasons = (edge.blockedReasons || []).filter(r=>r!=='grade');
-    if(edge.points.slice(1).some((p,i)=>Math.abs(p.y-edge.points[i].y)/(distance2(p,edge.points[i])||1)>.38))edge.blockedReasons.push('grade');
-    edge.blocked=edge.blockedReasons.length>0;
+    updateRoadMetrics(edge);
     for(const [id,p] of [[edge.from,edge.points[0]],[edge.to,edge.points.at(-1)!]] as [number,Point][])Object.assign(roadNodes.get(id)!,p);
   }
   warnings.push(...validateClearance(edges));
@@ -268,38 +268,13 @@ function shortest(
     stateIds = new Map<string, number>([
       [`${first.id}:${initialHistory.join(',')}`, 0],
     ]);
-  const heap: [number, number][] = [],
+  const heap = new MinHeap<[number, number]>((a, b) => a[0] - b[0]),
     costs = new Map<number, number>([[0, 0]]),
     prev = new Map<number, number>();
-  const push = (item: [number, number]) => {
-    heap.push(item);
-    let i = heap.length - 1;
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (heap[p][0] <= item[0]) break;
-      heap[i] = heap[p];
-      i = p;
-    }
-    heap[i] = item;
-  };
-  const pop = () => {
-    const top = heap[0],
-      last = heap.pop()!;
-    if (heap.length) {
-      let i = 0;
-      while (i * 2 + 1 < heap.length) {
-        let c = i * 2 + 1;
-        if (c + 1 < heap.length && heap[c + 1][0] < heap[c][0]) c++;
-        if (heap[c][0] >= last[0]) break;
-        heap[i] = heap[c];
-        i = c;
-      }
-      heap[i] = last;
-    }
-    return top;
-  };
+  const push = (item: [number, number]) => heap.push(item);
+  const pop = () => heap.pop()!;
   push([0, 0]);
-  while (heap.length) {
+  while (heap.size) {
     const [cost, id] = pop(),
       state = states[id],
       edge = world.edges[state.edge];

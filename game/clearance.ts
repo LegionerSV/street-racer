@@ -1,3 +1,4 @@
+import { MinHeap } from './min-heap';
 import {
   distance2,
   mixPoint,
@@ -329,15 +330,14 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
     }
   const bridgeDistances = new Map<number, number>();
   if (tunnelTerrain) {
-    const queue: { id: number; d: number }[] = [];
+    const queue = new MinHeap<{ id: number; d: number }>((a, b) => a.d - b.d);
     for (const edge of physical.filter(e => e.bridge))
       for (const id of [edge.from, edge.to])
         if (!bridgeDistances.has(id)) {
           bridgeDistances.set(id, 0);
           queue.push({ id, d: 0 });
         }
-    while (queue.length) {
-      queue.sort((a, b) => b.d - a.d);
+    while (queue.size) {
       const { id, d } = queue.pop()!;
       if (d !== bridgeDistances.get(id) || d >= 100) continue;
       for (const edge of links.get(id) || []) {
@@ -409,15 +409,14 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
     if (Math.abs(rise) < 1e-6) continue;
     const ramp = Math.max(100, (Math.abs(rise) * 1.875) / 0.06),
       distances = new Map<number, number>();
-    const queue: { id: number; d: number }[] = [];
+    const queue = new MinHeap<{ id: number; d: number }>((a, b) => a.d - b.d);
     for (const e of group)
       for (const id of [e.from, e.to])
         if (!distances.has(id)) {
           distances.set(id, 0);
           queue.push({ id, d: 0 });
         }
-    while (queue.length) {
-      queue.sort((a, b) => b.d - a.d);
+    while (queue.size) {
       const { id, d } = queue.pop()!;
       if (d !== distances.get(id)) continue;
       for (const e of links.get(id) || []) {

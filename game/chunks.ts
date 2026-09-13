@@ -3,7 +3,7 @@ import { bridgeRailingSpans, embankmentRailingSpans } from './bridge-railings';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
-import { SpatialGrid,boundsOf,roadPrism,footprintPrism,subtractPrisms,type Prism } from './geometry';
+import { SpatialGrid,boundsOf,roadPrism,footprintPrism,surfacePrism,subtractPrisms,type Prism } from './geometry';
 import { appendBuilding } from './buildings';
 import { worldLandmarks,appendLandmark } from './landmarks';
 import { dashSpans, periodicOffsets } from './markings';
@@ -91,6 +91,20 @@ function ribbon(mesh: MeshData, a: Point, b: Point, left: number, right: number,
   quad(mesh, offset(a, left), offset(b, left), offset(b, right), offset(a, right), color);
 }
 type Segment = { a: Point; b: Point; edge: Edge; index: number; station: number; na?: { x: number; z: number }; nb?: { x: number; z: number }; join?: CarriagewayJoin };
+
+// Один контур для асфальта и вырезания земли: прямоугольная маска не покрывает
+// внешний угол полотна с усреднёнными нормалями на повороте.
+function roadSurface(s: Segment): [Point, Point, Point, Point] {
+  const { a, b, edge } = s, w = edge.width / 2, length = distance2(a, b) || 1;
+  const offset = (p: Point, normal: Segment['na'], d: number) => ({ ...p, x: p.x + (normal?.x ?? (b.z - a.z) / length) * d, z: p.z + (normal?.z ?? -(b.x - a.x) / length) * d });
+  if (s.join) {
+    const { nearA, nearB, farA, farB, side } = s.join;
+    const centerA = mixPoint(nearA, farA, .5), centerB = mixPoint(nearB, farB, .5);
+    const outerA = offset(a, s.na, -w * side), outerB = offset(b, s.nb, -w * side);
+    return side > 0 ? [outerA, outerB, centerB, centerA] : [centerA, centerB, outerB, outerA];
+  }
+  return [offset(a, s.na, -w), offset(b, s.nb, -w), offset(b, s.nb, w), offset(a, s.na, w)];
+}
 type Paving={id:string;segment:Segment;side:number;mask:Prism};
 const sidewalkOn = (edge: Edge, side: number) => side < 0 ? edge.sidewalkLeft !== false : edge.sidewalkRight !== false;
 function segmentPolygonSpans(a:Point,b:Point,outer:Point[],holes:Point[][]=[]){
@@ -267,16 +281,13 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     }
     ribbon(result.road, a, b, -w - 1.3, w + 1.3, -.08, [.29, .32, .34], s.na, s.nb);
     if(s.join){
-      const {nearA,nearB,farA,farB,side}=s.join;
-      const centerA=mixPoint(nearA,farA,.5),centerB=mixPoint(nearB,farB,.5),length=distance2(a,b);
-      const offset=(p:Point,n:{x:number;z:number}|undefined)=>({x:p.x-(n?.x??(b.z-a.z)/length)*w*side,y:p.y,z:p.z-(n?.z??-(b.x-a.x)/length)*w*side});
-      const outerA=offset(a,s.na),outerB=offset(b,s.nb);
+      const {nearA,nearB,farA,farB}=s.join;
+      const centerA=mixPoint(nearA,farA,.5),centerB=mixPoint(nearB,farB,.5);
       // Каждая половина заканчивается на общей оси: и промежуток, и небольшое
       // перекрытие OSM-полотен превращаются в одну поверхность без наложений.
-      if(side>0)quad(result.road,outerA,outerB,centerB,centerA,[.18,.21,.24]);
-      else quad(result.road,centerA,centerB,outerB,outerA,[.18,.21,.24]);
       if(lod===0&&s.join.owner)ribbon(result.markings,centerA,centerB,-.075,.075,.05,[.82,.84,.8]);
-    }else ribbon(result.road, a, b, -w, w, 0, [.18, .21, .24], s.na, s.nb);
+    }
+    quad(result.road, ...roadSurface(s), [.18, .21, .24]);
     // Площадки нужны только на перекрёстках. На склонах полотно сшивается боковыми вершинами.
     const junctionPoints = [s.index === 0 && index.junctions.has(edge.from) ? a : null, s.index === edge.points.length - 2 && index.junctions.has(edge.to) ? b : null].filter(Boolean) as Point[];
     for (const p of junctionPoints) {
@@ -398,12 +409,23 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
   }
   if (lod === 0) for (const tree of world.trees) if (tileKey(tree.x, tree.z) === key && segments.every(s => projectOnSegment(tree,s.a,s.b).distance > s.edge.width/2+2)) result.trees.push({ ...tree, y: ground(tree.x,tree.z) });
   if(lod===0)for(const tree of result.trees)box(result.treeTrunks,tree,.55,7,.55,[.23,.24,.2]);
-  const roadCuts=new SpatialGrid<Prism>(32);
+  const roadCuts=new SpatialGrid<Prism>(32),surfaceCuts=new SpatialGrid<Prism>(32);
   for(const s of segments)if(!s.edge.bridge&&!s.edge.tunnel){
     const length=distance2(s.a,s.b)||1,aa=mixPoint(s.a,s.b,-.3/length),bb=mixPoint(s.a,s.b,1+.3/length);
     const cut=roadPrism(aa,bb,s.edge.width+14,10000,10000);roadCuts.add(cut,cut.bounds);
+    const polygon=roadSurface(s);
+    for(const triangle of [[polygon[0],polygon[1],polygon[2]],[polygon[0],polygon[2],polygon[3]]] as [Point,Point,Point][]){
+      const mask=surfacePrism(triangle,.1,10000);if(mask)surfaceCuts.add(mask,mask.bounds);
+    }
+    for(const p of [s.index===0&&index.junctions.has(s.edge.from)?s.a:null,s.index===s.edge.points.length-2&&index.junctions.has(s.edge.to)?s.b:null])if(p){
+      const ring=Array.from({length:12},(_,i)=>({...p,x:p.x+Math.cos(i/12*Math.PI*2)*s.edge.width/2,z:p.z+Math.sin(i/12*Math.PI*2)*s.edge.width/2}));
+      const mask=footprintPrism(ring,{x:0,y:1,z:0,w:-p.y},.1,10000);surfaceCuts.add(mask,mask.bounds);
+    }
   }
   cutSoil(result.terrain,roadCuts);
+  // Откос одной улицы не может выступать на асфальт соседней или поперечной.
+  // Вырезаем только проезжую часть: широкая маска земли удалила бы сам откос.
+  for(const mesh of [result.terrain,result.shoulders])cutSoil(mesh,surfaceCuts);
   if(segments.some(s=>s.edge.tunnel||s.edge.tunnelApproach)){
     cutSoil(result.terrain,index.cavities);
     cutSoil(result.shoulders,index.cavities);

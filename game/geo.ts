@@ -1,4 +1,5 @@
 import type { Center, ElevationGrid, Point } from './types';
+import { median, openingPass } from './elevation-filter.ts';
 export const REGION_SIZE = 5000;
 export const CHUNK_SIZE = 250;
 const METERS = 111320;
@@ -47,24 +48,7 @@ export function smoothElevation(grid: ElevationGrid): ElevationGrid {
   const openingRadius=Math.max(1,Math.round(250/(size/(width-1))));
   let opened=grid.values.slice();
   for(const minimum of [true,false]) for(const axis of [0,1]) {
-    const next=new Float32Array(opened.length);
-    for(let z=0;z<width;z++) for(let x=0;x<width;x++) {
-      let value=minimum?Infinity:-Infinity;
-      for(let d=-openingRadius;d<=openingRadius;d++) {
-        const at=(axis?z:x)+d, bounded=clamp(at,0,width-1);
-        const index=axis?bounded*width+x:z*width+bounded;
-        let h=opened[index];
-        // Продолжение краевого уклона не превращает плоскость в ступени.
-        if(at!==bounded) {
-          const inward=bounded===0?1:-1;
-          const neighbour=axis?index+inward*width:index+inward;
-          h+=(at-bounded)*(opened[neighbour]-h)/inward;
-        }
-        value=minimum?Math.min(value,h):Math.max(value,h);
-      }
-      next[z*width+x]=value;
-    }
-    opened=next;
+    opened=openingPass(opened,width,openingRadius,axis,minimum);
   }
   // Невысокие естественные подъёмы не похожи на здания или кроны: широкое
   // морфологическое окно не должно растягивать соседнюю низину поверх них.
@@ -72,11 +56,11 @@ export function smoothElevation(grid: ElevationGrid): ElevationGrid {
   // Медиана удаляет одиночные выбросы до размытия: иначе пик превращается в широкий холм.
   // Симметричное окно сохраняет высоты плоскости и масштаб протяжённых склонов.
   let values = new Float32Array(grid.values.length);
+  const neighbours = new Float32Array((radius * 2 + 1) ** 2);
   for (let z = 0; z < width; z++) for (let x = 0; x < width; x++) {
-    const neighbours: number[] = [];
-    for (let dz = -radius; dz <= radius; dz++) for (let dx = -radius; dx <= radius; dx++) neighbours.push(opened[clamp(z + dz, 0, width - 1) * width + clamp(x + dx, 0, width - 1)]);
-    neighbours.sort((a, b) => a - b);
-    values[z * width + x] = neighbours[Math.floor(neighbours.length / 2)];
+    let count = 0;
+    for (let dz = -radius; dz <= radius; dz++) for (let dx = -radius; dx <= radius; dx++) neighbours[count++] = opened[clamp(z + dz, 0, width - 1) * width + clamp(x + dx, 0, width - 1)];
+    values[z * width + x] = median(neighbours);
   }
   for (let pass = 0; pass < 2; pass++) for (const axis of [0, 1]) {
     const next = new Float32Array(values.length);

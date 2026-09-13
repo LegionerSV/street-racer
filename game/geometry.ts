@@ -65,6 +65,16 @@ export class SpatialGrid<T> {
 export type Plane = { x: number; y: number; z: number; w: number };
 export type Prism = { bounds: Bounds; planes: Plane[] };
 export type UVPoint = Point & { u?: number; v?: number };
+// Объём над фактическим треугольником поверхности, включая скосы и углы стыков.
+export function surfacePrism(points: [Point, Point, Point], below: number, above: number): Prism | undefined {
+  const [a, b, c] = points;
+  const dx = b.x - a.x, dz = b.z - a.z, ex = c.x - a.x, ez = c.z - a.z;
+  const determinant = dx * ez - ex * dz;
+  if (Math.abs(determinant) < 1e-9) return;
+  const x = -((b.y - a.y) * ez - (c.y - a.y) * dz) / determinant;
+  const z = -(dx * (c.y - a.y) - ex * (b.y - a.y)) / determinant;
+  return footprintPrism(points, { x, y: 1, z, w: -a.y - x * a.x - z * a.z }, below, above);
+}
 const evaluate = (p: Point, plane: Plane) =>
   p.x * plane.x + p.y * plane.y + p.z * plane.z + plane.w;
 const lerp = (a: UVPoint, b: UVPoint, t: number): UVPoint => ({

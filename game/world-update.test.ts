@@ -27,6 +27,19 @@ const region = (x: number): RegionData => ({
   focus: { x, y: 0, z: 0 },
   heightDatum: 0,
 });
+it('не записывает высоты в общие узлы активного мира во время подготовки обновления', () => {
+  // Arrange — инкрементальное слияние может передавать прежние объекты узлов.
+  const previous = buildWorld(region(0)), next = buildWorld(region(0));
+  const before = structuredClone(previous.nodes);
+  for (const node of previous.nodes) Object.freeze(node);
+  next.nodes = previous.nodes;
+  // Act
+  const prepared = reconcileWorld(previous, next);
+  // Assert
+  expect(previous.nodes).toEqual(before);
+  expect(prepared.nodes).toEqual(before);
+  expect(prepared.nodes[0]).not.toBe(previous.nodes[0]);
+});
 it('строит доступные дороги далеко за прежней границей и закрывает выход в неготовую клетку', () => {
   // Arrange
   const input = region(10000);

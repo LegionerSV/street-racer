@@ -152,14 +152,15 @@ function inBounds(
   );
 }
 
-function mergeById<T extends { id: number }>(
+function mergeByKey<T, K>(
   previous: T[],
   rebuilt: T[],
-  affectedIds: Set<number>,
+  affectedIds: Set<K>,
+  key: (item: T) => K,
 ) {
   return [
-    ...previous.filter((item) => !affectedIds.has(item.id)),
-    ...rebuilt.filter((item) => affectedIds.has(item.id)),
+    ...previous.filter((item) => !affectedIds.has(key(item))),
+    ...rebuilt.filter((item) => affectedIds.has(key(item))),
   ];
 }
 
@@ -172,17 +173,11 @@ function mergeBuildings(
   rebuilt: Building[],
   affected: Set<string>,
 ) {
-  return [
-    ...previous.filter((building) => !affected.has(buildingKey(building))),
-    ...rebuilt.filter((building) => affected.has(buildingKey(building))),
-  ];
+  return mergeByKey(previous, rebuilt, affected, buildingKey);
 }
 
 function mergeAreas(previous: Area[], rebuilt: Area[], affected: Set<string>) {
-  return [
-    ...previous.filter((area) => !affected.has(areaKey(area))),
-    ...rebuilt.filter((area) => affected.has(areaKey(area))),
-  ];
+  return mergeByKey(previous, rebuilt, affected, areaKey);
 }
 
 export function buildIncrementalWorld(
@@ -238,7 +233,7 @@ export function buildIncrementalWorld(
   edges.forEach((edge, id) => (edge.id = id));
   const next: World = {
     ...previous,
-    nodes: mergeById(previous.nodes, rebuilt.nodes, affectedNodes),
+    nodes: mergeByKey(previous.nodes, rebuilt.nodes, affectedNodes, node => node.id),
     edges,
     restrictions: [
       ...previous.restrictions.filter(
