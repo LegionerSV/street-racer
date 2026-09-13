@@ -1,8 +1,37 @@
 import { expect, it } from 'vitest';
-import { validateClearance, fitBridgeClearance, roadCrossings, crossingClearance } from './clearance';
+import { validateClearance, fitBridgeClearance, fitTunnelDepth, roadCrossings, crossingClearance } from './clearance';
 import type { Edge } from './types';
 
 const road = (id: number, points: Edge['points'], bridge = false): Edge => ({ id, stableId:`${id}/${id*2}/${id*2+1}/0`, way: id, from: id * 2, to: id * 2 + 1, points, bridge, tunnel: false, layer: bridge ? 1 : 0, width: 7, lanes: 2, length: 100, speed: 15, name: 'Дорога', blocked: false });
+
+it('заглубление тоннеля не тянет соседний мост и его торец под воду', () => {
+  // Arrange
+  const tunnel = { ...road(1, [{ x: 0, y: 0, z: 0 }, { x: 100, y: 0, z: 0 }]), from: 1, to: 2, tunnel: true, layer: -1 };
+  const approach = { ...road(2, [{ x: 100, y: 0, z: 0 }, { x: 200, y: 0, z: 0 }]), from: 2, to: 3 };
+  const bridge = { ...road(3, [{ x: 200, y: 0, z: 0 }, { x: 250, y: 0, z: 0 }], true), from: 3, to: 4 };
+  const elevation = { width: 2, size: 1000, values: new Float32Array(4) };
+  // Act
+  fitTunnelDepth([tunnel, approach, bridge], elevation);
+  // Assert
+  expect(tunnel.points[0].y).toBeLessThan(-6);
+  expect(bridge.points.every(point => point.y === 0)).toBe(true);
+  expect(approach.points.at(-1)!.y).toBeCloseTo(bridge.points[0].y, 6);
+});
+
+it('короткий подход от моста плавно входит в тоннель без потери глубины внутри', () => {
+  // Arrange
+  const bridge = { ...road(1, [{ x: 0, y: 0, z: 0 }, { x: 50, y: 0, z: 0 }], true), from: 1, to: 2 };
+  const approach = { ...road(2, [{ x: 50, y: 0, z: 0 }, { x: 100, y: 0, z: 0 }]), from: 2, to: 3 };
+  const tunnel = { ...road(3, [{ x: 100, y: 0, z: 0 }, { x: 150, y: 0, z: 0 }, { x: 200, y: 0, z: 0 }]), from: 3, to: 4, tunnel: true, layer: -1 };
+  const elevation = { width: 2, size: 1000, values: new Float32Array(4) };
+  // Act
+  fitTunnelDepth([bridge, approach, tunnel], elevation);
+  // Assert
+  expect(bridge.points.every(point => point.y === 0)).toBe(true);
+  expect(approach.points[0].y).toBeCloseTo(bridge.points.at(-1)!.y, 6);
+  expect(tunnel.points[0].y).toBeCloseTo(approach.points.at(-1)!.y, 6);
+  expect(tunnel.points[1].y).toBeLessThan(-6);
+});
 
 it('закрывает оба направления моста при недостаточном просвете', () => {
   // Arrange

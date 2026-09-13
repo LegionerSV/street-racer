@@ -37,7 +37,7 @@ export class ChunkInstallQueue<T> {
   }
 }
 export function desiredChunks(p: Point, heading: number, quality: Settings['quality'], streaming = false) {
-  const mobile=quality==='mobile',detail=mobile?250:500;
+  const mobile=quality==='mobile',detail=mobile?250:quality==='high'?750:500;
   const far = mobile ? 650 : quality === 'high' ? 1500 : quality === 'medium' ? 1100 : 800;
   const result: { key: string; lod: number; priority: number }[] = [];
   const reach = Math.ceil((far + 177) / CHUNK_SIZE), cx = Math.floor(p.x/CHUNK_SIZE), cz = Math.floor(p.z/CHUNK_SIZE);
@@ -48,6 +48,17 @@ export function desiredChunks(p: Point, heading: number, quality: Settings['qual
     result.push({ key: `${x},${z}`, lod: d <= detail + 177 ? 0 : mobile ? 2 : 1, priority: d - forward * 140 });
   }
   return result.sort((a, b) => a.priority - b.priority);
+}
+
+export function startupDrivingChunks(p: Point, heading: number, quality: Settings['quality']) {
+  const critical = new Set(criticalChunks(p, heading, true));
+  const cx = Math.floor(p.x / CHUNK_SIZE), cz = Math.floor(p.z / CHUNK_SIZE);
+  return desiredChunks(p, heading, quality, true).filter(chunk => {
+    if (chunk.lod !== 0) return false;
+    if (quality !== 'high') return critical.has(chunk.key);
+    const [x, z] = chunk.key.split(',').map(Number);
+    return Math.abs(x - cx) <= 2 && Math.abs(z - cz) <= 2;
+  });
 }
 
 // До начала движения нужны коллизии под машиной и впереди, включая запас

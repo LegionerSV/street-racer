@@ -1,9 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { desiredChunks, criticalChunks, ChunkBudget, ChunkInstallQueue, buildChunk } from './chunks';
+import { desiredChunks, criticalChunks, startupDrivingChunks, ChunkBudget, ChunkInstallQueue, buildChunk } from './chunks';
 import type { World } from './types';
 import { polygonContains } from './geo';
 
 describe('Подготовка кварталов', () => {
+  it('на высоком качестве до поездки устанавливает 25 ближних физических кварталов', () => {
+    // Arrange
+    const position = { x: 125, y: 0, z: 125 };
+    // Act
+    const chunks = startupDrivingChunks(position, 0, 'high');
+    // Assert
+    expect(chunks).toHaveLength(25);
+    expect(chunks.every(chunk => chunk.lod === 0)).toBe(true);
+    expect(chunks.map(chunk => chunk.key)).toContain('-2,-2');
+    expect(chunks.map(chunk => chunk.key)).toContain('2,2');
+    expect(startupDrivingChunks({ x: 0, y: 0, z: 0 }, 0, 'high')).toHaveLength(25);
+  });
   it('не строит тротуар у дворовой дороги', () => {
     // Arrange
     const edge={id:0,stableId:'1/1/2/0',way:1,from:1,to:2,length:100,width:4,lanes:1,speed:7,name:'Двор',category:'service',sidewalkLeft:false,sidewalkRight:false,bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:0,z:120}],blocked:false};

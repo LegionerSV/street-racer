@@ -30,6 +30,19 @@ it('близкие точки старта используют одинаков
   expect(first.every((key) => /^15\/\d+\/\d+$/.test(key))).toBe(true);
 });
 
+it('на высоком качестве стартовое окно покрывает квадрат 5×5 км', () => {
+  // Arrange
+  const start = { lat: 59.92328049468514, lon: 30.38644871921713 };
+  // Act
+  const policy = mapStreamingPolicy('high');
+  const loaded = new Set(startupTiles(start, policy.blockingRadiusMeters));
+  // Assert
+  expect(policy.blockingRadiusMeters).toBe(2500);
+  for (let x = -10; x < 10; x++)
+    for (let z = -10; z < 10; z++)
+      expect(tileReady(loaded, `${x},${z}`, start)).toBe(true);
+});
+
 it('метровое стартовое окно не сужается на высокой широте', () => {
   // Arrange
   const radius = mapStreamingPolicy('mobile').blockingRadiusMeters,
@@ -55,6 +68,7 @@ it('загружает подготовленные тайлы крупными 
     medium.maxConcurrentTiles,
     high.maxConcurrentTiles,
   ]).toEqual([4, 6, 8, 12]);
+  expect([mobile.maxUpdateTiles, low.maxUpdateTiles, medium.maxUpdateTiles, high.maxUpdateTiles]).toEqual([2, 2, 3, 3]);
 });
 
 it('сохраняет полный запас рядов по направлению движения на высокой широте', () => {

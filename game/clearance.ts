@@ -327,6 +327,31 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
       list.push(e);
       links.set(id, list);
     }
+  const bridgeDistances = new Map<number, number>();
+  if (tunnelTerrain) {
+    const queue: { id: number; d: number }[] = [];
+    for (const edge of physical.filter(e => e.bridge))
+      for (const id of [edge.from, edge.to])
+        if (!bridgeDistances.has(id)) {
+          bridgeDistances.set(id, 0);
+          queue.push({ id, d: 0 });
+        }
+    while (queue.length) {
+      queue.sort((a, b) => b.d - a.d);
+      const { id, d } = queue.pop()!;
+      if (d !== bridgeDistances.get(id) || d >= 100) continue;
+      for (const edge of links.get(id) || []) {
+        if (edge.tunnel) continue;
+        const next = edge.from === id ? edge.to : edge.from;
+        const length = edge.points.slice(1).reduce((sum, p, i) => sum + distance2(p, edge.points[i]), 0);
+        const nd = d + length;
+        if (nd < 100 && nd < (bridgeDistances.get(next) ?? Infinity)) {
+          bridgeDistances.set(next, nd);
+          queue.push({ id: next, d: nd });
+        }
+      }
+    }
+  }
   const visited = new Set<Edge>(),
     groups: Edge[][] = [];
   for (const seed of physical
@@ -426,7 +451,12 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
               (distances.get(e.from) ?? Infinity) + station,
               (distances.get(e.to) ?? Infinity) + total - station,
             );
-        return p.y + rise * (1 - smoother(d / ramp));
+        const bridgeDistance = e.bridge ? 0 : Math.min(
+          (bridgeDistances.get(e.from) ?? Infinity) + station,
+          (bridgeDistances.get(e.to) ?? Infinity) + total - station,
+        );
+        const bridgeProtection = tunnelTerrain ? smoother(bridgeDistance / 100) : 1;
+        return p.y + rise * (1 - smoother(d / ramp)) * bridgeProtection;
       });
       changed.set(
         physicalKey(e),

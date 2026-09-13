@@ -32,6 +32,7 @@ export type MapStreamingPolicy = {
   targetRadiusMeters: number;
   forwardTileRows: number;
   maxConcurrentTiles: number;
+  maxUpdateTiles: number;
   maxElements: number;
 };
 
@@ -42,6 +43,7 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       targetRadiusMeters: 2500,
       forwardTileRows: 1,
       maxConcurrentTiles: 4,
+      maxUpdateTiles: 2,
       maxElements: 180000,
     },
     low: {
@@ -49,6 +51,7 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       targetRadiusMeters: 2700,
       forwardTileRows: 1,
       maxConcurrentTiles: 6,
+      maxUpdateTiles: 2,
       maxElements: 360000,
     },
     medium: {
@@ -56,13 +59,15 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       targetRadiusMeters: 3000,
       forwardTileRows: 2,
       maxConcurrentTiles: 8,
+      maxUpdateTiles: 3,
       maxElements: 360000,
     },
     high: {
-      blockingRadiusMeters: 1000,
+      blockingRadiusMeters: 2500,
       targetRadiusMeters: 3000,
       forwardTileRows: 2,
       maxConcurrentTiles: 12,
+      maxUpdateTiles: 3,
       maxElements: 360000,
     },
   };
@@ -463,7 +468,7 @@ export class RegionStream {
           !this.tiles.has(candidate) &&
           (this.failures.get(candidate) || 0) <= Date.now(),
       )
-      .slice(0, this.policy.maxConcurrentTiles);
+      .slice(0, this.policy.maxUpdateTiles);
     if (!keys.length) return null;
     this.status = 'Загружаем улицы вокруг';
     try {

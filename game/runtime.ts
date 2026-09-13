@@ -9,7 +9,7 @@ import HavokPhysics from '@babylonjs/havok';
 import havokWasm from '@babylonjs/havok/lib/esm/HavokPhysics.wasm?url';
 import type { ChunkData, HUD, MeshData, Point, RaceState, Route, Settings, World, RegionData, WorldPatch } from './types';
 import { WorldWorker } from './worker-client';
-import { desiredChunks,criticalChunks,ChunkInstallQueue } from './chunks';
+import { desiredChunks,criticalChunks,startupDrivingChunks,ChunkInstallQueue } from './chunks';
 import { distance2, pathLengths, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
 import { DrivingInput,drivingKeys,type DrivingKey } from './input';
@@ -40,14 +40,9 @@ type MapUpdateTiming={fetchMs:number;prepareMs:number;commitMs:number;dirtyCount
 export function mapTransitionChunks(
   dirtyChunks: Iterable<string>,
   criticalChunks: Iterable<string>,
-  visibleChunks: Iterable<[string, { lod: number }]>,
 ) {
-  const dirty = new Set(dirtyChunks),
-    result = new Map<string, number>();
-  for (const [key, chunk] of visibleChunks)
-    if (dirty.has(key)) result.set(key, chunk.lod);
-  for (const key of criticalChunks) if (dirty.has(key)) result.set(key, 0);
-  return [...result].map(([key, lod]) => ({ key, lod }));
+  const dirty = new Set(dirtyChunks);
+  return [...criticalChunks].filter(key => dirty.has(key)).map(key => ({ key, lod: 0 }));
 }
 export function mapTransitionBlocksDriving(dirtyChunks:Iterable<string>,criticalChunks:Iterable<string>){
   const dirty=new Set(dirtyChunks);
@@ -138,8 +133,8 @@ export class Game {
       const spawn = world.spawnEdge ? edgeById(world, world.spawnEdge) : undefined; if (!spawn) throw new Error('В этом участке нет дорог для машины. Выберите другой район.');
       game.player.reset(spawn, world.drivingSide);
       game.refreshWanted();
-      const critical=new Set(criticalChunks(game.player.position,game.player.heading,!!world.loadedTiles));
-      const first = game.wanted.filter(c => critical.has(c.key) && c.lod === 0);
+      const startup=new Set(startupDrivingChunks(game.player.position,game.player.heading,settings.quality).map(chunk=>chunk.key));
+      const first = game.wanted.filter(c => startup.has(c.key) && c.lod === 0);
       for (let i = 0; i < first.length; i++) {
         signal.throwIfAborted();
         const prepare=()=>worker.chunk(first[i].key,0,settings.quality==='mobile'?8:32);
@@ -437,11 +432,7 @@ export class Game {
           const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true);
           this.applyingMap=mapTransitionBlocksDriving(patch.dirtyChunks,criticalKeys);
           if(this.applyingMap)this.clearControls();
-          const visibleChunks=new Map<string,{lod:number}>();
-          for(const [key,chunk] of this.chunks)visibleChunks.set(key,chunk);
-          for(const chunk of desiredChunks(this.player.position,this.player.heading,this.settings.quality,true))
-            if(tileReady(nextCoverage,chunk.key,this.world.center))visibleChunks.set(chunk.key,chunk);
-          const transition=mapTransitionChunks(patch.dirtyChunks,criticalKeys,visibleChunks);
+          const transition=mapTransitionChunks(patch.dirtyChunks,criticalKeys);
           const transitionData:ChunkData[]=[];
           for(const chunk of transition)transitionData.push(await this.worker.preparedChunk(chunk.key,chunk.lod));
           if(this.disposed)return;
