@@ -12,8 +12,9 @@ function HeldButton({code,label,className='',children,onInput}:{code:DrivingKey;
   const release=(e:PointerEvent<HTMLButtonElement>)=>{e.preventDefault();up(e.pointerId);};
   return <button type="button" className={'touch-key '+className} aria-label={label} aria-pressed={held} data-pressed={held}
     onContextMenu={e=>e.preventDefault()} onBlur={()=>up(keyboardId)}
-    onPointerDown={e=>{if(e.pointerType==='mouse'&&e.button!==0)return;e.preventDefault();try{e.currentTarget.setPointerCapture(e.pointerId);}catch{return;}down(e.pointerId);}}
+    onPointerDown={e=>{if(e.pointerType==='mouse'&&e.button!==0)return;e.preventDefault();down(e.pointerId);try{e.currentTarget.setPointerCapture(e.pointerId);}catch{/* Нажатие работает и без захвата указателя. */}}}
     onPointerUp={release} onPointerCancel={release} onLostPointerCapture={release}
+    onPointerLeave={e=>{if(!e.currentTarget.hasPointerCapture(e.pointerId))release(e);}}
     onKeyDown={e=>{if(e.code==='Space'||e.code==='Enter'){e.preventDefault();e.stopPropagation();if(!e.repeat)down(keyboardId);}}}
     onKeyUp={e=>{if(e.code==='Space'||e.code==='Enter'){e.preventDefault();e.stopPropagation();up(keyboardId);}}}>
     {children}

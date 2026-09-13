@@ -110,7 +110,7 @@ export class Game {
   private testReport: Record<string, unknown> | null = null;
   private readonly onKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-    if (drivingKeys.has(e.code)) { e.preventDefault(); this.sound.resume(); if(!this.paused&&!this.loading)this.input.press('key:'+e.code,e.code as DrivingKey); }
+    if (drivingKeys.has(e.code)) { e.preventDefault(); this.sound.resume(); if(this.running&&!this.paused)this.input.press('key:'+e.code,e.code as DrivingKey); }
     if (!e.repeat) {
       if (e.code === 'Escape') this.togglePause();
       if (e.code === 'KeyR' && !this.paused) this.recover();
@@ -344,7 +344,6 @@ export class Game {
     const p = this.player.position, h = this.player.heading;
     const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage));
     this.loading = this.preparingRace || this.applyingMap || critical.some(k => this.mapCoverage ? !tileReady(this.mapCoverage,k,this.world.center)||this.chunks.get(k)?.lod!==0||this.staleChunks.has(k) : this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
-    if(this.loading)this.clearControls();
     advanceDrivingPhysics(this.scene,this.engine.getDeltaTime(),!this.paused&&!this.loading);
     if ((!this.mapCoverage&&(Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495)) || p.y < -200 || p.y > 10000) this.recover();
     const bodyForward = this.player.visual.root.getDirection(Vector3.Forward());bodyForward.y=0;bodyForward.normalize();
@@ -431,7 +430,6 @@ export class Game {
           if(this.disposed)return;
           const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true);
           this.applyingMap=mapTransitionBlocksDriving(patch.dirtyChunks,criticalKeys);
-          if(this.applyingMap)this.clearControls();
           const transition=mapTransitionChunks(patch.dirtyChunks,criticalKeys);
           const transitionData:ChunkData[]=[];
           for(const chunk of transition)transitionData.push(await this.worker.preparedChunk(chunk.key,chunk.lod));
@@ -481,7 +479,7 @@ export class Game {
   }
   private clearControls(){this.input.clear();this.player.nitro.interrupt();}
   setTouchControl(pointerId:number,key:DrivingKey,down:boolean){
-    if(down){this.sound.resume();if(this.running&&!this.paused&&!this.loading)this.input.press('touch:'+pointerId,key);}
+    if(down){this.sound.resume();if(this.running&&!this.paused)this.input.press('touch:'+pointerId,key);}
     else this.input.release('touch:'+pointerId);
   }
   togglePause() { this.sound.resume(); this.paused = !this.paused; this.clearControls(); this.emit(); }

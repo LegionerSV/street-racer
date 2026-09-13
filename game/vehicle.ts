@@ -47,13 +47,13 @@ export class PlayerCar {
     const grip=tyreGrip(this.wetness,this.offRoad),v=Math.abs(this.speed);
     this.steering+=(input-this.steering)*(1-Math.exp(-dt*(input===0?12:5.5)));
     // Клавиша задаёт кривизну, а угол колёс дополнительно учитывает увод упругих шин.
-    const frontStiffness=1800,rearStiffness=2200;
-    const maxLateralAcceleration=(this.speed>0&&!handbrake?12.5:8.5)*grip;
+    const frontStiffness=2100,rearStiffness=2200;
+    const maxLateralAcceleration=(this.speed>0&&!handbrake?14:8.5)*grip;
     const safeAngle=Math.atan(maxLateralAcceleration*2.75/Math.max(16,v*v));
-    const baseAngle=this.steering*Math.min(.48,handbrake?Math.max(safeAngle,.22):safeAngle);
+    const baseAngle=this.steering*Math.min(.58,handbrake?Math.max(safeAngle,.22):safeAngle);
     const requestedYaw=Math.tan(baseAngle)*this.speed/2.75;
     const tyreCompensation=!handbrake&&this.speed>3?requestedYaw*1200/2.75*(1.4/(2*frontStiffness)-1.35/(2*rearStiffness)):0;
-    const steerAngle=clamp(baseAngle+tyreCompensation,-.48,.48);
+    const steerAngle=clamp(baseAngle+tyreCompensation,-.58,.58);
     const world=mesh.getWorldMatrix(),physics=this.scene.getPhysicsEngine() as unknown as PhysicsEngine;
     let contacts=0;
     for(let i=0;i<4;i++){

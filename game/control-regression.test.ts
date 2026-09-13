@@ -67,11 +67,11 @@ it('мокрое покрытие увеличивает настоящий то
   expect(distances[1]).toBeGreaterThan(distances[0]*1.2);
 },20000);
 
-it.each([60,80,100,120].flatMap(kmh=>[-1,1].map(side=>[kmh,side])))('после %s км/ч полный руль в сторону %s заметно меняет траекторию',async(kmh,side)=>{
+it.each([36,60,80,100,120].flatMap(kmh=>[-1,1].map(side=>[kmh,side])))('после %s км/ч полный руль в сторону %s заметно меняет траекторию',async(kmh,side)=>{
   // Arrange
   const f=await fixture(),speed=kmh/3.6,start=f.car.position.clone(),key=side>0?'KeyD':'KeyA';
   f.car.aggregate.body.setLinearVelocity(new Vector3(0,0,speed));f.car.aggregate.body.setAngularVelocity(Vector3.Zero());
-  const minHeading:Record<number,number>={60:.8,80:.58,100:.46,120:.36};
+  const minHeading:Record<number,number>={36:1.2,60:.8,80:.58,100:.46,120:.42};
   let distance=0,maxSlip=0,previous=start;
   try{
     // Act — держим заданную скорость педалью, не подменяя движение физического тела.
@@ -82,8 +82,28 @@ it.each([60,80,100,120].flatMap(kmh=>[-1,1].map(side=>[kmh,side])))('после 
     const heading=f.car.heading*side,radius=distance/heading,kmhActual=f.car.groundSpeed*3.6;
     // Assert
     expect(heading,`Радиус начального поворота: ${radius.toFixed(1)} м`).toBeGreaterThan(minHeading[kmh]);expect((f.car.position.x-start.x)*side).toBeGreaterThan(5);
+    if(kmh===36)expect(radius).toBeLessThan(11);
+    if(kmh===120)expect(radius).toBeLessThan(110);
     expect(kmhActual).toBeGreaterThan(kmh*.94);expect(maxSlip).toBeLessThan(.15);
     f.step([],90);expect(Math.abs(f.car.slip)).toBeLessThan(.09);expect(Math.abs(f.car.aggregate.body.getAngularVelocity().y)).toBeLessThan(.12);
+  }finally{f.dispose();}
+},20000);
+
+it.each(['KeyA','KeyD'])('на 18 км/ч поворот %s позволяет развернуться в тесном месте',async key=>{
+  // Arrange
+  const f=await fixture(),speed=18/3.6,start=f.car.position.clone();
+  f.car.aggregate.body.setLinearVelocity(new Vector3(0,0,speed));
+  let distance=0,previous=start;
+  try{
+    // Act
+    for(let i=0;i<180;i++){
+      f.step(f.car.groundSpeed<speed?['KeyW',key]:[key],1);
+      distance+=Vector3.Distance(previous,f.car.position);previous=f.car.position.clone();
+    }
+    const heading=Math.abs(f.car.heading),radius=distance/heading;
+    // Assert
+    expect(heading).toBeGreaterThan(1.4);expect(radius).toBeLessThan(8);
+    expect(Math.abs(f.car.slip)).toBeLessThan(.15);
   }finally{f.dispose();}
 },20000);
 
