@@ -263,7 +263,7 @@ export class Game {
       trunk.thinInstanceSetBuffer('matrix', matrices, 16); foliage.thinInstanceSetBuffer('matrix', leaves, 16); trunk.isPickable = foliage.isPickable = false; meshes.push(trunk, foliage);
     }
     this.chunks.get(chunk.key)?.dispose();
-    const buildingBounds=(indexWorld(this.world).buildings.get(chunk.key)||[]).map(b=>new BoundingBox(new Vector3(Math.min(...b.footprint.map(p=>p.x)),Math.min(...b.footprint.map(p=>p.y))+(b.minHeight||0),Math.min(...b.footprint.map(p=>p.z))),new Vector3(Math.max(...b.footprint.map(p=>p.x)),Math.max(...b.footprint.map(p=>p.y))+b.height,Math.max(...b.footprint.map(p=>p.z)))));
+    const buildingBounds=(indexWorld(this.world).buildings.get(chunk.key)||[]).map(b=>new BoundingBox(new Vector3(Math.min(...b.footprint.map(p=>p.x)),Math.min(...b.footprint.map(p=>p.y))+(b.minHeight||0),Math.min(...b.footprint.map(p=>p.z))),new Vector3(Math.max(...b.footprint.map(p=>p.x)),Math.max(...b.footprint.map(p=>p.y))+(b.envelopeHeight??b.height),Math.max(...b.footprint.map(p=>p.z)))));
     this.chunks.set(chunk.key, { lod: chunk.lod, meshes, bodies, breakables, lamps, buildingBounds, dispose: () => { breakables.forEach(p=>p.body?.dispose()); bodies.forEach(b => b.dispose()); meshes.forEach(m => m.dispose()); } });
     this.installTimings.add(performance.now()-started);
     this.staleChunks.delete(chunk.key);

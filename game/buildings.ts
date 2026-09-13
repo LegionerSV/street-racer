@@ -1,3 +1,4 @@
+import { roofForm } from './roof-forms';
 import earcut from 'earcut';
 import { footprintPrism, subtractPrisms, type Prism } from './geometry';
 import { distance2, mixPoint } from './geo';
@@ -56,6 +57,53 @@ const named: Record<string, string> = {
   green: '#8aab95',
   blue: '#88a5b6',
   black: '#494b4e',
+  dimgray: '#696969',
+  dimgrey: '#696969',
+  paleturquoise: '#afeeee',
+  floralwhite: '#fffaf0',
+  cadetblue: '#5f9ea0',
+  lightgreen: '#90ee90',
+  slategray: '#708090',
+  slategrey: '#708090',
+  darkgoldenrod: '#b8860b',
+  firebrick: '#b22222',
+  peachpuff: '#ffdab9',
+  lightslategrey: '#778899',
+  lightslategray: '#778899',
+  aquamarine: '#7fffd4',
+  peru: '#cd853f',
+  darkslategrey: '#2f4f4f',
+  darkslategray: '#2f4f4f',
+  darkred: '#8b0000',
+  olivedrab: '#6b8e23',
+  burlywood: '#deb887',
+  mediumseagreen: '#3cb371',
+  chocolate: '#d2691e',
+  tomato: '#ff6347',
+  turquoise: '#40e0d0',
+  lightcoral: '#f08080',
+  darkseagreen: '#8fbc8f',
+  lavender: '#e6e6fa',
+  whitesmoke: '#f5f5f5',
+  salmon: '#fa8072',
+  gold: '#d4af37',
+  silver: '#c0c0c0',
+  copper: '#b87333',
+  seagreen: '#2e8b57',
+  darksalmon: '#e9967a',
+  lightgrey: '#d3d3d3',
+  darkgrey: '#a9a9a9',
+  lightgray: '#d3d3d3',
+  darkgray: '#a9a9a9',
+  orange: '#ffa500',
+  pink: '#ffc0cb',
+  lightblue: '#add8e6',
+  darkgreen: '#006400',
+  maroon: '#800000',
+  olive: '#808000',
+  wheat: '#f5deb3',
+  ivory: '#fffff0',
+  lightyellow: '#ffffe0',
 };
 export function facadeStyle(b: Building) {
   return b.material === 'brick'
@@ -65,8 +113,8 @@ export function facadeStyle(b: Building) {
       ? 2
       : 1;
 }
-function colour(b: Building): Colour {
-  let hex = named[b.facadeColour?.toLowerCase() || ''] || b.facadeColour || '';
+function parsedColour(value?: string): Colour | undefined {
+  let hex = named[value?.toLowerCase() || ''] || value || '';
   if (/^#[\da-f]{3}$/i.test(hex))
     hex =
       '#' +
@@ -79,6 +127,11 @@ function colour(b: Building): Colour {
     return [1, 3, 5].map(
       (i) => parseInt(hex.slice(i, i + 2), 16) / 255,
     ) as Colour;
+  return undefined;
+}
+function colour(b: Building): Colour {
+  const explicit = parsedColour(b.facadeColour);
+  if (explicit) return explicit;
   const palettes: Colour[][] = [
     [
       [0.62, 0.34, 0.26],
@@ -136,6 +189,21 @@ export function appendBuilding(
   openings: Prism[] = [],
   foundationFloor?: number,
 ) {
+  if (b.envelopeHeight !== undefined)
+    b = { ...b, height: b.envelopeHeight, roof: 'flat', roofHeight: 0 };
+  // Вдали убирается только мелкий декор уже связанного комплекса.
+  // Узкие высокие башни и отдельные верхушки остаются самостоятельными.
+  if (lod > 0 && b.part && b.group && b.height - (b.minHeight || 0) < 2) {
+    const xs = b.footprint.map((p) => p.x),
+      zs = b.footprint.map((p) => p.z);
+    if (
+      Math.max(...xs) - Math.min(...xs) < 2 &&
+      Math.max(...zs) - Math.min(...zs) < 2
+    )
+      return;
+  }
+  const detailed =
+    lod === 0 && !(b.part && b.group) && b.osmTags?.window !== 'no';
   const polygon = (
     mesh: MeshData,
     points: Point[],
@@ -172,62 +240,42 @@ export function appendBuilding(
       0.3;
   const top = Math.max(...flat.map((p) => p.y)) + b.height,
     c = colour(b),
-    roofColour: Colour = c.map((v) => v * 0.48) as Colour;
-  const pitched =
-    lod === 0 && ['gabled', 'hipped', 'pyramidal', 'skillion'].includes(b.roof);
-  const rise = pitched
-      ? Math.min(
-          b.roofHeight ?? Math.min(4, b.height * 0.2),
-          Math.max(0, (top - floor) * 0.45),
-        )
-      : 0,
-    eaves = top - rise;
-  const longest = b.footprint.reduce(
-    (best, p, i) =>
-      distance2(p, b.footprint[(i + 1) % b.footprint.length]) >
-      distance2(b.footprint[best], b.footprint[(best + 1) % b.footprint.length])
-        ? i
-        : best,
-    0,
+    roofColour: Colour =
+      parsedColour(b.roofColour) ||
+      parsedColour(
+        (
+          {
+            gold: 'gold',
+            copper: 'copper',
+            zinc: 'silver',
+            steel: 'grey',
+            metal: 'grey',
+            tar_paper: 'black',
+            roof_tiles: 'brown',
+            slate: 'grey',
+            glass: 'lightblue',
+          } as Record<string, string>
+        )[b.roofMaterial || ''],
+      ) ||
+      (c.map((v) => v * 0.48) as Colour);
+  const xs = b.footprint.map((p) => p.x),
+    zs = b.footprint.map((p) => p.z);
+  const roofLod =
+    b.part &&
+    b.group &&
+    Math.max(...xs) - Math.min(...xs) < 6 &&
+    Math.max(...zs) - Math.min(...zs) < 6 &&
+    b.height - (b.minHeight || 0) < 3
+      ? Math.max(1, lod)
+      : lod;
+  const { rise, eaves, planes, profile } = roofForm(
+    b,
+    roofLod,
+    top,
+    Math.max(...flat.map((p) => p.y)) + (b.minHeight || 0),
   );
-  const a = b.footprint[longest],
-    end = b.footprint[(longest + 1) % b.footprint.length],
-    l = distance2(a, end) || 1;
-  let ux = (end.z - a.z) / l,
-    uz = -(end.x - a.x) / l;
-  if (b.roofOrientation === 'across') [ux, uz] = [-uz, ux];
-  if (b.roofDirection !== undefined) {
-    ux = Math.sin((b.roofDirection * Math.PI) / 180);
-    uz = Math.cos((b.roofDirection * Math.PI) / 180);
-  }
-  const u = (p: Point) => p.x * ux + p.z * uz,
-    v = (p: Point) => -p.x * uz + p.z * ux;
-  const us = flat.map(u),
-    vs = flat.map(v),
-    u0 = Math.min(...us),
-    u1 = Math.max(...us),
-    v0 = Math.min(...vs),
-    v1 = Math.max(...vs);
-  const hu = Math.max(0.01, (u1 - u0) / 2),
-    hv =
-      b.roof === 'hipped'
-        ? Math.min(hu, (v1 - v0) / 2)
-        : Math.max(0.01, (v1 - v0) / 2);
-  const planes: ((p: Point) => number)[] = !rise
-    ? [() => top]
-    : b.roof === 'skillion'
-      ? [(p) => eaves + (rise * (u(p) - u0)) / (u1 - u0 || 1)]
-      : [
-          (p) => eaves + (rise * (u(p) - u0)) / hu,
-          (p) => eaves + (rise * (u1 - u(p))) / hu,
-        ];
-  if (rise && ['hipped', 'pyramidal'].includes(b.roof))
-    planes.push(
-      (p) => eaves + (rise * (v(p) - v0)) / hv,
-      (p) => eaves + (rise * (v1 - v(p))) / hv,
-    );
   const roofY = (p: Point) => Math.min(...planes.map((plane) => plane(p)));
-  const facade = lod === 0 ? facades[facadeStyle(b)] : shell,
+  const facade = detailed ? facades[facadeStyle(b)] : shell,
     floorHeight = Math.max(
       2.5,
       (eaves - floor) /
@@ -260,7 +308,7 @@ export function appendBuilding(
             { ...start, y: ya },
           ],
           c,
-          lod === 0
+          detailed
             ? [
                 (cuts[j - 1] * length) / 3.6,
                 0,
@@ -274,7 +322,7 @@ export function appendBuilding(
             : undefined,
         );
       }
-      if (lod === 0) {
+      if (detailed) {
         const area = ring.reduce(
             (sum, p, j) =>
               sum +
@@ -314,7 +362,7 @@ export function appendBuilding(
   // Каждая треугольная часть контура режется плоскостями скатов; дворы остаются пустыми.
   for (let i = 0; i < indices.length; i += 3) {
     const triangle = indices.slice(i, i + 3).map((j) => flat[j]);
-    for (let j = 0; j < planes.length; j++) {
+    for (let j = 0; !profile && j < planes.length; j++) {
       let part = triangle;
       for (let k = 0; k < planes.length; k++)
         if (k !== j) part = clip(part, (p) => planes[k](p) - planes[j](p));
@@ -331,5 +379,39 @@ export function appendBuilding(
         [...triangle].reverse().map((p) => ({ ...p, y: floor })),
         roofColour,
       );
+  }
+  if (profile) {
+    const center = b.footprint.reduce(
+      (p, q) => ({
+        x: p.x + q.x / b.footprint.length,
+        y: 0,
+        z: p.z + q.z / b.footprint.length,
+      }),
+      { x: 0, y: 0, z: 0 },
+    );
+    const at = (p: Point, radius: number, y: number) => ({
+      x: center.x + (p.x - center.x) * radius,
+      y: eaves + rise * y,
+      z: center.z + (p.z - center.z) * radius,
+    });
+    for (let j = 1; j < profile.length; j++)
+      for (let i = 0; i < b.footprint.length; i++) {
+        const a = b.footprint[i],
+          bNext = b.footprint[(i + 1) % b.footprint.length],
+          [r0, y0] = profile[j - 1],
+          [r1, y1] = profile[j];
+        polygon(
+          shell,
+          r1 === 0
+            ? [at(a, r0, y0), at(bNext, r0, y0), at(a, 0, y1)]
+            : [
+                at(a, r0, y0),
+                at(bNext, r0, y0),
+                at(bNext, r1, y1),
+                at(a, r1, y1),
+              ],
+          roofColour,
+        );
+      }
   }
 }

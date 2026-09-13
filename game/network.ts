@@ -1,3 +1,5 @@
+import { buildingGroups, isBuildingPart, osmKey, resolveBuildingEnvelopes } from './building-groups';
+import { osmLength, osmDirection } from './roof-forms';
 import { MinHeap } from './min-heap';
 import type { Area, Building, Edge, OSMElement, Point, RegionData, Restriction, RoadNode, Route, World } from './types';
 import { clamp, distance2, pathLengths, polygonContains, resample, sampleElevation, sampleRoadElevation, seeded, smooth, smoothElevation, toLocal, projectOnSegment, offsetElevation } from './geo';
@@ -129,6 +131,7 @@ export function buildWorld(region: RegionData): World {
     const viaWays = r.members.filter(m => m.role === 'via' && m.type === 'way').map(m => m.ref);
     if (from && to && viaWays.length) restrictions.push({ fromWay: from.ref, toWay: to.ref, via: -1, viaWays, only: (r.tags.restriction || '').startsWith('only_'), kind: r.tags.restriction });
   }
+  const { groupOf } = buildingGroups(region.elements, region.center);
   const buildings: Building[] = [], areas: Area[] = [], trees: Point[] = [];
   const ways = new Map(region.elements.filter(e => e.type === 'way').map(e => [e.id, e]));
   const relationWays = new Set<number>();
@@ -150,10 +153,10 @@ export function buildWorld(region: RegionData): World {
     if (footprint.length < 3 || (!coverage && footprint.every(p => Math.abs(p.x) > 2800 || Math.abs(p.z) > 2800))) return;
     const footprintBounds=boundsOf(footprint);
     if(objectBounds && !objectBounds.some(b=>overlaps(b,footprintBounds)))return;
-    if (t.building || t['building:part']) {
+    if ((t.building && t.building !== 'no') || isBuildingPart(t)) {
       const fallback = ['house', 'detached', 'garage', 'garages'].includes(t.building) ? 6 : 10 + Math.floor(seeded(e.id) * 6) * 3;
-      const height = clamp(tagsNumber(t.height, tagsNumber(t['building:levels'], fallback / 3) * 3), 2.5, 260);
-      buildings.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', footprint, holes, height, minHeight: clamp(tagsNumber(t.min_height, tagsNumber(t['building:min_level'], 0) * 3), 0, height - 1), part: !!t['building:part'], colour: seeded(e.id), roof: t['roof:shape'] || 'flat', material:t['building:material'],facadeColour:t['building:colour'],levels:tagsNumber(t['building:levels'],Math.max(1,Math.round(height/3))),kind:t.building,roofHeight:t['roof:height']?Math.max(0,tagsNumber(t['roof:height'],0)):undefined,roofDirection:t['roof:direction']?tagsNumber(t['roof:direction'],0):undefined,roofOrientation:t['roof:orientation'] });
+      const height = clamp(osmLength(t.height) ?? (tagsNumber(t['building:levels'], fallback / 3) * 3 + (osmLength(t['roof:height']) ?? (osmLength(t['roof:levels']) ?? 0)*3)), .1, 600);
+      buildings.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', footprint, holes, height, minHeight: clamp(osmLength(t.min_height) ?? tagsNumber(t['building:min_level'], 0) * 3, 0, height), part: isBuildingPart(t), colour: seeded(e.id), roof: t['roof:shape'] || 'flat', material:t['building:material'] || t['building:facade:material'] || t.material,facadeColour:t['building:colour'] || t['building:facade:colour'] || t['building:facade:color'] || t.colour,levels:tagsNumber(t['building:levels'],Math.max(1,Math.round(height/3))),kind:t.building,roofHeight:osmLength(t['roof:height']),roofDirection:osmDirection(t['roof:direction']),roofAngle:t['roof:angle'] && /^\d+(?:\.\d+)?$/.test(t['roof:angle'])?Number(t['roof:angle']):undefined,roofLevels:osmLength(t['roof:levels']),roofColour:t['roof:colour'],roofMaterial:t['roof:material'],group:groupOf.get(osmKey(e)),osmTags:{...t},roofOrientation:t['roof:orientation'] });
     } else if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir') areas.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', points: footprint, holes, kind: 'water', railing:t.waterway === 'riverbank' || t.water === 'river' ? 'river' : undefined });
     else if (['grass', 'forest', 'recreation_ground', 'meadow'].includes(t.landuse) || t.leisure === 'park' || t.natural === 'wood') {
       const name=t['name:ru']||t.name||'',certainPark=t.leisure==='park'&&/(^|\s)парк(\s|$)/iu.test(name)&&!/сквер/iu.test(name);
@@ -173,6 +176,7 @@ export function buildWorld(region: RegionData): World {
   // Надземные и перекрывающиеся части не должны удалять оставшиеся этажи/крылья.
   const parts=new SpatialGrid<Building>(250,objectBounds);
   for(const b of buildings)if(b.part&&(b.minHeight||0)<=.3)parts.add(b,boundsOf(b.footprint));
+  resolveBuildingEnvelopes(buildings);
   const filteredBuildings = buildings.filter(b => {
     if(b.part)return true;
     const contained=parts.query(boundsOf(b.footprint)).filter(part=>part.id!==b.id&&part.footprint.every(p=>polygonContains(p,b.footprint)||b.footprint.some((a,i)=>projectOnSegment(p,a,b.footprint[(i+1)%b.footprint.length]).distance<.2)));

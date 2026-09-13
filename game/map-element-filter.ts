@@ -1,3 +1,4 @@
+import { buildingGroups, isBuildingPart } from './building-groups';
 import { toLocal } from './geo';
 import { ROAD_TYPES } from './map-object-filters';
 import type { Center, OSMElement } from './types';
@@ -244,7 +245,11 @@ export function reduceMapElements(
       (element.type === 'relation' && tags.type === 'restriction')
     ) {
       retain(element);
-    } else if (tags.building || tags['building:part']) {
+    } else if (
+      (tags.building && tags.building !== 'no') ||
+      isBuildingPart(tags) ||
+      tags.type === 'building'
+    ) {
       if (
         mode !== 'roads' &&
         (tags.name ||
@@ -289,6 +294,15 @@ export function reduceMapElements(
             )))
       )
         retain(element);
+    }
+  }
+
+  if (mode !== 'roads') {
+    const { groups } = buildingGroups(elements, center);
+    for (const [group, members] of groups) {
+      // Вся явно описанная группа или значимая оболочка с её частями.
+      if (kept.has(group) || [...members].some((key) => kept.has(key)))
+        for (const key of members) retain(byKey.get(key));
     }
   }
 
