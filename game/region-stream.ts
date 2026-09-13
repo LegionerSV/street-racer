@@ -2,6 +2,12 @@ import { cacheGet, cachePut, loadElevations, validateCenter } from './data';
 import { criticalChunks } from './chunks';
 import { sampleElevation, toGeo, toLocal } from './geo';
 import type { LoadingLog } from './loading-log';
+import {
+  reduceMapElements,
+  type ElementBreakdown,
+  type ElementReductionStats,
+  type MapDetailMode,
+} from './map-element-filter';
 import { MapSource } from './map-source';
 import {
   createRegionTileSource,
@@ -95,6 +101,7 @@ export const mapTileAt = (p: Pick<Point, 'x' | 'z'>, center: Center) => {
 };
 
 const osmElementKey = (element: OSMElement) => `${element.type}/${element.id}`;
+const DETAIL_MODES: MapDetailMode[] = ['standard', 'minimal', 'roads'];
 
 function uniqueElementCount(tiles: Iterable<MapTile>) {
   const keys = new Set<string>();
@@ -242,7 +249,7 @@ export class RegionStream {
   }[] = [];
   private tileDiagnostics = new Map<
     string,
-    { source?: string; fallback?: string }
+    { source?: string; fallback?: string; filter?: ElementReductionStats }
   >();
   private catalogCache = new Map<
     string,
@@ -250,6 +257,10 @@ export class RegionStream {
   >();
   readonly policy: MapStreamingPolicy;
   readonly maxElements: number;
+  private detailMode: MapDetailMode = 'standard';
+  private startupRawKeys?: Set<string>;
+  private startupRawUnique = 0;
+  private startupKeptUnique = 0;
   private blockingTileCount = 0;
   private targetTileCount = 0;
   status = '';
@@ -312,11 +323,85 @@ export class RegionStream {
       parseSourceTileKey(key),
       this.control.signal,
     );
-    if (result.kind === 'hit') return result.tile;
+    if (result.kind === 'hit') {
+      for (const element of result.tile.elements)
+        this.startupRawKeys?.add(osmElementKey(element));
+      const finish = this.log?.start('Отбор объектов source-тайла', {
+        tile: key,
+        mode: 'standard',
+      });
+      const started = performance.now();
+      const processed = this.reduceTile(result.tile, 'standard');
+      const current = this.tileDiagnostics.get(key) ?? {};
+      current.filter = processed.stats;
+      this.tileDiagnostics.set(key, current);
+      finish?.('success', {
+        rawElements: processed.stats.raw.total,
+        keptElements: processed.stats.kept.total,
+        rawNodes: processed.stats.raw.nodes,
+        keptNodes: processed.stats.kept.nodes,
+        rawBuildings: processed.stats.raw.buildings,
+        keptBuildings: processed.stats.kept.buildings,
+        rawBuildingParts: processed.stats.raw.buildingParts,
+        keptBuildingParts: processed.stats.kept.buildingParts,
+        rawTrees: processed.stats.raw.trees,
+        keptTrees: processed.stats.kept.trees,
+        rawAreas: processed.stats.raw.areas,
+        keptAreas: processed.stats.kept.areas,
+        filterMs: Math.round(performance.now() - started),
+      });
+      return processed.tile;
+    }
     this.control.signal.throwIfAborted();
     throw new Error(
       result.error ?? `Не удалось получить участок карты ${key}.`,
     );
+  }
+
+  private reduceTile(tile: MapTile, mode: MapDetailMode, raw?: ElementBreakdown) {
+    const currentMode = tile.checksum.split('|')[1] as MapDetailMode | undefined,
+      effectiveMode = currentMode && DETAIL_MODES.indexOf(currentMode) > DETAIL_MODES.indexOf(mode)
+        ? currentMode : mode;
+    const filtered = reduceMapElements(
+      tile.elements,
+      sourceTileCenter({ z: tile.z, x: tile.x, y: tile.y }),
+      effectiveMode,
+    );
+    return {
+      tile: {
+        ...tile,
+        elements: filtered.elements,
+        checksum: `${tile.checksum.split('|')[0]}|${effectiveMode}`,
+      },
+      stats: { raw: raw ?? filtered.stats.raw, kept: filtered.stats.kept },
+    };
+  }
+
+  private reduceTileMap(tiles: Map<string, MapTile>, mode: MapDetailMode) {
+    const reduced = new Map<string, MapTile>(),
+      filters = new Map<string, ElementReductionStats>();
+    for (const [key, tile] of tiles) {
+      const result = this.reduceTile(tile, mode, this.tileDiagnostics.get(key)?.filter?.raw);
+      reduced.set(key, result.tile);
+      filters.set(key, result.stats);
+    }
+    return { tiles: reduced, filters };
+  }
+
+  private recordFilters(filters: Map<string, ElementReductionStats>) {
+    for (const [key, filter] of filters) {
+      const current = this.tileDiagnostics.get(key) ?? {};
+      current.filter = filter;
+      this.tileDiagnostics.set(key, current);
+    }
+  }
+
+  private updateDetailMode() {
+    this.detailMode = DETAIL_MODES[Math.max(
+      0,
+      ...[...this.tiles.values()].map((tile) =>
+        DETAIL_MODES.indexOf(tile.checksum.split('|')[1] as MapDetailMode)),
+    )];
   }
 
   private createTileSource(log?: LoadingLog) {
@@ -398,6 +483,7 @@ export class RegionStream {
       this.policy.forwardTileRows,
       this.center,
     ).length;
+    this.startupRawKeys = new Set<string>();
     try {
       const startupElementKeys = new Set<string>();
       let completed = 0;
@@ -416,8 +502,41 @@ export class RegionStream {
           for (const element of tile.elements) startupElementKeys.add(osmElementKey(element));
         }
         this.blockingTileCount = initial.length - this.tiles.size;
+        this.startupRawUnique = this.startupRawKeys.size;
+        this.startupKeptUnique = startupElementKeys.size;
+        for (
+          let modeIndex = 1;
+          startupElementKeys.size > this.maxElements && modeIndex < DETAIL_MODES.length;
+          modeIndex++
+        ) {
+          const mode = DETAIL_MODES[modeIndex],
+            before = startupElementKeys.size,
+            reduced = this.reduceTileMap(this.tiles, mode);
+          this.tiles = reduced.tiles;
+          this.recordFilters(reduced.filters);
+          this.updateDetailMode();
+          startupElementKeys.clear();
+          for (const tile of this.tiles.values())
+            for (const element of tile.elements)
+              startupElementKeys.add(osmElementKey(element));
+          this.startupKeptUnique = startupElementKeys.size;
+          this.log?.start('Упрощение стартового района', {
+            mode,
+            beforeElements: before,
+            afterElements: startupElementKeys.size,
+            elementLimit: this.maxElements,
+          })();
+        }
+        this.log?.start('Бюджет стартового района', {
+          rawUnique: this.startupRawUnique,
+          keptUnique: this.startupKeptUnique,
+          elementLimit: this.maxElements,
+          loadedTiles: this.tiles.size,
+          totalTiles: initial.length,
+          mode: this.detailMode,
+        })();
         if (startupElementKeys.size > this.maxElements)
-          throw new Error('Стартовый район содержит слишком много объектов. Выберите менее плотный участок.');
+          throw new Error(`Дорожная основа стартового района превышает лимит (${startupElementKeys.size} > ${this.maxElements}).`);
       }
       const elevation = {
         width: 2,
@@ -440,6 +559,8 @@ export class RegionStream {
       this.dispose();
       throw error;
     } finally {
+      this.startupRawUnique = this.startupRawKeys?.size ?? this.startupRawUnique;
+      this.startupRawKeys = undefined;
       clearTimeout(deadline);
       signal.removeEventListener('abort', cancel);
     }
@@ -553,21 +674,43 @@ export class RegionStream {
           maxZ: p.z + 350,
         }),
       );
-      const kept = retainTiles(
-          candidate,
+      const retain = (tiles: Map<string, MapTile>) => retainTiles(
+          tiles,
           order,
           pinned,
           new Set([...order, ...pinned]).size,
           this.maxElements,
         ),
-        keptElements = uniqueElementCount(kept.values()),
-        accepted = loaded.filter(
-          (result) =>
-            result.status === 'fulfilled' &&
-            kept.has(result.key) &&
-            keptElements <= this.maxElements &&
-            !this.tiles.has(result.key),
-        );
+        newlyAccepted = (tiles: Map<string, MapTile>) => {
+          const withinBudget = uniqueElementCount(tiles.values()) <= this.maxElements;
+          return loaded.filter(
+            (result) =>
+              result.status === 'fulfilled' &&
+              tiles.has(result.key) &&
+              withinBudget &&
+              !this.tiles.has(result.key),
+          );
+        };
+      let kept = retain(candidate),
+        accepted = newlyAccepted(kept);
+      if (!accepted.length && loaded.some((result) => result.status === 'fulfilled')) {
+        for (let index = 1; index < DETAIL_MODES.length; index++) {
+          const mode = DETAIL_MODES[index],
+            reduced = this.reduceTileMap(candidate, mode),
+            trial = retain(reduced.tiles),
+            trialAccepted = newlyAccepted(trial);
+          if (!trialAccepted.length) continue;
+          kept = trial;
+          accepted = trialAccepted;
+          this.recordFilters(reduced.filters);
+          this.record({
+            at: new Date().toISOString(),
+            tile: trialAccepted.map((result) => result.key).join(', '),
+            fallback: `Упрощение карты: ${mode}`,
+          });
+          break;
+        }
+      }
       if (loaded.some((result) => result.status === 'rejected'))
         this.resetTileSource();
       if (!accepted.length) {
@@ -578,6 +721,7 @@ export class RegionStream {
         return null;
       }
       this.tiles = kept;
+      this.updateDetailMode();
       for (const key of this.tileDiagnostics.keys())
         if (!kept.has(key) && !wanted.has(key))
           this.tileDiagnostics.delete(key);
@@ -591,7 +735,7 @@ export class RegionStream {
             tile: result.key,
             source: this.tileDiagnostics.get(result.key)?.source,
             fallback: this.tileDiagnostics.get(result.key)?.fallback,
-            elements: result.tile.elements.length,
+            elements: kept.get(result.key)?.elements.length,
           });
         }
       return this.snapshot(p);
@@ -633,10 +777,24 @@ export class RegionStream {
       tiles: this.tiles.size,
       blockingTiles: this.blockingTileCount,
       targetTiles: this.targetTileCount,
+      pendingTiles: this.pendingTiles.size,
+      completedTiles: this.completedTiles.length,
       retainedTiles: this.tiles.size,
       policy: this.policy,
       inputElements: uniqueElementCount(this.tiles.values()),
       elementLimit: this.maxElements,
+      filter: {
+        mode: this.detailMode,
+        startupRawUnique: this.startupRawUnique,
+        startupKeptUnique: this.startupKeptUnique,
+        tiles: [...this.tiles.keys()].map((key) => ({
+          tile: key,
+          mode: this.tiles.get(key)?.checksum.split('|')[1],
+          source: this.tileDiagnostics.get(key)?.source,
+          raw: this.tileDiagnostics.get(key)?.filter?.raw,
+          kept: this.tileDiagnostics.get(key)?.filter?.kept,
+        })),
+      },
       status: this.status,
       sources: [...this.tileDiagnostics.values()].reduce<
         Record<string, number>

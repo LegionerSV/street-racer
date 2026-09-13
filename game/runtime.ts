@@ -82,6 +82,7 @@ export class Game {
   private hudClock = 0;
   private previous = Vector3.Zero();
   private loading = true;
+  private loadingReasons: string[] = [];
   private preparingRace=false;
   private message = '';
   private signalMeshes = new Map<number, { node: TransformNode; lamps: Mesh[][] }>();
@@ -343,7 +344,15 @@ export class Game {
     this.pump();
     const p = this.player.position, h = this.player.heading;
     const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage));
-    this.loading = this.preparingRace || this.applyingMap || critical.some(k => this.mapCoverage ? !tileReady(this.mapCoverage,k,this.world.center)||this.chunks.get(k)?.lod!==0||this.staleChunks.has(k) : this.wanted.some(c => c.key === k) && this.chunks.get(k)?.lod !== 0);
+    this.loadingReasons = [];
+    if(this.preparingRace)this.loadingReasons.push('race-preparation');
+    if(this.applyingMap)this.loadingReasons.push('map-transition');
+    for(const key of critical){
+      if(this.mapCoverage&&!tileReady(this.mapCoverage,key,this.world.center))this.loadingReasons.push(`coverage:${key}`);
+      else if(this.mapCoverage&&this.staleChunks.has(key))this.loadingReasons.push(`stale-chunk:${key}`);
+      else if((this.mapCoverage||this.wanted.some(c=>c.key===key))&&this.chunks.get(key)?.lod!==0)this.loadingReasons.push(`chunk:${key}`);
+    }
+    this.loading = this.loadingReasons.length>0;
     advanceDrivingPhysics(this.scene,this.engine.getDeltaTime(),!this.paused&&!this.loading);
     if ((!this.mapCoverage&&(Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495)) || p.y < -200 || p.y > 10000) this.recover();
     const bodyForward = this.player.visual.root.getDirection(Vector3.Forward());bodyForward.y=0;bodyForward.normalize();
@@ -525,7 +534,7 @@ export class Game {
     const data={recordedAt:new Date().toISOString(),center:this.world.center,settings:this.settings,device:navigator.userAgent,performance:this.performanceReport(),diagnostics:this.diagnostics(),map:mapDiagnostics(this.world,this.player.position),sceneChunks:{installed:[...this.chunks].map(([key,c])=>({key,lod:c.lod})),pending:[...this.pending]}};
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='street-racer-performance.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
-  diagnostics() { return { streaming:this.mapStream?.diagnostics(), mapUpdates:this.mapUpdateTimings, performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
+  diagnostics() { return { streaming:this.mapStream?.diagnostics(), mapUpdates:this.mapUpdateTimings, performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, loadingReasons:this.loadingReasons, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
   startDriveTest() {
     if(this.suspendPump)return;
     if (this.driveTest) { this.endDriveTest(); return; }

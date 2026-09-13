@@ -9,7 +9,7 @@ import { Slider } from '@/components/ui/slider';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { validateCenter } from '@/game/data';
-import {RegionStream} from '@/game/region-stream';
+import {RegionStream,mapStreamingPolicy} from '@/game/region-stream';
 import {LoadingLog,readLoadingLog,downloadLoadingLog} from '@/game/loading-log';
 import { WorldWorker } from '@/game/worker-client';
 import type { Game } from '@/game/runtime';
@@ -48,6 +48,7 @@ export default function Home() {
   const [debug, setDebug] = useState(false);
   const [touchDevice,setTouchDevice]=useState(false);
   const touchVisible=settings.touchControls==='on'||settings.touchControls!=='off'&&touchDevice;
+  const startSideKm=mapStreamingPolicy(settings.quality).blockingRadiusMeters*2/1000;
   const [diagnostics, setDiagnostics] = useState<ReturnType<Game['diagnostics']> | null>(null);
   const savedRace = useRef<string | null>(null);
   const gameRef = useRef<Game | null>(null);
@@ -144,7 +145,7 @@ export default function Home() {
     if (!context) return;
     const lifecycle = new AbortController();
     const register = (tool: unknown) => { try { void Promise.resolve(context.registerTool(tool, { signal: lifecycle.signal })).catch(() => {}); } catch { /* WebMCP необязателен для браузера игрока. */ } };
-    register({ name: 'select_driving_region', title: 'Выбрать район', description: 'Выбрать стартовый участок 2 × 2 км с последующей подгрузкой по ходу движения.', inputSchema: { type: 'object', properties: { lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false }, annotations: { readOnlyHint: false }, execute: async (input: unknown) => { const value = input as { lat: number; lon: number }; validateCenter(value); if (stateRef.current.stage !== 'select') throw new Error('Сначала вернитесь к выбору района.'); mapRef.current?.fire('locationselect', value); await new Promise(resolve => requestAnimationFrame(resolve)); return { center: value, sizeKm: 2 }; } });
+    register({ name: 'select_driving_region', title: 'Выбрать район', description: 'Выбрать стартовую точку с последующей подгрузкой улиц по ходу движения.', inputSchema: { type: 'object', properties: { lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false }, annotations: { readOnlyHint: false }, execute: async (input: unknown) => { const value = input as { lat: number; lon: number }; validateCenter(value); if (stateRef.current.stage !== 'select') throw new Error('Сначала вернитесь к выбору района.'); mapRef.current?.fire('locationselect', value); await new Promise(resolve => requestAnimationFrame(resolve)); return { center: value }; } });
     register({ name: 'read_driving_status', title: 'Состояние игры', description: 'Прочитать выбранный район, режим и состояние загрузки игры.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true }, execute: () => ({ ...stateRef.current, game: gameRef.current?.diagnostics() || null }) });
     return () => lifecycle.abort();
   }, []);
@@ -165,7 +166,7 @@ export default function Home() {
       <div className="eyebrow"><span /> СВОБОДНАЯ ЕЗДА + ГОНКИ</div>
       <h1>Знакомые улицы.<br /><em>Другой темп.</em></h1>
       <p className="intro">Выбери точку на карте. Вокруг неё появится твой район для заездов.</p>
-      <div className="region-summary"><MapPin size={20} /><div><b>ТВОЯ ТЕРРИТОРИЯ</b><span>{Math.abs(center.lat).toFixed(4)}° {center.lat < 0 ? 'S' : 'N'} · {Math.abs(center.lon).toFixed(4)}° {center.lon < 0 ? 'W' : 'E'}</span></div><strong>2 × 2<small>КМ · СТАРТ</small></strong></div>
+      <div className="region-summary"><MapPin size={20} /><div><b>ТВОЯ ТЕРРИТОРИЯ</b><span>{Math.abs(center.lat).toFixed(4)}° {center.lat < 0 ? 'S' : 'N'} · {Math.abs(center.lon).toFixed(4)}° {center.lon < 0 ? 'W' : 'E'}</span></div><strong>{startSideKm} × {startSideKm}<small>КМ · МИНИМУМ</small></strong></div>
       <label className="field-label" htmlFor="coords">Координаты центра</label>
       <div className="coordinate-field"><input id="coords" value={coords} onChange={e => setCoords(e.target.value)} onKeyDown={e => e.key === 'Enter' && locate()} /><button onClick={locate} aria-label="Перейти к координатам"><ArrowUpRight size={22} /></button></div>
       <Button className="drive-button" disabled={stage === 'loading'} onClick={start}><span>ВЫЕХАТЬ НА УЛИЦЫ</span><ArrowUpRight size={23} /></Button>
@@ -177,7 +178,7 @@ export default function Home() {
     <footer className={`selection-footer ${touchVisible?'touch-intro':''}`}><span>WASD <i>движение</i></span><span>ПРОБЕЛ <i>ручник</i></span><span>R <i>на дорогу</i></span><span>ESC <i>пауза</i></span><span>SHIFT <i>нитро</i></span>{touchVisible&&<strong>Сенсорные кнопки появятся в игре</strong>}<button onClick={() => setLicenses(true)}>Источники данных</button></footer>
   </main>
   <canvas ref={canvasRef} tabIndex={0} className={`game-canvas ${stage === 'playing' ? 'visible' : ''}`} aria-label="Трёхмерная игра. Управление: WASD, пробел — ручник, R — восстановление, Shift — нитро, Esc — пауза. На телефоне доступны сенсорные кнопки." />
-  {stage === 'loading' && <div className="loading-overlay"><section className="loading-card"><div className="eyebrow"><span /> ПОДГОТОВКА РАЙОНА</div><h2>Твои улицы<br /><em>становятся ближе.</em></h2><div className="loading-line"><output>{progress.text}</output><b>{Math.round(progress.percent)}%</b></div><Progress value={progress.percent} aria-label={progress.text} /><p>Стартовые 4 км² · дальше карта подгружается по ходу движения<br />Прошло {loadingSeconds} с</p><div className="loading-actions"><Button variant="outline" onClick={cancel}>Отменить загрузку</Button><Button variant="outline" onClick={downloadLog}>Скачать лог загрузки</Button></div></section></div>}
+  {stage === 'loading' && <div className="loading-overlay"><section className="loading-card"><div className="eyebrow"><span /> ПОДГОТОВКА РАЙОНА</div><h2>Твои улицы<br /><em>становятся ближе.</em></h2><div className="loading-line"><output>{progress.text}</output><b>{Math.round(progress.percent)}%</b></div><Progress value={progress.percent} aria-label={progress.text} /><p>Сначала подготовим ближайший район · дальше карта подгружается по ходу движения<br />Прошло {loadingSeconds} с</p><div className="loading-actions"><Button variant="outline" onClick={cancel}>Отменить загрузку</Button><Button variant="outline" onClick={downloadLog}>Скачать лог загрузки</Button></div></section></div>}
   {stage === 'playing' && hud && world && <div className={`game-hud ${touchVisible?'touch-layout':''} ${hud.boosting?'nitro-active':''}`}>
     {debug && <div className="debug-panel"><button onClick={() => gameRef.current?.startDriveTest()}>Автопроезд 90 с / стоп</button><button onClick={() => gameRef.current?.visitStructure('bridge')}>Проверить мост</button><button onClick={() => gameRef.current?.visitStructure('tunnel')}>Проверить тоннель</button><button onClick={() => gameRef.current?.resetPerformance()}>Сбросить замеры</button><button onClick={() => gameRef.current?.exportPerformance()}>Скачать замеры</button><pre>{JSON.stringify(diagnostics, null, 2)}</pre></div>}
     <header className="hud-header"><div><div className="eyebrow">STREET RACER / {hud.race ? 'ЗАЕЗД' : 'СВОБОДНАЯ ЕЗДА'}</div><h2>{hud.race?.route.title || hud.street || 'Твой город. Твои правила.'}</h2>{hud.lanes && <small className="lane-status">{hud.lanes}</small>}</div><div className="hud-actions"><span className="weather-status">{String(Math.floor(hud.hour || 0)).padStart(2,'0')}:{String(Math.floor((hud.hour || 0)%1*60)).padStart(2,'0')} · {hud.weather}{(hud.wetness || 0) > .2 && <small> МОКРАЯ ДОРОГА</small>}</span><span>{hud.fps} <small>FPS</small></span><Button variant="outline" size="icon" onClick={() => gameRef.current?.togglePause()} aria-label="Пауза и настройки"><Pause size={18} /></Button></div></header>

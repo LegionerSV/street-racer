@@ -11,8 +11,9 @@ import { createWorldPatch } from './world-patch';
 import { NullEngine, Scene } from '@babylonjs/core';
 import type { RegionData, WorkerRequest, WorkerResponse } from './types';
 import * as data from './data';
-import { latLonToSourceTile, sourceTileBounds, sourceTileKey, type SourceTileId } from './source-tiles';
+import { latLonToSourceTile, sourceTileBounds, sourceTileCenter, sourceTileKey, type SourceTileId } from './source-tiles';
 import type { MapTile } from './region-stream';
+import { LoadingLog } from './loading-log';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -65,6 +66,123 @@ it('загружает стартовые source-тайлы параллельн
     stream.dispose();
   }
 });
+it('сохраняет стартовое покрытие, убирая дворовую геометрию и записывая числа в лог', async () => {
+  // Arrange
+  const { cells } = mockedDownloads();
+  cells.mockResolvedValue([
+    { type: 'node', id: 1, lat: -0.001, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+    { type: 'node', id: 3, lat: 0, lon: 0.002 },
+    { type: 'node', id: 4, lat: 0.0001, lon: 0.002 },
+    { type: 'node', id: 5, lat: 0.0001, lon: 0.0021 },
+    { type: 'way', id: 11, nodes: [3, 4, 5, 3], tags: { building: 'garage' } },
+  ]);
+  const center = { lat: 0, lon: 0 };
+  const log = new LoadingLog(center, 'mobile');
+  const stream = new RegionStream(center, 'mobile', log);
+
+  try {
+    // Act
+    const region = await stream.start(new AbortController().signal, () => {});
+
+    // Assert
+    expect(region.loadedTiles).toHaveLength(blockingTiles(center).length);
+    expect(region.elements.map((element) => `${element.type}/${element.id}`)).toEqual([
+      'node/1', 'node/2', 'way/10',
+    ]);
+    expect(stream.diagnostics().filter).toMatchObject({
+      mode: 'standard', startupRawUnique: 7, startupKeptUnique: 3,
+    });
+    expect(log.snapshot().entries.filter((entry) => entry.stage === 'Отбор объектов source-тайла'))
+      .toHaveLength(blockingTiles(center).length);
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('при переполнении сохраняет все стартовые клетки с дорожной основой', async () => {
+  // Arrange
+  const { cells } = mockedDownloads();
+  cells.mockResolvedValue([
+    { type: 'node', id: 1, lat: -0.001, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+    { type: 'node', id: 3, lat: 0, lon: 0.00005 },
+    { type: 'node', id: 4, lat: 0.0001, lon: 0.00005 },
+    { type: 'node', id: 5, lat: 0.0001, lon: 0.0001 },
+    { type: 'way', id: 11, nodes: [3, 4, 5, 3], tags: { building: 'yes' } },
+  ]);
+  const center = { lat: 0, lon: 0 };
+  const stream = new RegionStream(center, 'mobile');
+  (stream as unknown as { maxElements: number }).maxElements = 3;
+
+  try {
+    // Act
+    const region = await stream.start(new AbortController().signal, () => {});
+
+    // Assert
+    expect(region.loadedTiles).toHaveLength(blockingTiles(center).length);
+    expect(region.elements.map((element) => `${element.type}/${element.id}`)).toEqual([
+      'node/1', 'node/2', 'way/10',
+    ]);
+    expect(stream.diagnostics().filter.mode).toBe('roads');
+    const id = latLonToSourceTile(0.05, 0.05);
+    const tileCenter = sourceTileCenter(id);
+    const base = (stream as unknown as { tiles: Map<string, MapTile> }).tiles.values().next().value!;
+    const source = {
+      load: vi.fn().mockResolvedValue({
+        kind: 'hit', source: 'test', tile: {
+          ...base, ...id, checksum: 'fresh-source', coreBounds: sourceTileBounds(id), bufferedBounds: sourceTileBounds(id),
+          elements: [
+            { type: 'node', id: 1, lat: tileCenter.lat - 0.001, lon: tileCenter.lon },
+            { type: 'node', id: 2, lat: tileCenter.lat + 0.001, lon: tileCenter.lon },
+            { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+            { type: 'node', id: 3, lat: tileCenter.lat, lon: tileCenter.lon + 0.00005 },
+            { type: 'node', id: 4, lat: tileCenter.lat + 0.0001, lon: tileCenter.lon + 0.00005 },
+            { type: 'node', id: 5, lat: tileCenter.lat + 0.0001, lon: tileCenter.lon + 0.0001 },
+            { type: 'way', id: 11, nodes: [3, 4, 5, 3], tags: { building: 'yes' } },
+          ],
+        },
+      }),
+    };
+    (stream as unknown as { tileSource: typeof source }).tileSource = source;
+    const newTile = await (stream as unknown as { fetchTile: (key: string) => Promise<MapTile> }).fetchTile(sourceTileKey(id));
+    expect(newTile.elements.map((element) => element.id)).toContain(11);
+  } finally {
+    stream.dispose();
+  }
+});
+it('записывает точный бюджет в лог, если даже дорожная основа не помещается', async () => {
+  // Arrange
+  const { cells } = mockedDownloads();
+  cells.mockResolvedValue([
+    { type: 'node', id: 1, lat: -0.001, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+  ]);
+  const center = { lat: 0, lon: 0 };
+  const log = new LoadingLog(center, 'mobile');
+  const stream = new RegionStream(center, 'mobile', log);
+  (stream as unknown as { maxElements: number }).maxElements = 2;
+
+  try {
+    // Act
+    const attempt = stream.start(new AbortController().signal, () => {});
+
+    // Assert
+    await expect(attempt)
+      .rejects.toThrow('Дорожная основа стартового района превышает лимит (3 > 2).');
+    expect(log.snapshot().entries.filter((entry) => entry.stage === 'Бюджет стартового района').at(-1)?.details)
+      .toEqual({
+        rawUnique: 3, keptUnique: 3, elementLimit: 2,
+        loadedTiles: stream.policy.maxConcurrentTiles,
+        totalTiles: blockingTiles(center).length, mode: 'roads',
+      });
+  } finally {
+    stream.dispose();
+  }
+});
 it('устанавливает готовую фоновую клетку, не ожидая остальных запросов пакета', async () => {
   // Arrange
   mockedDownloads();
@@ -97,6 +215,57 @@ it('устанавливает готовую фоновую клетку, не 
     for (const [key, resolve] of pending) {
       const id = key.split('/').map(Number);
       resolve(tileFor({ z: id[0], x: id[1], y: id[2] }));
+    }
+    await next;
+    stream.dispose();
+  }
+});
+it('освобождает бюджет декора ради новой дороги впереди', async () => {
+  // Arrange
+  mockedDownloads();
+  const stream = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  await stream.start(new AbortController().signal, () => {});
+  (stream as unknown as { maxElements: number }).maxElements = 4;
+  const base = (stream as unknown as { tiles: Map<string, MapTile> }).tiles.values().next().value!;
+  const pending = new Map<string, (tile: MapTile) => void>();
+  const load = vi.fn((id: SourceTileId) => new Promise<{ kind: 'hit'; source: string; tile: MapTile }>((resolve) => {
+    pending.set(sourceTileKey(id), (tile) => resolve({ kind: 'hit', source: 'test', tile }));
+  }));
+  (stream as unknown as { tileSource: { load: typeof load } }).tileSource = { load };
+  const tileFor = (id: SourceTileId): MapTile => ({
+    ...base, ...id, coreBounds: sourceTileBounds(id), bufferedBounds: sourceTileBounds(id),
+  });
+  const next = stream.next({ x: 0, y: 0, z: 0 }, 0);
+
+  try {
+    // Act
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(stream.policy.maxUpdateTiles));
+    const first = load.mock.calls[0][0];
+    const center = sourceTileCenter(first);
+    pending.get(sourceTileKey(first))!({
+      ...tileFor(first),
+      elements: [
+        { type: 'node', id: 20, lat: center.lat - 0.0005, lon: center.lon },
+        { type: 'node', id: 21, lat: center.lat + 0.0005, lon: center.lon },
+        { type: 'way', id: 22, nodes: [20, 21], tags: { highway: 'residential' } },
+        { type: 'node', id: 30, lat: center.lat, lon: center.lon + 0.00005 },
+        { type: 'node', id: 31, lat: center.lat + 0.0001, lon: center.lon + 0.00005 },
+        { type: 'node', id: 32, lat: center.lat + 0.0001, lon: center.lon + 0.0001 },
+        { type: 'way', id: 33, nodes: [30, 31, 32, 30], tags: { building: 'yes' } },
+      ],
+    });
+    const region = await next;
+
+    // Assert
+    expect(region?.loadedTiles).toContain(sourceTileKey(first));
+    expect(region?.elements.map((element) => `${element.type}/${element.id}`)).toEqual([
+      'node/20', 'node/21', 'way/22',
+    ]);
+    expect(stream.diagnostics().filter.mode).toBe('roads');
+  } finally {
+    for (const [key, resolve] of pending) {
+      const [z, x, y] = key.split('/').map(Number);
+      resolve(tileFor({ z, x, y }));
     }
     await next;
     stream.dispose();
