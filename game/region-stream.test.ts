@@ -30,16 +30,21 @@ it('близкие точки старта используют одинаков
   expect(first.every((key) => /^15\/\d+\/\d+$/.test(key))).toBe(true);
 });
 
-it('на высоком качестве стартовое окно покрывает квадрат 5×5 км', () => {
+it.each([
+  ['mobile', 1500, 6],
+  ['low', 2000, 8],
+  ['medium', 2500, 10],
+  ['high', 2500, 10],
+] as const)('на качестве %s стартовое окно покрывает квадрат радиусом %i м', (quality, radius, chunks) => {
   // Arrange
   const start = { lat: 59.92328049468514, lon: 30.38644871921713 };
   // Act
-  const policy = mapStreamingPolicy('high');
+  const policy = mapStreamingPolicy(quality);
   const loaded = new Set(startupTiles(start, policy.blockingRadiusMeters));
   // Assert
-  expect(policy.blockingRadiusMeters).toBe(2500);
-  for (let x = -10; x < 10; x++)
-    for (let z = -10; z < 10; z++)
+  expect(policy.blockingRadiusMeters).toBe(radius);
+  for (let x = -chunks; x < chunks; x++)
+    for (let z = -chunks; z < chunks; z++)
       expect(tileReady(loaded, `${x},${z}`, start)).toBe(true);
 });
 

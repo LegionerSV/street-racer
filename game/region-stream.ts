@@ -39,7 +39,7 @@ export type MapStreamingPolicy = {
 const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
   {
     mobile: {
-      blockingRadiusMeters: 800,
+      blockingRadiusMeters: 1500,
       targetRadiusMeters: 2500,
       forwardTileRows: 1,
       maxConcurrentTiles: 4,
@@ -47,7 +47,7 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       maxElements: 180000,
     },
     low: {
-      blockingRadiusMeters: 900,
+      blockingRadiusMeters: 2000,
       targetRadiusMeters: 2700,
       forwardTileRows: 1,
       maxConcurrentTiles: 6,
@@ -55,7 +55,7 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       maxElements: 360000,
     },
     medium: {
-      blockingRadiusMeters: 1000,
+      blockingRadiusMeters: 2500,
       targetRadiusMeters: 3000,
       forwardTileRows: 2,
       maxConcurrentTiles: 8,
