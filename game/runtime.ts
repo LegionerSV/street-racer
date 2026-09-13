@@ -268,7 +268,7 @@ export class Game {
     this.staleChunks.delete(chunk.key);
   }
   private refreshWanted() {
-    this.wanted = desiredChunks(this.player.position, this.player.heading, this.settings.quality,!!this.mapCoverage).filter(c=>!this.mapCoverage||tileReady(this.mapCoverage,c.key,this.world.center));
+    this.wanted = desiredChunks(this.player.position, this.player.speed<0?this.player.heading+Math.PI:this.player.heading, this.settings.quality,!!this.mapCoverage,Math.abs(this.player.speed)).filter(c=>!this.mapCoverage||tileReady(this.mapCoverage,c.key,this.world.center));
     const wanted = new Set(this.wanted.map(c => c.key));
     for (const [key, chunk] of this.chunks) if (!wanted.has(key)) { chunk.dispose(); this.chunks.delete(key); this.staleChunks.delete(key); this.installQueue.delete(key);this.patchInstallMetrics.delete(key); }
     for(const key of this.patchInstallMetrics.keys())if(!wanted.has(key)){this.patchInstallMetrics.delete(key);this.installQueue.delete(key);}
@@ -408,7 +408,7 @@ export class Game {
         try{
           const updateStarted=performance.now();
           const position=this.player.position;
-          const region:RegionData|null=awaiting??await stream.next({x:position.x,y:position.y,z:position.z},this.player.heading,()=>({position:{x:this.player.position.x,y:this.player.position.y,z:this.player.position.z},heading:this.player.heading}));
+          const region:RegionData|null=awaiting??await stream.next({x:position.x,y:position.y,z:position.z},this.player.speed<0?this.player.heading+Math.PI:this.player.heading,()=>({position:{x:this.player.position.x,y:this.player.position.y,z:this.player.position.z},heading:this.player.speed<0?this.player.heading+Math.PI:this.player.heading}));
           const fetchedAt=performance.now();
           if(this.disposed)return;
           if(!region){await wait(1500);continue;}

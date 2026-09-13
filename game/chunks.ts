@@ -36,16 +36,23 @@ export class ChunkInstallQueue<T> {
     return {installed,installMs:current-started};
   }
 }
-export function desiredChunks(p: Point, heading: number, quality: Settings['quality'], streaming = false) {
+export function desiredChunks(p: Point, heading: number, quality: Settings['quality'], streaming = false, speedMetersPerSecond = 0) {
   const mobile=quality==='mobile',detail=mobile?250:quality==='high'?750:500;
   const far = mobile ? 650 : quality === 'high' ? 1500 : quality === 'medium' ? 1100 : 800;
   const result: { key: string; lod: number; priority: number }[] = [];
-  const reach = Math.ceil((far + 177) / CHUNK_SIZE), cx = Math.floor(p.x/CHUNK_SIZE), cz = Math.floor(p.z/CHUNK_SIZE);
+  // На скорости 200 км/ч запас в 18 секунд покрывает четыре квартала по 250 м.
+  const lookahead = streaming ? Math.min(4 * CHUNK_SIZE, Math.max(0, speedMetersPerSecond) * 18) : 0;
+  const critical = lookahead ? new Set(criticalChunks(p, heading, true)) : new Set<string>();
+  const reach = Math.ceil((Math.max(far, lookahead) + 177) / CHUNK_SIZE), cx = Math.floor(p.x/CHUNK_SIZE), cz = Math.floor(p.z/CHUNK_SIZE);
   for (let x = streaming ? cx-reach : -10; x < (streaming ? cx+reach+1 : 10); x++) for (let z = streaming ? cz-reach : -10; z < (streaming ? cz+reach+1 : 10); z++) {
     const center = { x: (x + .5) * CHUNK_SIZE, y: 0, z: (z + .5) * CHUNK_SIZE }, d = distance2(center, p);
-    if (d > far + 177) continue;
     const forward = ((center.x - p.x) * Math.sin(heading) + (center.z - p.z) * Math.cos(heading)) / (d || 1);
-    result.push({ key: `${x},${z}`, lod: d <= detail + 177 ? 0 : mobile ? 2 : 1, priority: d - forward * 140 });
+    const forwardMeters = (center.x - p.x) * Math.sin(heading) + (center.z - p.z) * Math.cos(heading);
+    const lateralMeters = Math.abs((center.x - p.x) * Math.cos(heading) - (center.z - p.z) * Math.sin(heading));
+    const ahead = lookahead > 0 && forwardMeters > 0 && forwardMeters <= lookahead && lateralMeters <= CHUNK_SIZE * 1.5;
+    if (d > far + 177 && !ahead) continue;
+    const key = `${x},${z}`;
+    result.push({ key, lod: d <= detail + 177 || ahead ? 0 : mobile ? 2 : 1, priority: (critical.has(key) ? -1_000_000 : ahead ? -10_000 : 0) + d - forward * 140 });
   }
   return result.sort((a, b) => a.priority - b.priority);
 }

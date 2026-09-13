@@ -36,38 +36,42 @@ export type MapStreamingPolicy = {
   maxElements: number;
 };
 
+type TileOutcome =
+  | { key: string; status: 'fulfilled'; tile: MapTile }
+  | { key: string; status: 'rejected'; reason: unknown };
+
 const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
   {
     mobile: {
       blockingRadiusMeters: 1500,
       targetRadiusMeters: 2500,
-      forwardTileRows: 1,
+      forwardTileRows: 4,
       maxConcurrentTiles: 4,
-      maxUpdateTiles: 2,
+      maxUpdateTiles: 4,
       maxElements: 180000,
     },
     low: {
       blockingRadiusMeters: 2000,
       targetRadiusMeters: 2700,
-      forwardTileRows: 1,
+      forwardTileRows: 4,
       maxConcurrentTiles: 6,
-      maxUpdateTiles: 2,
+      maxUpdateTiles: 6,
       maxElements: 360000,
     },
     medium: {
       blockingRadiusMeters: 2500,
       targetRadiusMeters: 3000,
-      forwardTileRows: 2,
+      forwardTileRows: 4,
       maxConcurrentTiles: 8,
-      maxUpdateTiles: 3,
+      maxUpdateTiles: 8,
       maxElements: 360000,
     },
     high: {
       blockingRadiusMeters: 2500,
       targetRadiusMeters: 3000,
-      forwardTileRows: 2,
+      forwardTileRows: 4,
       maxConcurrentTiles: 12,
-      maxUpdateTiles: 3,
+      maxUpdateTiles: 8,
       maxElements: 360000,
     },
   };
@@ -117,6 +121,8 @@ export function tileOrder(
     tileSpanZ = currentBounds.maxZ - currentBounds.minZ,
     forwardX = Math.sin(heading) * tileSpanX * forwardTileRows,
     forwardZ = Math.cos(heading) * tileSpanZ * forwardTileRows,
+    forwardReach = Math.max(tileSpanX, tileSpanZ) * forwardTileRows,
+    corridorWidth = Math.max(tileSpanX, tileSpanZ),
     keys = sourceTileKeysForLocalBounds(center, {
       minX: p.x - radiusMeters + Math.min(0, forwardX),
       maxX: p.x + radiusMeters + Math.max(0, forwardX),
@@ -141,11 +147,16 @@ export function tileOrder(
       local = toLocal(tileCenter.lat, tileCenter.lon, center),
       offsetX = local.x - p.x,
       offsetZ = local.z - p.z,
-      distance = Math.hypot(offsetX, offsetZ);
+      distance = Math.hypot(offsetX, offsetZ),
+      forward = offsetX * Math.sin(heading) + offsetZ * Math.cos(heading),
+      lateral = Math.abs(offsetX * Math.cos(heading) - offsetZ * Math.sin(heading)),
+      ahead = forward > 0 && forward <= forwardReach + 1 && lateral <= corridorWidth;
+    // Передний коридор получает данные раньше боковых улиц, даже если они ближе.
     cells.push({
       key,
       score:
         (blocking.has(key) ? -1_000_000 : 0) +
+        (ahead ? -10_000 : 0) +
         distance -
         ((offsetX * Math.sin(heading) + offsetZ * Math.cos(heading)) /
           (distance || 1)) *
@@ -207,6 +218,9 @@ function countrySide(elements: OSMElement[]): RegionData['drivingSide'] {
 
 export class RegionStream {
   private tiles = new Map<string, MapTile>();
+  private pendingTiles = new Map<string, Promise<void>>();
+  private completedTiles: TileOutcome[] = [];
+  private wakePending?: () => void;
   private source: MapSource;
   private tileSource: ReturnType<typeof createRegionTileSource>;
   private control = new AbortController();
@@ -341,6 +355,20 @@ export class RegionStream {
     this.tileSource = this.createTileSource();
   }
 
+  private requestTile(key: string) {
+    const pending = this.fetchTile(key)
+      .then(
+        (tile): TileOutcome => ({ key, status: 'fulfilled', tile }),
+        (reason): TileOutcome => ({ key, status: 'rejected', reason }),
+      )
+      .then((result) => {
+        this.pendingTiles.delete(key);
+        if (!this.control.signal.aborted) this.completedTiles.push(result);
+        this.wakePending?.();
+      });
+    this.pendingTiles.set(key, pending);
+  }
+
   async start(
     signal: AbortSignal,
     progress: (text: string, n: number) => void,
@@ -462,19 +490,30 @@ export class RegionStream {
     );
     this.targetTileCount = order.length;
     this.blockingTileCount = this.missingBlockingTiles(p, heading);
-    const keys = order
-      .filter(
-        (candidate) =>
-          !this.tiles.has(candidate) &&
-          (this.failures.get(candidate) || 0) <= Date.now(),
-      )
-      .slice(0, this.policy.maxUpdateTiles);
-    if (!keys.length) return null;
+    const slots =
+        this.policy.maxUpdateTiles -
+        this.pendingTiles.size -
+        this.completedTiles.length,
+      keys = order
+        .filter(
+          (candidate) =>
+            !this.tiles.has(candidate) &&
+            !this.pendingTiles.has(candidate) &&
+            !this.completedTiles.some((result) => result.key === candidate) &&
+            (this.failures.get(candidate) || 0) <= Date.now(),
+        )
+        .slice(0, Math.max(0, slots));
+    for (const key of keys) this.requestTile(key);
+    if (!this.pendingTiles.size && !this.completedTiles.length) return null;
     this.status = 'Загружаем улицы вокруг';
     try {
-      const loaded = await Promise.allSettled(
-          keys.map(async (key) => ({ key, tile: await this.fetchTile(key) })),
-        ),
+      if (!this.completedTiles.length)
+        await new Promise<void>((resolve) => {
+          this.wakePending = resolve;
+        });
+      this.wakePending = undefined;
+      this.control.signal.throwIfAborted();
+      const loaded = this.completedTiles.splice(0),
         candidate = new Map(this.tiles);
       const current = latest?.();
       if (current) {
@@ -490,8 +529,8 @@ export class RegionStream {
       }
       this.targetTileCount = order.length;
       const wanted = new Set(order);
-      for (const [index, result] of loaded.entries()) {
-        const key = keys[index];
+      for (const result of loaded) {
+        const key = result.key;
         if (result.status === 'rejected') {
           this.failures.set(key, Date.now() + 30000);
           this.record({
@@ -504,7 +543,7 @@ export class RegionStream {
                 ? result.reason.message
                 : String(result.reason),
           });
-        } else if (wanted.has(key)) candidate.set(key, result.value.tile);
+        } else if (wanted.has(key)) candidate.set(key, result.tile);
       }
       const pinned = new Set(
         sourceTileKeysForLocalBounds(this.center, {
@@ -525,16 +564,16 @@ export class RegionStream {
         accepted = loaded.filter(
           (result) =>
             result.status === 'fulfilled' &&
-            kept.has(result.value.key) &&
+            kept.has(result.key) &&
             keptElements <= this.maxElements &&
-            !this.tiles.has(result.value.key),
+            !this.tiles.has(result.key),
         );
       if (loaded.some((result) => result.status === 'rejected'))
         this.resetTileSource();
       if (!accepted.length) {
         for (const result of loaded)
           if (result.status === 'fulfilled')
-            this.failures.set(result.value.key, Date.now() + 30000);
+            this.failures.set(result.key, Date.now() + 30000);
         this.status = 'Дальние улицы подгрузим, когда вы к ним приблизитесь.';
         return null;
       }
@@ -546,13 +585,13 @@ export class RegionStream {
       this.status = '';
       for (const result of accepted)
         if (result.status === 'fulfilled') {
-          this.failures.delete(result.value.key);
+          this.failures.delete(result.key);
           this.record({
             at: new Date().toISOString(),
-            tile: result.value.key,
-            source: this.tileDiagnostics.get(result.value.key)?.source,
-            fallback: this.tileDiagnostics.get(result.value.key)?.fallback,
-            elements: result.value.tile.elements.length,
+            tile: result.key,
+            source: this.tileDiagnostics.get(result.key)?.source,
+            fallback: this.tileDiagnostics.get(result.key)?.fallback,
+            elements: result.tile.elements.length,
           });
         }
       return this.snapshot(p);
@@ -611,6 +650,9 @@ export class RegionStream {
 
   dispose() {
     this.control.abort();
+    this.wakePending?.();
+    this.pendingTiles.clear();
+    this.completedTiles.length = 0;
     this.tiles.clear();
     this.failures.clear();
     this.tileDiagnostics.clear();

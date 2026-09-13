@@ -11,6 +11,8 @@ import { createWorldPatch } from './world-patch';
 import { NullEngine, Scene } from '@babylonjs/core';
 import type { RegionData, WorkerRequest, WorkerResponse } from './types';
 import * as data from './data';
+import { latLonToSourceTile, sourceTileBounds, sourceTileKey, type SourceTileId } from './source-tiles';
+import type { MapTile } from './region-stream';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -60,6 +62,43 @@ it('загружает стартовые source-тайлы параллельн
     // Assert
     expect(peak).toBeGreaterThanOrEqual(4);
   } finally {
+    stream.dispose();
+  }
+});
+it('устанавливает готовую фоновую клетку, не ожидая остальных запросов пакета', async () => {
+  // Arrange
+  mockedDownloads();
+  const stream = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  await stream.start(new AbortController().signal, () => {});
+  const base = (stream as unknown as { tiles: Map<string, MapTile> }).tiles.values().next().value!,
+    pending = new Map<string, (tile: MapTile) => void>(),
+    load = vi.fn((id: SourceTileId) => new Promise<{ kind: 'hit'; source: string; tile: MapTile }>((resolve) => {
+      pending.set(sourceTileKey(id), (tile) => resolve({ kind: 'hit', source: 'test', tile }));
+    }));
+  (stream as unknown as { tileSource: { load: typeof load } }).tileSource = { load };
+  const tileFor = (id: SourceTileId): MapTile => ({
+    ...base, ...id, coreBounds: sourceTileBounds(id), bufferedBounds: sourceTileBounds(id),
+  });
+  let settled = false;
+  const next = stream.next({ x: 0, y: 0, z: 0 }, 0).then((region) => {
+    settled = true;
+    return region;
+  });
+  try {
+    // Act
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(stream.policy.maxUpdateTiles));
+    expect(load.mock.calls.some(([id]) => id.y <= latLonToSourceTile(0, 0).y - 3)).toBe(true);
+    const first = load.mock.calls[0][0];
+    pending.get(sourceTileKey(first))!(tileFor(first));
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 500 });
+    // Assert
+    expect((await next)?.loadedTiles).toContain(sourceTileKey(first));
+  } finally {
+    for (const [key, resolve] of pending) {
+      const id = key.split('/').map(Number);
+      resolve(tileFor({ z: id[0], x: id[1], y: id[2] }));
+    }
+    await next;
     stream.dispose();
   }
 });

@@ -9,7 +9,8 @@ import {
   tileReady,
   type MapTile,
 } from './region-stream';
-import { parseSourceTileKey, sourceTileBounds } from './source-tiles';
+import { latLonToSourceTile, parseSourceTileKey, sourceTileBounds, sourceTileCenter, sourceTileKey } from './source-tiles';
+import { toLocal } from './geo';
 import {
   TILE_ARTIFACT_SCHEMA_VERSION,
   TILE_BUILD_VERSION,
@@ -73,7 +74,22 @@ it('загружает подготовленные тайлы крупными 
     medium.maxConcurrentTiles,
     high.maxConcurrentTiles,
   ]).toEqual([4, 6, 8, 12]);
-  expect([mobile.maxUpdateTiles, low.maxUpdateTiles, medium.maxUpdateTiles, high.maxUpdateTiles]).toEqual([2, 2, 3, 3]);
+  expect([mobile.maxUpdateTiles, low.maxUpdateTiles, medium.maxUpdateTiles, high.maxUpdateTiles]).toEqual([4, 6, 8, 8]);
+  expect([mobile.forwardTileRows, low.forwardTileRows, medium.forwardTileRows, high.forwardTileRows]).toEqual([4, 4, 4, 4]);
+});
+it('ставит четыре клетки по ходу движения перед соседними боковыми клетками', () => {
+  // Arrange
+  const current = latLonToSourceTile(center.lat, center.lon),
+    tileCenter = sourceTileCenter(current),
+    point = toLocal(tileCenter.lat, tileCenter.lon, center),
+    ahead = sourceTileKey({ ...current, y: current.y - 4 }),
+    side = sourceTileKey({ ...current, x: current.x + 3 });
+  // Act
+  const order = tileOrder(point, 0, 2500, 4, center);
+  // Assert
+  expect(order).toContain(ahead);
+  expect(order).toContain(side);
+  expect(order.indexOf(ahead)).toBeLessThan(order.indexOf(side));
 });
 
 it('сохраняет полный запас рядов по направлению движения на высокой широте', () => {

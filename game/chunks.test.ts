@@ -79,6 +79,20 @@ describe('Подготовка кварталов', () => {
     expect(new Set(criticalChunks({x:125,y:0,z:220},0))).toEqual(new Set(['0,0','0,1']));
     expect(criticalChunks({x:2490,y:0,z:2490},0)).toEqual(['9,9']);
   });
+  it('на скорости 200 км/ч готовит физические кварталы на четыре клетки вперёд', () => {
+    // Arrange
+    const position = { x: 125, y: 0, z: 125 };
+    // Act
+    const slow = desiredChunks(position, 0, 'mobile', true, 0),
+      fast = desiredChunks(position, 0, 'mobile', true, 200 / 3.6),
+      ahead = fast.findIndex((chunk) => chunk.key === '0,4'),
+      side = fast.findIndex((chunk) => chunk.key === '2,0');
+    // Assert
+    expect(slow.some((chunk) => chunk.key === '0,4')).toBe(false);
+    expect(fast[ahead]?.lod).toBe(0);
+    expect(ahead).toBeLessThan(side);
+    expect(fast[0].key).toBe('0,0');
+  });
   it('тротуар не пересекает проезжую часть на перекрёстке',()=>{
     // Arrange
     const edge={id:0,stableId:'1/1/2/0',way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Улица',bridge:false,tunnel:false,layer:0,points:[{x:100,y:0,z:20},{x:100,y:0,z:120}],blocked:false};
