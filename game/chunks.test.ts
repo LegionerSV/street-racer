@@ -56,6 +56,8 @@ describe('Подготовка кварталов', () => {
     const open=buildChunk({...base,areas:[square(3,'water',undefined),square(4,'park',undefined)]},'0,0',0);
     // Assert
     expect(fenced.breakables.filter(p=>p.kind==='fence').length).toBeGreaterThan(0);
+    expect(fenced.breakables.filter(p=>p.kind==='fence').map(p=>p.fenceType)).toContain('embankment');
+    expect(fenced.breakables.filter(p=>p.kind==='fence').map(p=>p.fenceType)).toContain('park');
     expect(open.breakables).toHaveLength(0);
   });
   it('привязывает речное ограждение к тротуару набережной и прерывает его у моста', () => {
@@ -135,6 +137,32 @@ describe('Подготовка кварталов', () => {
     for (let i = 0; i < 1000; i++) budget.touch(String(i), i);
     // Assert
     expect(budget.size).toBe(64); expect(budget.has('999')).toBe(true); expect(budget.has('0')).toBe(false);
+  });
+  it('вытесняет старую геометрию по объёму и не кэширует квартал крупнее бюджета', () => {
+    // Arrange
+    const budget = new ChunkBudget(10, 100, (value: number) => value);
+    budget.touch('old', 60);
+    budget.touch('new', 60);
+    // Act
+    budget.touch('oversized', 120);
+    // Assert
+    expect(budget.has('old')).toBe(false);
+    expect(budget.get('new')).toBe(60);
+    expect(budget.has('oversized')).toBe(false);
+    expect(budget.weight).toBe(60);
+  });
+  it('освобождает объём заменённых и инвалидированных кварталов', () => {
+    // Arrange
+    const budget = new ChunkBudget(10, 100, (value: number) => value);
+    budget.touch('0,0/0', 60);
+    // Act
+    budget.touch('0,0/0', 20);
+    budget.touch('1,0/0', 70);
+    budget.invalidateChunks(['0,0']);
+    // Assert
+    expect(budget.weight).toBe(70);
+    expect(budget.has('0,0/0')).toBe(false);
+    expect(budget.has('1,0/0')).toBe(true);
   });
   it('инвалидирует в кэше только указанные chunkKey на всех LOD', () => {
     // Arrange

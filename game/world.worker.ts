@@ -1,6 +1,6 @@
 import { buildWorld, createRaceRoute } from './network';
 import { reconcileWorld } from './world-update';
-import { buildChunk, ChunkBudget, indexWorld } from './chunks';
+import { buildChunk, chunkCacheWeight, ChunkBudget, indexWorld } from './chunks';
 import type {
   ChunkData,
   WorkerRequest,
@@ -18,7 +18,8 @@ let prepared: World | null = null;
 let preparedPatch: WorldPatch | null = null;
 let registry: SourceTileRegistry | null = null;
 let preparedRegistry: SourceTileRegistry | null = null;
-let cache = new ChunkBudget<ChunkData>(32);
+const newChunkCache = () => new ChunkBudget<ChunkData>(32, 32 * 1024 * 1024, chunkCacheWeight);
+let cache = newChunkCache();
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   try {
@@ -33,7 +34,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       prepared = null;
       preparedPatch = null;
       preparedRegistry = null;
-      cache = new ChunkBudget(32);
+      cache = newChunkCache();
       response = { id: request.id, type: 'committed' };
     } else if (request.type === 'world') {
       world = buildWorld(request.region);
@@ -41,7 +42,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       prepared = null;
       preparedPatch = null;
       preparedRegistry = null;
-      cache = new ChunkBudget(32);
+      cache = newChunkCache();
       indexWorld(world);
       response = { id: request.id, type: 'world', world };
     } else if (request.type === 'prepare' || request.type === 'prepareTiles') {

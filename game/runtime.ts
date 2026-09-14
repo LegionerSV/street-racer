@@ -34,8 +34,9 @@ import {edgeKey} from './world-update';
 import {routeHasCoverage,needsRaceRecovery} from './stream-coverage';
 import {edgeById,edgeStableId} from './road-graph';
 import {nextRaceTurn} from './navigation';
+import {ImpactSpeeds,shouldBreak} from './breakables';
 
-type BreakableLoaded = { mesh: Mesh; pole: boolean; broken: boolean; lamp?: Point; body?: PhysicsAggregate };
+type BreakableLoaded = { mesh: Mesh; pole: boolean; fenceType?: 'park' | 'embankment'; broken: boolean; lamp?: Point; body?: PhysicsAggregate };
 type Loaded = { lod: number; meshes: Mesh[]; bodies: PhysicsAggregate[]; breakables: BreakableLoaded[]; lamps: Point[]; buildingBounds:BoundingBox[]; dispose: () => void };
 type MapUpdateTiming={fetchMs:number;prepareMs:number;commitMs:number;dirtyCount:number;installMs:number;maxFrameDelayMs:number;totalMs:number;tiles:number};
 export function mapTransitionChunks(
@@ -56,6 +57,7 @@ export class Game {
   readonly traffic: Traffic;
   readonly camera: FreeCamera;
   private chunks = new Map<string, Loaded>();
+  private impactSpeeds = new ImpactSpeeds();
   private pending = new Set<string>();
   private installQueue=new ChunkInstallQueue<ChunkData>(3);
   private patchInstallMetrics=new Map<string,MapUpdateTiming>();
@@ -215,6 +217,8 @@ export class Game {
       if (this.driveTest) this.testStep(dt);
       this.player.step(dt, this.keys, this.race?.phase === 'countdown');
       this.traffic.update(dt, this.time, this.player.position, this.player.speed, !!this.race && this.race.phase !== 'countdown', this.race?.elapsed || 0);
+      this.impactSpeeds.capture(this.player.aggregate.body);
+      for(const agent of this.traffic.agents)if(agent.body)this.impactSpeeds.capture(agent.body.body);
     });
     this.scene.onAfterPhysicsObservable.add(() => {
       this.player.afterPhysics(); if (this.paused || this.loading) return;
@@ -258,7 +262,7 @@ export class Game {
       mesh.position.copyFromFloats(prop.point.x,prop.point.y+(pole?3.5:.525),prop.point.z);mesh.rotation.y=prop.heading;mesh.material=this.materials.structures;mesh.isPickable=false;
       if(pole){const head=MeshBuilder.CreateBox('streetlight-head',{width:.7,height:.14,depth:1.4},this.scene);head.parent=mesh;head.position.set(0,3.45,0);head.material=this.materials.windows;head.isPickable=false;}
       const lamp=pole?lamps.find(p=>p.x===prop.point.x&&p.z===prop.point.z):undefined;
-      meshes.push(mesh);breakables.push({mesh,pole,broken:false,lamp});
+      meshes.push(mesh);breakables.push({mesh,pole,fenceType:prop.fenceType,broken:false,lamp});
     }
     if (chunk.trees.length) {
       const trunk = MeshBuilder.CreateCylinder(`${chunk.key}:trunks`, { diameter: .55, height: 7, tessellation: 5 }, this.scene); trunk.material = this.materials.trunk;
@@ -317,14 +321,17 @@ export class Game {
     const activateDistance=70*70,deactivateDistance=95*95;
     for(const chunk of this.chunks.values())for(const prop of chunk.breakables){
       const distance=Vector3.DistanceSquared(prop.mesh.position,this.player.position);
-      if(!prop.body&&distance<activateDistance){
+      if(prop.broken&&prop.body&&distance>deactivateDistance){
+        prop.body.dispose();prop.body=undefined;prop.mesh.setEnabled(false);
+      }else if(!prop.broken&&!prop.body&&distance<activateDistance){
         const body=new PhysicsAggregate(prop.mesh,PhysicsShapeType.BOX,{mass:prop.pole?28:18,friction:.5,restitution:.08},this.scene);
         prop.body=body;body.body.setMotionType(PhysicsMotionType.STATIC);body.body.setCollisionCallbackEnabled(true);
         body.body.getCollisionObservable().add(event=>{
-          if(prop.broken||event.impulse<(prop.pole?500:320))return;
+          const velocity=event.collidedAgainst.getLinearVelocity();
+          if(prop.broken||!shouldBreak({kind:prop.pole?'pole':'fence',fenceType:prop.fenceType},event.impulse,this.impactSpeeds.atContact(event.collidedAgainst)))return;
           prop.broken=true;body.body.setMotionType(PhysicsMotionType.DYNAMIC);
           if(prop.lamp){const i=chunk.lamps.indexOf(prop.lamp);if(i>=0)chunk.lamps.splice(i,1);}
-          const velocity=event.collidedAgainst.getLinearVelocity();body.body.setLinearVelocity(velocity.scale(.7).add(new Vector3(0,1.2,0)));body.body.setAngularVelocity(new Vector3(velocity.z*.12,0,-velocity.x*.12));
+          body.body.setLinearVelocity(velocity.scale(.7).add(new Vector3(0,1.2,0)));body.body.setAngularVelocity(new Vector3(velocity.z*.12,0,-velocity.x*.12));
         });
       }else if(prop.body&&!prop.broken&&distance>deactivateDistance){prop.body.dispose();prop.body=undefined;}
     }

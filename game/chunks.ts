@@ -13,13 +13,24 @@ import { CHUNK_SIZE, distance2, mixPoint, polygonContains, projectOnSegment, sam
 
 export class ChunkBudget<T> {
   private entries = new Map<string, T>();
-  constructor(public limit: number) {}
-  setLimit(limit:number){this.limit=Math.max(1,Math.floor(limit));while(this.entries.size>this.limit)this.entries.delete(this.entries.keys().next().value!);}
+  private weights = new Map<string, number>();
+  private totalWeight = 0;
+  constructor(public limit: number, readonly maxWeight = Infinity, private weightOf: (value: T) => number = () => 1) {}
+  get weight() { return this.totalWeight; }
+  private delete(key: string) { this.totalWeight -= this.weights.get(key) ?? 0; this.weights.delete(key); this.entries.delete(key); }
+  private trim() { while (this.entries.size > this.limit || this.totalWeight > this.maxWeight) this.delete(this.entries.keys().next().value!); }
+  setLimit(limit:number){this.limit=Math.max(1,Math.floor(limit));this.trim();}
   get size() { return this.entries.size; }
   has(key: string) { return this.entries.has(key); }
   get(key: string) { const item = this.entries.get(key); if (item !== undefined) this.touch(key, item); return item; }
-  touch(key: string, value: T) { this.entries.delete(key); this.entries.set(key, value); while (this.entries.size > this.limit) this.entries.delete(this.entries.keys().next().value!); }
-  invalidateChunks(keys:Iterable<string>){const dirty=new Set(keys);for(const key of this.entries.keys())if(dirty.has(key.slice(0,key.lastIndexOf('/'))))this.entries.delete(key);}
+  touch(key: string, value: T) { this.delete(key); const weight=Math.max(0,this.weightOf(value)); if(weight>this.maxWeight)return; this.entries.set(key,value); this.weights.set(key,weight); this.totalWeight+=weight; this.trim(); }
+  invalidateChunks(keys:Iterable<string>){const dirty=new Set(keys);for(const key of this.entries.keys())if(dirty.has(key.slice(0,key.lastIndexOf('/'))))this.delete(key);}
+}
+export function chunkCacheWeight(chunk: ChunkData) {
+  const meshes = [chunk.terrain, chunk.road, chunk.shoulders, chunk.sidewalks, chunk.landmarks, ...(chunk.facades ?? []), chunk.markings, chunk.structures, chunk.treeTrunks, chunk.buildings, chunk.windows, chunk.water];
+  // JS-массивы хранят числа и индексы; считаем минимум 8 байт на значение.
+  return meshes.reduce((sum, mesh) => sum + (mesh ? (mesh.positions.length + mesh.indices.length + (mesh.normals?.length ?? 0) + (mesh.colors?.length ?? 0) + (mesh.uvs?.length ?? 0)) * 8 : 0), 0)
+    + (chunk.trees.length + chunk.lamps.length + chunk.breakables.length) * 96;
 }
 export class ChunkInstallQueue<T> {
   private entries=new Map<string,T>();
@@ -356,7 +367,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       const bank=choices[0];
       if(bank&&bank.score<24)for(const span of embankmentRailingSpans(bank.aa,bank.bb,index.spatial.query(boundsOf([bank.aa,bank.bb],20)))){
         const spanLength=distance2(span.a,span.b),parts=Math.max(1,Math.ceil(spanLength/10));
-        for(let j=0;j<parts;j++){const p=mixPoint(span.a,span.b,j/parts),q=mixPoint(span.a,span.b,(j+1)/parts),mid=mixPoint(p,q,.5);result.breakables.push({kind:'fence',point:mid,heading:Math.atan2(q.x-p.x,q.z-p.z),length:distance2(p,q)});}
+        for(let j=0;j<parts;j++){const p=mixPoint(span.a,span.b,j/parts),q=mixPoint(span.a,span.b,(j+1)/parts),mid=mixPoint(p,q,.5);result.breakables.push({kind:'fence',fenceType:'embankment',point:mid,heading:Math.atan2(q.x-p.x,q.z-p.z),length:distance2(p,q)});}
       }
     }
   }
@@ -409,7 +420,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       for(let j=0;j<parts;j++){
         const p=mixPoint(a,b,j/parts),q=mixPoint(a,b,(j+1)/parts),mid=mixPoint(p,q,.5);
         if(tileKey(mid.x,mid.z)!==key)continue;
-        result.breakables.push({kind:'fence',point:mid,heading:Math.atan2(q.x-p.x,q.z-p.z),length:distance2(p,q)});
+        result.breakables.push({kind:'fence',fenceType:'park',point:mid,heading:Math.atan2(q.x-p.x,q.z-p.z),length:distance2(p,q)});
       }
     }
   }
