@@ -1,11 +1,13 @@
 import type { Center, OSMElement, RegionData } from './types';
+import { TERRAIN_GRID_SIZE, TERRAIN_GRID_WIDTH } from './terrain-policy';
+import { sampleGroundFootprint } from './dem-sampling';
 import { bounds, decodeTerrarium, toGeo, lerp } from './geo';
 import { MapSource, splitMapBox } from './map-source';
 import type { LoadingLog } from './loading-log';
 export { abortableDelay } from './map-source';
 
 const DB_NAME = 'street-racer-v1';
-export const CACHE_VERSION = 1;
+export const CACHE_VERSION = 2;
 export const regionKey = (center: Center) =>
   `region:${CACHE_VERSION}:${center.lat.toFixed(4)}:${center.lon.toFixed(4)}:5000`;
 export function validateCenter(center: Center) {
@@ -85,11 +87,31 @@ export async function loadElevations(
   signal: AbortSignal,
   progress: (text: string, percent: number) => void,
   log?: LoadingLog,
-  shape = { size: 5600, width: 257, offsetX: 0, offsetZ: 0 },
+  shape = {
+    size: TERRAIN_GRID_SIZE,
+    width: TERRAIN_GRID_WIDTH,
+    offsetX: 0,
+    offsetZ: 0,
+  },
 ) {
-  const sw = toGeo({x:shape.offsetX-shape.size/2,y:0,z:shape.offsetZ-shape.size/2},center), ne = toGeo({x:shape.offsetX+shape.size/2,y:0,z:shape.offsetZ+shape.size/2},center);
+  const sw = toGeo(
+      {
+        x: shape.offsetX - shape.size / 2,
+        y: 0,
+        z: shape.offsetZ - shape.size / 2,
+      },
+      center,
+    ),
+    ne = toGeo(
+      {
+        x: shape.offsetX + shape.size / 2,
+        y: 0,
+        z: shape.offsetZ + shape.size / 2,
+      },
+      center,
+    );
   const z = 12,
-    box = {south:sw.lat,west:sw.lon,north:ne.lat,east:ne.lon},
+    box = { south: sw.lat, west: sw.lon, north: ne.lat, east: ne.lon },
     nw = tileCoord(box.north, box.west, z),
     se = tileCoord(box.south, box.east, z);
   const images = new Map<string, Uint8ClampedArray>(),
@@ -187,8 +209,21 @@ export async function loadElevations(
         lerp(c, d, px - ix),
         py - iy,
       );
+      if (size >= TERRAIN_GRID_SIZE)
+        values[j * width + i] =
+          sampleGroundFootprint(px, py, size / (width - 1), p.lat, z, height) ??
+          values[j * width + i];
     }
-  return { width, size, values, offsetX: shape.offsetX, offsetZ: shape.offsetZ };
+  return {
+    width,
+    size,
+    values,
+    offsetX: shape.offsetX,
+    offsetZ: shape.offsetZ,
+    ...(size >= TERRAIN_GRID_SIZE
+      ? { sampling: 'ground-minimum-v1' as const }
+      : {}),
+  };
 }
 export async function loadRegion(
   center: Center,

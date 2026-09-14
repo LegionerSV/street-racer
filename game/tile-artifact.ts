@@ -172,6 +172,8 @@ function validateElevation(grid: ElevationGrid) {
       fail('invalid-elevation', 'Патчи сетки высот должны быть массивом.');
     for (const patch of grid.patches) validateElevation(patch);
   }
+  if (grid.sampling !== undefined && grid.sampling !== 'ground-minimum-v1')
+    fail('invalid-elevation', 'Неизвестный способ выборки высот source-тайла.');
 }
 
 function validateArtifact(input: TileArtifactV1Input) {
@@ -262,6 +264,7 @@ function encodeElevation(grid: ElevationGrid): EncodedElevationGrid {
     ...(grid.sizeZ === undefined ? {} : { sizeZ: grid.sizeZ }),
     ...(grid.offsetX === undefined ? {} : { offsetX: grid.offsetX }),
     ...(grid.offsetZ === undefined ? {} : { offsetZ: grid.offsetZ }),
+    ...(grid.sampling === undefined ? {} : { sampling: grid.sampling }),
     values: {
       encoding: 'float32-le',
       length: grid.values.length,
@@ -295,6 +298,9 @@ function decodeElevation(value: unknown): ElevationGrid {
   const grid: ElevationGrid = {
     width: value.width as number,
     size: value.size as number,
+    ...(value.sampling === undefined
+      ? {}
+      : { sampling: value.sampling as ElevationGrid['sampling'] }),
     ...(value.sizeX === undefined ? {} : { sizeX: value.sizeX as number }),
     ...(value.sizeZ === undefined ? {} : { sizeZ: value.sizeZ as number }),
     values,

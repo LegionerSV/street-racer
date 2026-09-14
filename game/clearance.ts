@@ -120,12 +120,11 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
     peers = bridgePeers(physical),
     links = new Map<number, Edge[]>();
   for (const edge of physical)
-    if (!edge.bridge && !edge.tunnel)
-      for (const id of [edge.from, edge.to]) {
-        const list = links.get(id) || [];
-        list.push(edge);
-        links.set(id, list);
-      }
+    for (const id of [edge.from, edge.to]) {
+      const list = links.get(id) || [];
+      list.push(edge);
+      links.set(id, list);
+    }
   const joins = new Map<string, { a: Point; b: Point; radius: number }[]>();
   const junctions = (a: Edge, b: Edge) => {
     const key = `${a.id}/${b.id}`,
@@ -133,8 +132,8 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
     if (cached) return cached;
     const result: { a: Point; b: Point; radius: number }[] = [],
       radius = Math.min(
-        20,
-        (a.width + b.width) / 2 + 2 * (SIDEWALK_WIDTH + CURB_WIDTH),
+        40,
+        a.width + b.width + 2 * (SIDEWALK_WIDTH + CURB_WIDTH),
       );
     for (const [start, point] of [
       [a.from, a.points[0]],
@@ -154,6 +153,15 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
         }
         for (const edge of links.get(id) || []) {
           if (edge === a || edge === b) continue;
+          // Узлы OSM делят и мост, и примыкающую к нему набережную на рёбра.
+          // Их собственные короткие продолжения сохраняют общее примыкание,
+          // даже если теги layer различаются (Казанский мост).
+          if (
+            (edge.bridge || edge.tunnel) &&
+            edge.way !== a.way &&
+            edge.way !== b.way
+          )
+            continue;
           const next = edge.from === id ? edge.to : edge.from;
           const length = edge.points
               .slice(1)
@@ -331,7 +339,7 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
   const bridgeDistances = new Map<number, number>();
   if (tunnelTerrain) {
     const queue = new MinHeap<{ id: number; d: number }>((a, b) => a.d - b.d);
-    for (const edge of physical.filter(e => e.bridge))
+    for (const edge of physical.filter((e) => e.bridge))
       for (const id of [edge.from, edge.to])
         if (!bridgeDistances.has(id)) {
           bridgeDistances.set(id, 0);
@@ -343,7 +351,9 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
       for (const edge of links.get(id) || []) {
         if (edge.tunnel) continue;
         const next = edge.from === id ? edge.to : edge.from;
-        const length = edge.points.slice(1).reduce((sum, p, i) => sum + distance2(p, edge.points[i]), 0);
+        const length = edge.points
+          .slice(1)
+          .reduce((sum, p, i) => sum + distance2(p, edge.points[i]), 0);
         const nd = d + length;
         if (nd < 100 && nd < (bridgeDistances.get(next) ?? Infinity)) {
           bridgeDistances.set(next, nd);
@@ -450,11 +460,15 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
               (distances.get(e.from) ?? Infinity) + station,
               (distances.get(e.to) ?? Infinity) + total - station,
             );
-        const bridgeDistance = e.bridge ? 0 : Math.min(
-          (bridgeDistances.get(e.from) ?? Infinity) + station,
-          (bridgeDistances.get(e.to) ?? Infinity) + total - station,
-        );
-        const bridgeProtection = tunnelTerrain ? smoother(bridgeDistance / 100) : 1;
+        const bridgeDistance = e.bridge
+          ? 0
+          : Math.min(
+              (bridgeDistances.get(e.from) ?? Infinity) + station,
+              (bridgeDistances.get(e.to) ?? Infinity) + total - station,
+            );
+        const bridgeProtection = tunnelTerrain
+          ? smoother(bridgeDistance / 100)
+          : 1;
         return p.y + rise * (1 - smoother(d / ramp)) * bridgeProtection;
       });
       changed.set(

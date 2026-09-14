@@ -59,6 +59,7 @@ export class VehicleLighting {
         scene,
       );
       light.diffuse = new Color3(0.76, 0.88, 1);
+      light.specular = Color3.Black();
       light.range = 55;
       light.intensity = 0;
       light.renderPriority = 10 - i;
@@ -105,6 +106,7 @@ export class VehicleLighting {
         changed = entry.owner !== car;
       entry.owner = car;
       entry.light.setEnabled(active);
+      entry.light.shadowEnabled = active && daylight < 0.65;
       if (!car || !active) {
         entry.light.parent = null;
         entry.shadow.getShadowMap()!.renderList = [];
@@ -129,7 +131,8 @@ export class VehicleLighting {
         entry.light.direction,
       );
       entry.light.direction.normalize();
-      entry.light.intensity = i === 0 ? 12 : 8;
+      entry.light.intensity =
+        (i === 0 ? 2.4 : 1.6) * (1 - Math.max(0, Math.min(1, daylight)) * 0.85);
       if (refresh || changed)
         entry.shadow.getShadowMap()!.renderList = headlightCasters(
           this.scene,

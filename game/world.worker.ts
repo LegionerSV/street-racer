@@ -23,7 +23,19 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   try {
     let response: WorkerResponse;
-    if (request.type === 'world') {
+    if (request.type === 'adopt') {
+      world = request.world;
+      registry = request.sourceTiles
+        ? SourceTileRegistry.fromRegion({
+            sourceTiles: request.sourceTiles,
+          } as import('./types').RegionData)
+        : null;
+      prepared = null;
+      preparedPatch = null;
+      preparedRegistry = null;
+      cache = new ChunkBudget(32);
+      response = { id: request.id, type: 'committed' };
+    } else if (request.type === 'world') {
       world = buildWorld(request.region);
       registry = SourceTileRegistry.fromRegion(request.region);
       prepared = null;

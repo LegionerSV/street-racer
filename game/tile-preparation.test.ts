@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { createRegionTileSource } from './region-tile-source';
 import { sourceTileBounds, sourceTileCenter } from './source-tiles';
 import { decodeTileArtifact, encodeTileArtifact } from './tile-artifact';
+import { IndexedDbTileSource } from './tile-source';
 import {
   prepareTileArtifact,
   type TilePreparationAdapters,
@@ -10,6 +11,59 @@ import {
 const tileId = { z: 15, x: 19808, y: 10243 } as const;
 const generatedAt = '2026-09-10T12:00:00.000Z';
 const savedAt = Date.parse('2026-09-09T08:30:00.000Z');
+
+it('обновляет узкий DEM сохранённого source-тайла без повторного запроса OSM и кэширует высоты отдельно', async () => {
+  // Arrange
+  const adapters = fixtureAdapters();
+  const old = decodeTileArtifact(
+    encodeTileArtifact(
+      await prepareTileArtifact(
+        tileId,
+        new AbortController().signal,
+        { tileMargin: 300, elevationSize: 700, elevationWidth: 2, generatedAt },
+        adapters,
+      ),
+    ),
+  );
+  const values = new Map<string, unknown>();
+  const store = {
+    get: async <T>(key: string) => values.get(key) as T | undefined,
+    put: async <T>(key: string, value: T) => {
+      values.set(key, value);
+    },
+  };
+  await new IndexedDbTileSource(store).save(
+    tileId,
+    old,
+    new AbortController().signal,
+  );
+  const map = vi.fn(adapters.map),
+    elevation = vi.fn(async (_center, _signal, shape) => ({
+      ...shape,
+      values: new Float32Array(shape.width ** 2).fill(100),
+    }));
+  const source = createRegionTileSource({
+    elevationSize: 2600,
+    elevationWidth: 131,
+    tileMargin: 300,
+    ...store,
+    mapCell: map,
+    loadElevation: elevation,
+    drivingSide: adapters.drivingSide,
+  });
+  // Act
+  const first = await source.load(tileId, new AbortController().signal);
+  const second = await source.load(tileId, new AbortController().signal);
+  // Assert
+  expect(first.kind).toBe('hit');
+  expect(second.kind).toBe('hit');
+  if (first.kind !== 'hit' || second.kind !== 'hit') return;
+  expect(first.tile.elements).toEqual(old.elements);
+  expect(first.tile.elevation).toMatchObject({ size: 2600, width: 131 });
+  expect(second.tile.elevation).toEqual(first.tile.elevation);
+  expect(elevation).toHaveBeenCalledTimes(1);
+  expect(map).not.toHaveBeenCalled();
+});
 
 function fixtureAdapters(): TilePreparationAdapters {
   return {

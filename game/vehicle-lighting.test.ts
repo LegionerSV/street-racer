@@ -3,6 +3,32 @@ import { NullEngine, Scene, Vector3 } from '@babylonjs/core';
 import { createCar, createTrafficCar } from './visuals';
 import { headlightCasters, VehicleLighting } from './vehicle-lighting';
 
+it('дневной свет фар не выбеливает асфальт, кузова и ограждения', () => {
+  // Arrange
+  const engine = new NullEngine(),
+    scene = new Scene(engine),
+    car = createCar(scene, '#223344', 'player'),
+    lights = new VehicleLighting(scene);
+  try {
+    // Act
+    lights.update(1, car, [], 'medium', 1);
+    const beam = scene.getLightByName('vehicle-beam-0')!;
+    // Assert — в ясный день пучок не конкурирует с солнцем и не даёт белый блик.
+    expect(beam.intensity).toBeLessThanOrEqual(0.5);
+    expect(beam.specular.asArray()).toEqual([0, 0, 0]);
+    expect(beam.shadowEnabled).toBe(false);
+    lights.update(1, car, [], 'medium', 0);
+    expect(beam.intensity).toBeGreaterThan(1);
+    expect(beam.intensity).toBeLessThanOrEqual(3);
+    expect(beam.shadowEnabled).toBe(true);
+  } finally {
+    lights.dispose();
+    car.dispose();
+    scene.dispose();
+    engine.dispose();
+  }
+});
+
 it('переиспользует фары после выгрузки трафика и сохраняет малые карты теней на телефоне', () => {
   // Arrange
   const engine = new NullEngine(),

@@ -42,15 +42,17 @@ it('подавляет городской пик размером в кварт�
 });
 it('не превращает невысокий естественный подъём в локальную низину', () => {
   // Arrange — подъём на четыре метра слишком мал, чтобы считать его зданием или кроной дерева.
-  const width=161,size=3200;
-  const values=Float32Array.from({length:width*width},(_,i)=>{
-    const x=((i%width)-80)*20,z=(Math.floor(i/width)-80)*20;
-    return 68+(Math.abs(x)<180&&Math.abs(z)<180?4:0);
+  const width = 161,
+    size = 3200;
+  const values = Float32Array.from({ length: width * width }, (_, i) => {
+    const x = ((i % width) - 80) * 20,
+      z = (Math.floor(i / width) - 80) * 20;
+    return 68 + (Math.abs(x) < 180 && Math.abs(z) < 180 ? 4 : 0);
   });
   // Act
-  const filtered=smoothElevation({width,size,values});
+  const filtered = smoothElevation({ width, size, values });
   // Assert
-  expect(sampleRoadElevation(filtered,0,0)).toBeGreaterThan(71);
+  expect(sampleRoadElevation(filtered, 0, 0)).toBeGreaterThan(71);
 });
 it('снижает перепад на Адмиралтейском проспекте в исходном DEM', () => {
   // Arrange
@@ -70,14 +72,15 @@ it('сохраняет одинаковые высоты на стыке нез�
   // Arrange — асимметричный рельеф и пики возле общей границы.
   const width = ELEVATION_TILE_WIDTH,
     size = ELEVATION_TILE_SIZE;
+  const step = size / (width - 1);
   const patch = (offsetX: number) => ({
     width,
     size,
     offsetX,
     offsetZ: 500,
     values: Float32Array.from({ length: width * width }, (_, i) => {
-      const x = offsetX - size / 2 + (i % width) * 20,
-        z = 500 - size / 2 + Math.floor(i / width) * 20;
+      const x = offsetX - size / 2 + (i % width) * step,
+        z = 500 - size / 2 + Math.floor(i / width) * step;
       return (
         x * 0.01 +
         Math.sin(z / 230) * 5 +
@@ -86,12 +89,15 @@ it('сохраняет одинаковые высоты на стыке нез�
     }),
   });
   // Act
-  const left = smoothElevation(patch(500)),
-    right = smoothElevation(patch(1500));
+  const center = Math.round(500 / step) * step,
+    separation = Math.round(1000 / step) * step,
+    seam = center + separation / 2;
+  const left = smoothElevation(patch(center)),
+    right = smoothElevation(patch(center + separation));
   // Assert
   for (let z = 0; z <= 1000; z += 25)
-    expect(sampleRoadElevation(left, 1000, z)).toBeCloseTo(
-      sampleRoadElevation(right, 1000, z),
+    expect(sampleRoadElevation(left, seam, z)).toBeCloseTo(
+      sampleRoadElevation(right, seam, z),
       4,
     );
 });

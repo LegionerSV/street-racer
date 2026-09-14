@@ -71,6 +71,19 @@ function expectArtifactError(
 }
 
 describe('TileArtifactV1', () => {
+  it('сохраняет способ выборки DEM при кодировании и декодировании', () => {
+    // Arrange
+    const input = artifact();
+    input.elevation.sampling = 'ground-minimum-v1';
+
+    // Act
+    const decoded = decodeTileArtifact(encodeTileArtifact(input), tileId);
+
+    // Assert
+    expect(decoded.elevation.sampling).toBe('ground-minimum-v1');
+    expect(decoded.elevation.values).toEqual(input.elevation.values);
+  });
+
   it('точно восстанавливает OSM и Float32Array после JSON round-trip', () => {
     // Arrange
     const input = artifact();

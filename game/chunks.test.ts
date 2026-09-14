@@ -4,6 +4,16 @@ import type { World } from './types';
 import { polygonContains } from './geo';
 
 describe('Подготовка кварталов', () => {
+  it.each(['mobile','low','medium'] as const)('готовит окружение стартовой машины со всех сторон: %s', quality => {
+    // Arrange
+    const position = { x: 125, y: 0, z: 125 };
+    // Act
+    const chunks = startupDrivingChunks(position, 0, quality);
+    // Assert — после первого поворота камера не должна смотреть в пустой квартал.
+    expect(chunks).toHaveLength(9);
+    expect(chunks.map(c=>c.key)).toEqual(expect.arrayContaining(['-1,-1','1,1','-1,1','1,-1']));
+    expect(chunks.every(c=>c.lod===0)).toBe(true);
+  });
   it('на высоком качестве до поездки устанавливает 25 ближних физических кварталов', () => {
     // Arrange
     const position = { x: 125, y: 0, z: 125 };

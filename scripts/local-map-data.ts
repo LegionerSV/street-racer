@@ -5,6 +5,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import sharpImport from 'sharp';
 import { decodeTerrarium, lerp, toGeo } from '../game/geo.ts';
+import { TERRAIN_GRID_SIZE } from '../game/terrain-policy.ts';
+import { sampleGroundFootprint } from '../game/dem-sampling.ts';
 import { ROAD_TYPES } from '../game/map-object-filters.ts';
 import type { MapBox } from '../game/map-source.ts';
 import type { Center, ElevationGrid, OSMElement } from '../game/types.ts';
@@ -418,8 +420,24 @@ export function createDemElevationSource(options: DemSourceOptions) {
           lerp(c, d, pixelX - x),
           pixelY - y,
         );
+        if (shape.size >= TERRAIN_GRID_SIZE)
+          values[row * shape.width + column] =
+            sampleGroundFootprint(
+              pixelX,
+              pixelY,
+              shape.size / (shape.width - 1),
+              point.lat,
+              DEM_ZOOM,
+              sourceHeight,
+            ) ?? values[row * shape.width + column];
       }
-    return { ...shape, values };
+    return {
+      ...shape,
+      values,
+      ...(shape.size >= TERRAIN_GRID_SIZE
+        ? { sampling: 'ground-minimum-v1' as const }
+        : {}),
+    };
   };
 }
 

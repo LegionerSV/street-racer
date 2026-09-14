@@ -389,7 +389,6 @@ it('интеграционно генерирует fixture из PBF и лока
     demFetcher: fetcher,
     tiles: [firstTile],
     concurrency: 1,
-    elevationWidth: 2,
     generatedAt: '2026-09-11T10:00:00Z',
   };
 
@@ -409,6 +408,11 @@ it('интеграционно генерирует fixture из PBF и лока
 
   // Assert
   expect(report).toMatchObject({ generated: 1, failed: [] });
+  expect(artifact.elevation).toMatchObject({
+    size: 10400,
+    width: 131,
+    sampling: 'ground-minimum-v1',
+  });
   expect(changedInput).toMatchObject({ generated: 1, skipped: 0, failed: [] });
   expect(commands.map((arguments_) => arguments_[0])).toEqual([
     'tags-filter',

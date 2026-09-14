@@ -27,6 +27,7 @@ import { FrameTimings } from './performance';
 import { VehicleLighting } from './vehicle-lighting';
 import { worldLandmarks } from './landmarks';
 import {advanceDrivingPhysics,ChasePosition} from './driving-frame';
+import {renderFirstFrame} from './render-ready';
 import type {LoadingLog} from './loading-log';
 import {RegionStream,tileReady} from './region-stream';
 import {edgeKey} from './world-update';
@@ -144,6 +145,10 @@ export class Game {
         progress(`Готовим улицы рядом с машиной · ${i + 1}/${first.length}`, 87 + (i + 1) / first.length * 12);
         await new Promise(resolve => setTimeout(resolve, 0));
       }
+      progress('Готовим первый кадр улицы', 99);
+      game.paused = true; game.suspendPump = true;
+      await renderFirstFrame(() => game.scene.whenReadyAsync(), () => game.frame(), signal);
+      game.paused = false; game.suspendPump = false;
       game.loading = false; game.running = true; game.scene.physicsEnabled = true; game.sound.start();
       game.engine.runRenderLoop(() => game.frame()); canvas.focus(); game.emit();
       return game;
@@ -434,15 +439,27 @@ export class Game {
           if(this.disposed)return;
           const nextCoverage=new Set(next.loadedTiles);
           if(criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true).some(k=>!tileReady(nextCoverage,k,this.world.center))){awaiting=null;continue;}
-          this.suspendPump=true;
-          while(!this.disposed&&this.pending.size)await wait(20);
+          const staged = new Map<string, ChunkData>();
+          // Подготавливаем замену, пока старая опора продолжает работать.
+          // Машина за время ожидания могла пересечь границу квартала.
+          while(!this.disposed){
+            while(!this.disposed&&blocked())await wait(1000);
+            if(this.disposed)return;
+            const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true);
+            const missing=mapTransitionChunks(patch.dirtyChunks,criticalKeys).filter(chunk=>!staged.has(chunk.key));
+            if(missing.length){
+              this.suspendPump=false;
+              for(const chunk of missing)staged.set(chunk.key,await this.worker.preparedChunk(chunk.key,chunk.lod));
+              continue;
+            }
+            this.suspendPump=true;
+            if(this.pending.size){await wait(20);continue;}
+            break;
+          }
           if(this.disposed)return;
-          const criticalKeys=criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true);
-          this.applyingMap=mapTransitionBlocksDriving(patch.dirtyChunks,criticalKeys);
-          const transition=mapTransitionChunks(patch.dirtyChunks,criticalKeys);
-          const transitionData:ChunkData[]=[];
-          for(const chunk of transition)transitionData.push(await this.worker.preparedChunk(chunk.key,chunk.lod));
-          if(this.disposed)return;
+          if(criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true).some(k=>!tileReady(nextCoverage,k,this.world.center))){awaiting=null;continue;}
+          const transitionData=[...staged.values()];
+          this.applyingMap=true;
           const commitStarted=performance.now();
           await this.worker.commit();
           const committedAt=performance.now();

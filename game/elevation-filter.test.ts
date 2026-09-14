@@ -1,7 +1,9 @@
 import { expect, it } from 'vitest';
-import { smoothElevation, clamp } from './geo';
+import { smoothElevation, clamp, smooth } from './geo';
+import { rejectElevationOutliers } from './elevation-filter';
 
-// Независимый медленный эталон: защищает высоты при замене алгоритма фильтра.
+// Независимый медленный эталон открытия, медианы и размытия после отбраковки.
+// Саму отбраковку проверяют поведенческие сценарии elevation-outliers.test.ts.
 function reference(width: number, size: number, input: Float32Array) {
   const radius = Math.max(
     1,
@@ -35,8 +37,9 @@ function reference(width: number, size: number, input: Float32Array) {
         }
       values = next;
     }
-  const opened = Float32Array.from(values, (v, i) =>
-    input[i] - v > 5 ? v : input[i],
+  const opened = Float32Array.from(
+    values,
+    (v, i) => input[i] + (v - input[i]) * smooth((input[i] - v - 5) / 5),
   );
   for (let z = 0; z < width; z++)
     for (let x = 0; x < width; x++) {
@@ -86,7 +89,13 @@ it.each([60, 700, 2000])(
     // Act
     const filtered = smoothElevation({ width, size, values });
     // Assert
-    expect(filtered.values).toEqual(reference(width, size, values));
+    expect(filtered.values).toEqual(
+      reference(
+        width,
+        size,
+        rejectElevationOutliers({ width, size, values }).values,
+      ),
+    );
     expect(values).toEqual(original);
   },
 );

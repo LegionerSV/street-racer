@@ -30,6 +30,10 @@ import {
   encodeTileArtifact,
 } from '../game/tile-artifact.ts';
 import { prepareTileArtifact } from '../game/tile-preparation.ts';
+import {
+  TERRAIN_GRID_SIZE,
+  TERRAIN_GRID_WIDTH,
+} from '../game/terrain-policy.ts';
 import type { OSMElement, RegionData } from '../game/types.ts';
 import {
   createDemElevationSource,
@@ -423,8 +427,9 @@ export async function generateMapTiles(
             demLicense,
             drivingSide: pbfDrivingSide,
             tileMargin: options.tileMargin ?? 300,
-            elevationSize: options.elevationSize ?? 700,
-            elevationWidth: options.elevationWidth ?? 257,
+            elevationSize: options.elevationSize ?? TERRAIN_GRID_SIZE,
+            elevationWidth: options.elevationWidth ?? TERRAIN_GRID_WIDTH,
+            elevationSampling: 'ground-minimum-v1',
           })
         : undefined,
       staging = resolve(options.staging),
@@ -506,9 +511,13 @@ export async function generateMapTiles(
               {
                 tileMargin: options.tileMargin ?? 300,
                 elevationSize:
-                  options.elevationSize ?? local?.elevation.size ?? 700,
+                  options.elevationSize ??
+                  local?.elevation.size ??
+                  (pbfMode ? TERRAIN_GRID_SIZE : 700),
                 elevationWidth:
-                  options.elevationWidth ?? local?.elevation.width ?? 257,
+                  options.elevationWidth ??
+                  local?.elevation.width ??
+                  (pbfMode ? TERRAIN_GRID_WIDTH : 257),
                 generatedAt,
               },
               {

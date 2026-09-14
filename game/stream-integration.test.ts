@@ -29,6 +29,7 @@ function mockedDownloads() {
   vi.spyOn(data, 'loadElevations').mockImplementation(
     async (_c, _s, _p, _l, shape) => ({
       ...shape!,
+      sampling: 'ground-minimum-v1',
       values: new Float32Array(shape!.width ** 2),
     }),
   );

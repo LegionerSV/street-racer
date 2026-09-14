@@ -58,13 +58,12 @@ export function desiredChunks(p: Point, heading: number, quality: Settings['qual
 }
 
 export function startupDrivingChunks(p: Point, heading: number, quality: Settings['quality']) {
-  const critical = new Set(criticalChunks(p, heading, true));
   const cx = Math.floor(p.x / CHUNK_SIZE), cz = Math.floor(p.z / CHUNK_SIZE);
   return desiredChunks(p, heading, quality, true).filter(chunk => {
     if (chunk.lod !== 0) return false;
-    if (quality !== 'high') return critical.has(chunk.key);
     const [x, z] = chunk.key.split(',').map(Number);
-    return Math.abs(x - cx) <= 2 && Math.abs(z - cz) <= 2;
+    const radius = quality === 'high' ? 2 : 1;
+    return Math.abs(x - cx) <= radius && Math.abs(z - cz) <= radius;
   });
 }
 

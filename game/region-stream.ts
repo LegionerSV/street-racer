@@ -29,8 +29,14 @@ import type { Center, OSMElement, Point, RegionData, Settings } from './types';
 
 export const MAP_TILE_MARGIN = 300;
 // Рельеф получает дополнительный запас для сглаживания и интерполяции.
-export const ELEVATION_TILE_SIZE = 2600;
-export const ELEVATION_TILE_WIDTH = 131;
+export {
+  TERRAIN_GRID_SIZE as ELEVATION_TILE_SIZE,
+  TERRAIN_GRID_WIDTH as ELEVATION_TILE_WIDTH,
+} from './terrain-policy';
+import {
+  TERRAIN_GRID_SIZE as ELEVATION_TILE_SIZE,
+  TERRAIN_GRID_WIDTH as ELEVATION_TILE_WIDTH,
+} from './terrain-policy';
 export type { MapTile } from './region-tile-source';
 
 export type MapStreamingPolicy = {
@@ -156,8 +162,11 @@ export function tileOrder(
       offsetZ = local.z - p.z,
       distance = Math.hypot(offsetX, offsetZ),
       forward = offsetX * Math.sin(heading) + offsetZ * Math.cos(heading),
-      lateral = Math.abs(offsetX * Math.cos(heading) - offsetZ * Math.sin(heading)),
-      ahead = forward > 0 && forward <= forwardReach + 1 && lateral <= corridorWidth;
+      lateral = Math.abs(
+        offsetX * Math.cos(heading) - offsetZ * Math.sin(heading),
+      ),
+      ahead =
+        forward > 0 && forward <= forwardReach + 1 && lateral <= corridorWidth;
     // Передний коридор получает данные раньше боковых улиц, даже если они ближе.
     cells.push({
       key,
@@ -358,10 +367,19 @@ export class RegionStream {
     );
   }
 
-  private reduceTile(tile: MapTile, mode: MapDetailMode, raw?: ElementBreakdown) {
-    const currentMode = tile.checksum.split('|')[1] as MapDetailMode | undefined,
-      effectiveMode = currentMode && DETAIL_MODES.indexOf(currentMode) > DETAIL_MODES.indexOf(mode)
-        ? currentMode : mode;
+  private reduceTile(
+    tile: MapTile,
+    mode: MapDetailMode,
+    raw?: ElementBreakdown,
+  ) {
+    const currentMode = tile.checksum.split('|')[1] as
+        | MapDetailMode
+        | undefined,
+      effectiveMode =
+        currentMode &&
+        DETAIL_MODES.indexOf(currentMode) > DETAIL_MODES.indexOf(mode)
+          ? currentMode
+          : mode;
     const filtered = reduceMapElements(
       tile.elements,
       sourceTileCenter({ z: tile.z, x: tile.x, y: tile.y }),
@@ -381,7 +399,11 @@ export class RegionStream {
     const reduced = new Map<string, MapTile>(),
       filters = new Map<string, ElementReductionStats>();
     for (const [key, tile] of tiles) {
-      const result = this.reduceTile(tile, mode, this.tileDiagnostics.get(key)?.filter?.raw);
+      const result = this.reduceTile(
+        tile,
+        mode,
+        this.tileDiagnostics.get(key)?.filter?.raw,
+      );
       reduced.set(key, result.tile);
       filters.set(key, result.stats);
     }
@@ -397,11 +419,15 @@ export class RegionStream {
   }
 
   private updateDetailMode() {
-    this.detailMode = DETAIL_MODES[Math.max(
-      0,
-      ...[...this.tiles.values()].map((tile) =>
-        DETAIL_MODES.indexOf(tile.checksum.split('|')[1] as MapDetailMode)),
-    )];
+    this.detailMode =
+      DETAIL_MODES[
+        Math.max(
+          0,
+          ...[...this.tiles.values()].map((tile) =>
+            DETAIL_MODES.indexOf(tile.checksum.split('|')[1] as MapDetailMode),
+          ),
+        )
+      ];
   }
 
   private createTileSource(log?: LoadingLog) {
@@ -487,26 +513,43 @@ export class RegionStream {
     try {
       const startupElementKeys = new Set<string>();
       let completed = 0;
-      for (let offset = 0; offset < initial.length; offset += this.policy.maxConcurrentTiles) {
-        const batch = initial.slice(offset, offset + this.policy.maxConcurrentTiles);
-        const loaded = await Promise.all(batch.map(async key => {
-          const tile = await this.fetchTile(key);
-          completed++;
-          progress(`Загружаем стартовый район · ${completed} из ${initial.length}`, 5 + (72 * completed) / initial.length);
-          return {key,tile};
-        }));
-        for (const {key,tile} of loaded) {
+      for (
+        let offset = 0;
+        offset < initial.length;
+        offset += this.policy.maxConcurrentTiles
+      ) {
+        const batch = initial.slice(
+          offset,
+          offset + this.policy.maxConcurrentTiles,
+        );
+        const loaded = await Promise.all(
+          batch.map(async (key) => {
+            const tile = await this.fetchTile(key);
+            completed++;
+            progress(
+              `Загружаем стартовый район · ${completed} из ${initial.length}`,
+              5 + (72 * completed) / initial.length,
+            );
+            return { key, tile };
+          }),
+        );
+        for (const { key, tile } of loaded) {
           if (key === centerTile)
-            this.side = tile.drivingSideSource === 'default' ? await this.sessionDrivingSide() : tile.drivingSide;
+            this.side =
+              tile.drivingSideSource === 'default'
+                ? await this.sessionDrivingSide()
+                : tile.drivingSide;
           this.tiles.set(key, tile);
-          for (const element of tile.elements) startupElementKeys.add(osmElementKey(element));
+          for (const element of tile.elements)
+            startupElementKeys.add(osmElementKey(element));
         }
         this.blockingTileCount = initial.length - this.tiles.size;
         this.startupRawUnique = this.startupRawKeys.size;
         this.startupKeptUnique = startupElementKeys.size;
         for (
           let modeIndex = 1;
-          startupElementKeys.size > this.maxElements && modeIndex < DETAIL_MODES.length;
+          startupElementKeys.size > this.maxElements &&
+          modeIndex < DETAIL_MODES.length;
           modeIndex++
         ) {
           const mode = DETAIL_MODES[modeIndex],
@@ -536,7 +579,9 @@ export class RegionStream {
           mode: this.detailMode,
         })();
         if (startupElementKeys.size > this.maxElements)
-          throw new Error(`Дорожная основа стартового района превышает лимит (${startupElementKeys.size} > ${this.maxElements}).`);
+          throw new Error(
+            `Дорожная основа стартового района превышает лимит (${startupElementKeys.size} > ${this.maxElements}).`,
+          );
       }
       const elevation = {
         width: 2,
@@ -559,7 +604,8 @@ export class RegionStream {
       this.dispose();
       throw error;
     } finally {
-      this.startupRawUnique = this.startupRawKeys?.size ?? this.startupRawUnique;
+      this.startupRawUnique =
+        this.startupRawKeys?.size ?? this.startupRawUnique;
       this.startupRawKeys = undefined;
       clearTimeout(deadline);
       signal.removeEventListener('abort', cancel);
@@ -674,15 +720,17 @@ export class RegionStream {
           maxZ: p.z + 350,
         }),
       );
-      const retain = (tiles: Map<string, MapTile>) => retainTiles(
-          tiles,
-          order,
-          pinned,
-          new Set([...order, ...pinned]).size,
-          this.maxElements,
-        ),
+      const retain = (tiles: Map<string, MapTile>) =>
+          retainTiles(
+            tiles,
+            order,
+            pinned,
+            new Set([...order, ...pinned]).size,
+            this.maxElements,
+          ),
         newlyAccepted = (tiles: Map<string, MapTile>) => {
-          const withinBudget = uniqueElementCount(tiles.values()) <= this.maxElements;
+          const withinBudget =
+            uniqueElementCount(tiles.values()) <= this.maxElements;
           return loaded.filter(
             (result) =>
               result.status === 'fulfilled' &&
@@ -693,7 +741,10 @@ export class RegionStream {
         };
       let kept = retain(candidate),
         accepted = newlyAccepted(kept);
-      if (!accepted.length && loaded.some((result) => result.status === 'fulfilled')) {
+      if (
+        !accepted.length &&
+        loaded.some((result) => result.status === 'fulfilled')
+      ) {
         for (let index = 1; index < DETAIL_MODES.length; index++) {
           const mode = DETAIL_MODES[index],
             reduced = this.reduceTileMap(candidate, mode),
