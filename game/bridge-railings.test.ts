@@ -5,7 +5,7 @@ import { projectOnSegment, tileKey } from './geo';
 import type { Edge, MeshData, OSMElement, Point, World } from './types';
 import roads from './fixtures/birzhevaya-roads.osm.json';
 import dem from './fixtures/birzhevaya-elevation.json';
-import { bridgeRailingSpans } from './bridge-railings';
+import { bridgeRailingSpans, embankmentRailingSpans } from './bridge-railings';
 import {
   NullEngine,
   Scene,
@@ -144,6 +144,23 @@ it.each([0, 6])(
     }
   },
 );
+it('прерывает ограждение набережной на поперечной дороге, но сохраняет над нижней дорогой', () => {
+  // Arrange
+  const edge = fixture().edges[0];
+  const bankA = { x: 20, y: 2.15, z: 20.7 }, bankB = { x: 120, y: 2.15, z: 20.7 };
+  const crossing = {
+    a: { x: 70, y: 2, z: 0 }, b: { x: 70, y: 2, z: 50 },
+    edge: { ...edge, way: 30, bridge: false, width: 8, layer: 0 },
+  };
+  // Act
+  const spans = embankmentRailingSpans(bankA, bankB, [crossing]);
+  const below = embankmentRailingSpans(bankA, bankB, [{ ...crossing, a: { ...crossing.a, y: -4 }, b: { ...crossing.b, y: -4 } }]);
+  // Assert
+  expect(spans).toHaveLength(2);
+  expect(spans[0].b.x).toBeLessThan(66);
+  expect(spans[1].a.x).toBeGreaterThan(74);
+  expect(below).toEqual([{ a: bankA, b: bankB }]);
+});
 it('убирает коллизии внутренних перил и сохраняет внешнее ограждение в Havok', async () => {
   // Arrange — те же структуры и тип коллизии, что устанавливает игровой runtime.
   const chunk = buildChunk(fixture(), '0,0', 0);

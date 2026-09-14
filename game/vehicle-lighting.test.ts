@@ -17,6 +17,10 @@ it('дневной свет фар не выбеливает асфальт, к�
     expect(beam.intensity).toBeLessThanOrEqual(0.5);
     expect(beam.specular.asArray()).toEqual([0, 0, 0]);
     expect(beam.shadowEnabled).toBe(false);
+    lights.update(1, car, [], 'medium', 0.45);
+    expect(beam.isEnabled()).toBe(true);
+    expect(beam.shadowEnabled).toBe(false);
+    expect(beam.getShadowGenerator()!.getShadowMap()!.renderList).toHaveLength(0);
     lights.update(1, car, [], 'medium', 0);
     expect(beam.intensity).toBeGreaterThan(1);
     expect(beam.intensity).toBeLessThanOrEqual(3);

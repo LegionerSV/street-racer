@@ -77,18 +77,25 @@ export function embankmentRailingSpans(
   b: Point,
   candidates: Segment[],
 ): { a: Point; b: Point }[] {
-  // Мостовая маска работает во всём диапазоне высот: береговая секция должна
-  // закончиться у устоя независимо от того, проходит дорога сверху или снизу.
+  // У моста секция заканчивается у устоя на любой высоте. У обычной дороги
+  // вырезаем проезжую часть лишь тогда, когда она на уровне ограждения.
   let spans: [number, number][] = [[0, 1]];
+  const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
+  const minZ = Math.min(a.z, b.z), maxZ = Math.max(a.z, b.z);
   for (const other of candidates) {
-    if (!other.edge.bridge) continue;
+    if (other.edge.tunnel) continue;
+    const extra = other.edge.width / 2 + (other.edge.bridge ? SIDEWALK_WIDTH + CURB_WIDTH : 0) + 0.4;
+    if (Math.max(other.a.x, other.b.x) + extra < minX ||
+        Math.min(other.a.x, other.b.x) - extra > maxX ||
+        Math.max(other.a.z, other.b.z) + extra < minZ ||
+        Math.min(other.a.z, other.b.z) - extra > maxZ) continue;
     const length = distance2(other.a, other.b) || 1;
     const mask = roadPrism(
       mixPoint(other.a, other.b, -0.15 / length),
       mixPoint(other.a, other.b, 1 + 0.15 / length),
-      other.edge.width + 2 * (SIDEWALK_WIDTH + CURB_WIDTH) + 0.3,
-      10_000,
-      10_000,
+      other.edge.width + (other.edge.bridge ? 2 * (SIDEWALK_WIDTH + CURB_WIDTH) : 0) + 0.8,
+      other.edge.bridge ? 10_000 : 1.5,
+      other.edge.bridge ? 10_000 : 1.5,
     );
     const cut = coveredInterval(a, b, mask);
     if (!cut) continue;

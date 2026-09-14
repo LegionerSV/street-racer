@@ -199,7 +199,9 @@ export class Traffic {
         const candidate=samplePath(a.plan!.path,Math.min(a.plan!.total,(a.travel||0)+16),true);
         if(this.agents.every(b=>b===a||distance2(b.point,candidate.point)>12)){a.travel=(a.travel||0)+16;a.speed=8;a.stuck=0;this.sample(a,dt);}
       }
-      if(distance2(a.point,player)<(this.mobile?300:500)){
+      // На 500 м детальные машины занимали тысячи мешей и физические тела,
+      // хотя с этой дистанции почти не различимы. Логика потока остаётся полной.
+      if(distance2(a.point,player)<(a.visual?330:300)){
         this.show(a);const body=a.body!.body,mesh=a.visual!.root;
         if(!a.dynamic&&distance2(a.point,player)<18){
           a.dynamic=true;body.setMotionType(PhysicsMotionType.DYNAMIC);body.setGravityFactor(0);
