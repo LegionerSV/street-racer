@@ -106,7 +106,9 @@ export class VehicleLighting {
         changed = entry.owner !== car;
       entry.owner = car;
       entry.light.setEnabled(active);
-      entry.light.shadowEnabled = active && daylight < 0.65;
+      // При достаточном дневном свете луч остаётся видимым, но три карты
+      // глубины добавляют теневые проходы для тысяч мешей почти без эффекта.
+      entry.light.shadowEnabled = active && daylight < 0.25;
       if (!car || !active) {
         entry.light.parent = null;
         entry.shadow.getShadowMap()!.renderList = [];
@@ -133,7 +135,9 @@ export class VehicleLighting {
       entry.light.direction.normalize();
       entry.light.intensity =
         (i === 0 ? 2.4 : 1.6) * (1 - Math.max(0, Math.min(1, daylight)) * 0.85);
-      if (refresh || changed)
+      if (!entry.light.shadowEnabled)
+        entry.shadow.getShadowMap()!.renderList = [];
+      else if (refresh || changed)
         entry.shadow.getShadowMap()!.renderList = headlightCasters(
           this.scene,
           car.root.position,

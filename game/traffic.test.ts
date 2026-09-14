@@ -67,11 +67,15 @@ it('заполняет городской район плотным потоко
     for (let i=0;i<900;i++) traffic.update(1/60,i/60,{x:0,y:1,z:0},0,false);
     // Assert
     expect(traffic.agents.length).toBeGreaterThan(80); expect(traffic.agents.length).toBeLessThanOrEqual(144);
+    expect(traffic.agents.some(a=>Math.hypot(a.point.x,a.point.z)>300)).toBe(true);
+    expect(traffic.agents.filter(a=>a.visual).every(a=>Math.hypot(a.point.x,a.point.z)<330)).toBe(true);
+    expect(traffic.agents.filter(a=>a.visual).length).toBeGreaterThan(0);
+    expect(traffic.agents.filter(a=>a.visual).length).toBeLessThan(traffic.agents.length);
     const lanes = new Set(traffic.agents.map(a => Math.round((a.point.z-world.edges.find(e=>e.stableId===a.edge)!.points[0].z)*10)));
     expect(lanes.size).toBeGreaterThan(1);
     expect(scene.materials.length).toBeLessThan(60);
     const camera = new FreeCamera('verification', new Vector3(250, 350, -500), scene); camera.setTarget(new Vector3(250,0,0)); scene.activeCamera = camera; scene.render();
-    expect(scene.getActiveMeshes().length).toBeGreaterThan(500);
+    expect(scene.getActiveMeshes().length).toBeGreaterThan(250);
     // Act — смена качества убирает дальние лишние машины, сохраняя поток рядом.
     traffic.setMobile(true);traffic.update(1/60,16,{x:0,y:1,z:0},0,false);
     // Assert

@@ -62,14 +62,16 @@ describe('Подготовка кварталов', () => {
     // Arrange
     const road={id:0,stableId:'1/1/2/0',way:1,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Тестовая набережная',bridge:false,tunnel:false,layer:0,points:[{x:20,y:2,z:15},{x:120,y:2,z:15}],blocked:false};
     const bridge={...road,id:1,stableId:'2/3/4/0',way:2,from:3,to:4,width:10,name:'Мост',bridge:true,layer:1,points:[{x:70,y:7,z:0},{x:70,y:7,z:50}]};
+    const crossing={...road,id:2,stableId:'3/5/6/0',way:3,from:5,to:6,width:8,name:'Поперечная улица',points:[{x:100,y:2,z:0},{x:100,y:2,z:50}]};
     const water={id:1,kind:'water' as const,railing:'river' as const,points:[{x:10,y:0,z:21},{x:130,y:0,z:21},{x:130,y:0,z:80},{x:10,y:0,z:80}]};
-    const world={center:{lat:0,lon:0},nodes:[],edges:[road,bridge],restrictions:[],buildings:[],areas:[water],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:null,routes:[]} as World;
+    const world={center:{lat:0,lon:0},nodes:[],edges:[road,bridge,crossing],restrictions:[],buildings:[],areas:[water],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:null,routes:[]} as World;
     // Act
     const fences=buildChunk(world,'0,0',0).breakables.filter(p=>p.kind==='fence');
     // Assert — секции идут по внешней стороне тротуара на высоте дороги, а не по OSM-контуру воды.
     expect(fences.length).toBeGreaterThan(0);
     expect(fences.every(f=>Math.abs(f.point.z-20.7)<1e-6&&Math.abs(f.point.y-2.15)<1e-6)).toBe(true);
     expect(fences.every(f=>Math.abs(f.point.x-70)>6)).toBe(true);
+    expect(fences.filter(f=>f.point.x+f.length!/2>95.61&&f.point.x-f.length!/2<104.39)).toEqual([]);
   });
   it('не превращает прилегающую к реке набережную в яму', () => {
     // Arrange
