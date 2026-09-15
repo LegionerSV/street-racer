@@ -35,7 +35,7 @@ const carShapes={
   suv:{length:4.57,belt:.48,roof:1.29,rear:-1.8,roofRear:-1.48,front:.95,roofFront:.4},
   van:{length:4.92,belt:.48,roof:1.7,rear:-2,roofRear:-1.96,front:1.25,roofFront:.92},
 };
-export function createCar(scene: Scene, color: string, name: string,kind:CarKind='sport'): CarVisual {
+export function createCar(scene: Scene, color: string, name: string,kind:CarKind='sport',racing=false): CarVisual {
   const shape=carShapes[kind],stretch=shape.length/4.34,sport=kind==='sport';
   const root=MeshBuilder.CreateBox(name,{width:1.84,height:sport?.55:shape.roof+.33,depth:shape.length},scene);
   if(!sport)root.bakeTransformIntoVertices(Matrix.Translation(0,(shape.roof-.33)/2,0));
@@ -82,6 +82,12 @@ export function createCar(scene: Scene, color: string, name: string,kind:CarKind
       face('hood-stripe',[x-.065,.215,.76],[x+.065,.215,.76],[x+.065,.082,1.88],[x-.065,.082,1.88],alloy);
       makeBox('roof-stripe',x,shape.roof+.005,-.24,.13,.014,.76,alloy);
     }
+    if(racing)for(const side of [-1,1]){
+      // Светлый номерной щит и контрастные полосы видны сбоку даже в плотном потоке.
+      makeBox('race-door-panel',side*.972,.04,-.18,.035,.36,1.12,alloy);
+      for(const z of [-.39,-.17,.05])makeBox('race-door-number',side*.997,.04,z,.02,.27,.065,dark);
+      makeBox('race-rear-stripe',side*.965,.11,-1.28,.03,.18,.32,alloy);
+    }
   }
   if(kind==='van')for(const x of [-.74,.74])makeBox('rear-hinge',x,.94,-2.05,.06,.9,.07,dark);
   const lamps:AbstractMesh[]=[],brakeLights:AbstractMesh[]=[],indicators:[AbstractMesh[],AbstractMesh[]]=[[],[]];
@@ -110,11 +116,11 @@ export function createCar(scene: Scene, color: string, name: string,kind:CarKind
   setCarLights(car,false,0,0);return car;
 }
 const trafficModels=new WeakMap<Scene,Map<string,CarVisual>>();
-export function createTrafficCar(scene:Scene,color:string,name:string,kind:CarKind='sedan'):CarVisual{
+export function createTrafficCar(scene:Scene,color:string,name:string,kind:CarKind='sedan',racing=false):CarVisual{
   let palette=trafficModels.get(scene);if(!palette){palette=new Map();trafficModels.set(scene,palette);}
-  const key=kind+color;
+  const key=kind+color+(racing?'-racing':'');
   let source=palette.get(key);
-  if(!source){source=createCar(scene,color,'shared-'+key,kind);source.root.getChildMeshes().forEach(m=>m.isVisible=false);palette.set(key,source);}
+  if(!source){source=createCar(scene,color,'shared-'+key,kind,racing);source.root.getChildMeshes().forEach(m=>m.isVisible=false);palette.set(key,source);}
   const root=source.root.clone(name,null,true)!;root.isVisible=false;root.isPickable=false;
   const wheels:TransformNode[]=[],lamps:AbstractMesh[]=[],brakeLights:AbstractMesh[]=[],indicators:[AbstractMesh[],AbstractMesh[]]=[[],[]];
   function copy(parent:TransformNode,target:TransformNode){

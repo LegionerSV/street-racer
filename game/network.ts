@@ -9,7 +9,7 @@ import { fitBridgeClearance, fitTunnelDepth, validateClearance } from './clearan
 import { roadLayout, directedLanes,roadTypes } from './lanes';
 import {buildingCoveredByParts} from './buildings';
 import {SpatialGrid,boundsOf,overlaps} from './geometry';
-import {coverageBounds,pointHasCoverage,routeHasCoverage} from './stream-coverage';
+import {coverageBounds,pointHasCoverage,routeHasCoverage,routeHasDrivingCoverage} from './stream-coverage';
 import { edgeById, edgeIndex, edgeStableId, makeEdgeStableId, updateRoadMetrics } from './road-graph';
 
 export function repairSharpRoadProfile(points:Point[],limit=.38){
@@ -374,7 +374,7 @@ export function createRoutes(
       length = cumulative.at(-1)!;
     if (length < 400) return;
     if (
-      !routeHasCoverage(
+      !routeHasDrivingCoverage(points, world.loadedTiles, world.center) || !routeHasCoverage(
         points,
         world.loadedTiles,
         world.center,

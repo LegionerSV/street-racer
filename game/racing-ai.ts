@@ -6,11 +6,23 @@ const turnDelta = (from: number, to: number) => Math.atan2(Math.sin(to - from), 
 export const DEFAULT_RACER_TRAITS: RacerTraits = { accuracy: .76, aggression: .6, reaction: .75 };
 
 export function createRacerTraits(random = Math.random): RacerTraits {
-  return {
+  const traits: RacerTraits = {
     accuracy: .6 + random() * .32,
     aggression: .25 + random() * .7,
     reaction: .5 + random() * .45,
   };
+  const top = [traits.accuracy >= .84, traits.aggression >= .76, traits.reaction >= .82];
+  if (top.filter(Boolean).length > 1) {
+    const values = [traits.accuracy, traits.aggression, traits.reaction];
+    const limits = [.84, .76, .82];
+    const strongest = values.reduce((best, value, index) =>
+      top[index] && (value - limits[index]) / (1 - limits[index]) > (values[best] - limits[best]) / (1 - limits[best]) ? index : best,
+      top.findIndex(Boolean));
+    if (strongest !== 0 && top[0]) traits.accuracy = .83;
+    if (strongest !== 1 && top[1]) traits.aggression = .75;
+    if (strongest !== 2 && top[2]) traits.reaction = .81;
+  }
+  return traits;
 }
 
 export function racerTraitWords(traits: RacerTraits): [string, string, string] {

@@ -17,6 +17,19 @@ describe('характер соперника', () => {
     expect(racerTraitWords(traits)).toEqual(['НЕРВНЫЙ', 'НАПОРИСТЫЙ', 'МОЛНИЯ']);
   });
 
+  it('даже при трёх максимальных бросках оставляет только один топовый стиль', () => {
+    // Arrange
+    const random = () => .99;
+    // Act
+    const traits = createRacerTraits(random);
+    const words = racerTraitWords(traits);
+    // Assert
+    expect(words.filter(word => ['ЮВЕЛИР', 'ЖЁСТКИЙ', 'МОЛНИЯ'].includes(word))).toHaveLength(1);
+    expect(traits.accuracy).toBeLessThan(1);
+    expect(traits.aggression).toBeLessThan(1);
+    expect(traits.reaction).toBeLessThan(1);
+  });
+
   it('строит линию с широким входом и внутренним апексом', () => {
     // Arrange
     const path = smoothPath(edge.points, 10), traits = { accuracy: .8, aggression: .6, reaction: .8 };

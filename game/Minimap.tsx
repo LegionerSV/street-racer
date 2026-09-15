@@ -46,10 +46,10 @@ export function Minimap({ world, hud, mobile=false }: { world: World; hud: HUD; 
     if(hud.race)for(const opponent of hud.opponents||[]){
       const marker=minimapOpponent(opponent,hud.position);
       ctx.save();ctx.translate(marker.x,marker.y);ctx.rotate(marker.heading);ctx.fillStyle=opponent.colour;ctx.strokeStyle='#101b20';ctx.lineWidth=2;ctx.globalAlpha=opponent.finished?.6:1;
-      ctx.beginPath();ctx.moveTo(0,-7);ctx.lineTo(5,5);ctx.lineTo(0,2);ctx.lineTo(-5,5);ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();
+      ctx.beginPath();ctx.moveTo(0,-12);ctx.lineTo(8,8);ctx.lineTo(0,3);ctx.lineTo(-8,8);ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();
     }
     ctx.save(); ctx.translate(width / 2, height / 2); ctx.rotate(hud.heading); ctx.fillStyle = '#f4f8e9'; ctx.shadowColor = '#d8ff3e'; ctx.shadowBlur = 10;
-    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 4); ctx.lineTo(-6, 7); ctx.closePath(); ctx.fill(); ctx.restore();
+    ctx.beginPath(); ctx.moveTo(0, -14); ctx.lineTo(9, 10); ctx.lineTo(0, 5); ctx.lineTo(-9, 10); ctx.closePath(); ctx.fill(); ctx.restore();
     ctx.font = '11px Arial'; ctx.fillStyle = '#a9bec1'; ctx.fillText('С', width - 21, 20); ctx.fillText('200 м', 14, height - 20); ctx.strokeStyle = '#b9d1d8'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(14, height - 13); ctx.lineTo(14 + 200 * scale, height - 13); ctx.stroke();
     ctx.strokeStyle = '#ffffff30'; ctx.lineWidth = 1; ctx.strokeRect(.5, .5, width - 1, height - 1);
   }, [world, hud, mobile]);

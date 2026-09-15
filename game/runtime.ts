@@ -33,7 +33,7 @@ import {renderFirstFrame} from './render-ready';
 import type {LoadingLog} from './loading-log';
 import {RegionStream,tileReady} from './region-stream';
 import {edgeKey} from './world-update';
-import {routeHasCoverage,needsRaceRecovery} from './stream-coverage';
+import {routeHasCoverage,routeHasDrivingCoverage,needsRaceRecovery} from './stream-coverage';
 import {edgeById,edgeStableId} from './road-graph';
 import {nextRaceTurn} from './navigation';
 import {ImpactSpeeds,shouldBreak} from './breakables';
@@ -366,7 +366,7 @@ export class Game {
     this.installQueue.drain(chunk=>{const metric=this.patchInstallMetrics.get(chunk.key);if(this.wanted.some(c=>c.key===chunk.key&&c.lod===chunk.lod)){const started=performance.now();this.install(chunk);if(metric){metric.installMs+=performance.now()-started;this.frameDelayMetric=metric;}}this.patchInstallMetrics.delete(chunk.key);});
     this.pump();
     const p = this.player.position, h = this.player.heading;
-    const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage));
+    const critical = this.recoverAtMapBoundary(criticalChunks(p,this.player.speed<0?h+Math.PI:h,!!this.mapCoverage,this.race?0:70));
     this.loadingReasons = [];
     if(this.preparingRace)this.loadingReasons.push('race-preparation');
     if(this.applyingMap)this.loadingReasons.push('map-transition');
@@ -548,7 +548,7 @@ export class Game {
       const route=await this.worker.raceRoute(edgeStableId(start),invitation.kind);
       if(this.disposed)return;
       if(this.paused)return;
-      if(!route||!routeHasCoverage(route.points,this.world.loadedTiles,this.world.center,Math.max(120,...route.edges.map(id=>edgeById(this.world,id)!.width/2+110))))
+      if(!route||!routeHasDrivingCoverage(route.points,this.world.loadedTiles,this.world.center)||!routeHasCoverage(route.points,this.world.loadedTiles,this.world.center,Math.max(120,...route.edges.map(id=>edgeById(this.world,id)!.width/2+110))))
         throw new Error('Для этого заезда пока не хватает связанных загруженных дорог. Попробуйте другой старт или дождитесь подгрузки карты.');
       this.race = makeRace(route);this.message='';this.player.reset(edgeById(this.world,route.edges[0])!, this.world.drivingSide, 2);
       this.traffic.startRace(route);this.refreshWanted();this.clearControls();

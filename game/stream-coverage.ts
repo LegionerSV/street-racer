@@ -9,6 +9,7 @@ import {
   type SourceTileId,
 } from './source-tiles';
 import type { Center, Point } from './types';
+import { criticalChunks } from './chunks';
 
 const BOUNDS_EPSILON = 1e-5;
 
@@ -131,6 +132,19 @@ export function routeHasCoverage(
       }).every((key) => loaded.has(key)),
     )
   );
+}
+
+export function routeHasDrivingCoverage(points: Point[], tiles: string[] | undefined, center: Center) {
+  if (!tiles) return true;
+  if (points.length < 2) return false;
+  const loaded = new Set(tiles);
+  const samples = resample(points, 20);
+  return samples.every((point, index) => {
+    const next = samples[Math.min(index + 1, samples.length - 1)];
+    const previous = samples[Math.max(index - 1, 0)];
+    const heading = Math.atan2(next.x - previous.x, next.z - previous.z);
+    return criticalChunks(point, heading, true).every(key => chunkHasCoverage(loaded, key, center));
+  });
 }
 
 export function needsRaceRecovery(

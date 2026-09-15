@@ -79,9 +79,9 @@ export function startupDrivingChunks(p: Point, heading: number, quality: Setting
 
 // До начала движения нужны коллизии под машиной и впереди, включая запас
 // у границы квартала; остальной район подгружается уже во время поездки.
-export function criticalChunks(p:Point,heading:number,streaming=false){
+export function criticalChunks(p:Point,heading:number,streaming=false,aheadMeters=70){
   const keys=new Set<string>();
-  for(const ahead of [0,70])for(const dx of [-20,20])for(const dz of [-20,20]){
+  for(const ahead of [0,aheadMeters])for(const dx of [-20,20])for(const dz of [-20,20]){
     const x=Math.floor((p.x+Math.sin(heading)*ahead+dx)/CHUNK_SIZE),z=Math.floor((p.z+Math.cos(heading)*ahead+dz)/CHUNK_SIZE);
     if(streaming||(x>=-10&&x<10&&z>=-10&&z<10))keys.add(`${x},${z}`);
   }

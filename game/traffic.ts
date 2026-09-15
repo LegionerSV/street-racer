@@ -94,7 +94,7 @@ export class Traffic {
   private show(a:Agent){
     if(a.visual)return;const colors=a.race?RACER_COLOURS:['#657b88','#c6cac6','#43565c','#824b48','#b1a783','#4e6f6b'];
     const kinds:CarKind[]=['sedan','hatch','suv','sedan','van','hatch'];
-    a.visual=createTrafficCar(this.scene,colors[a.id%colors.length],'traffic-'+a.id,a.race?'sport':kinds[a.id%kinds.length]);
+    a.visual=createTrafficCar(this.scene,colors[a.id%colors.length],'traffic-'+a.id,a.race?'sport':kinds[a.id%kinds.length],!!a.race);
     a.visual.root.position.copyFromFloats(a.point.x,a.point.y,a.point.z);a.visual.root.rotationQuaternion=Quaternion.RotationYawPitchRoll(a.heading,0,0);
     a.body=new PhysicsAggregate(a.visual.root,PhysicsShapeType.BOX,{mass:1200,friction:.18,restitution:.25},this.scene);
     a.body.body.setMassProperties({mass:1200,centerOfMass:new Vector3(0,-.25,0),inertia:new Vector3(1700/1200,2100/1200,760/1200)});

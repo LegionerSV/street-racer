@@ -72,3 +72,16 @@ it('возвращает гонщика к контрольной точке и 
     'Впереди район ещё не загружен. Автомобиль возвращён на трассу.',
   );
 });
+it('не возвращает гонщика, когда под машиной есть карта, а незагружен только квартал по направлению взгляда', () => {
+  // Arrange
+  const center = { lat: 0, lon: 0 };
+  const position = { x: 500, y: 0, z: 500 };
+  const loaded = new Set(sourceTileKeysForLocalBounds(center, { minX: 200, minZ: 200, maxX: 800, maxZ: 800 }));
+  const game = Object.create(Game.prototype);
+  Object.assign(game, { race: makeRace({ id:'test', kind:'sprint', title:'Заезд', edges:['test-edge'], points:[position,{x:550,y:0,z:500}], cumulative:[0,50], length:50, laps:1 }), mapCoverage:loaded, world:{center}, player:{position,heading:0,teleport:vi.fn()}, clearControls:vi.fn(),refreshWanted:vi.fn(),camera:{position:{setAll:vi.fn()}} });
+  const critical = criticalChunks(position, 0, true, 0);
+  // Act
+  game.recoverAtMapBoundary(critical);
+  // Assert
+  expect(game.player.teleport).not.toHaveBeenCalled();
+});

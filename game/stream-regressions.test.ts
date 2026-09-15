@@ -5,6 +5,8 @@ import { reconcileWorld, changedChunks } from './world-update';
 import { SpatialGrid } from './geometry';
 import {
   routeHasCoverage,
+  routeHasDrivingCoverage,
+  sourceTileLocalBounds,
   needsRaceRecovery,
   sourceTileKeysForLocalBounds,
 } from './stream-coverage';
@@ -111,6 +113,22 @@ it('при выезде гонщика к неготовой границе тр
           tileReady(loaded, k, center),
         ),
       ).toBe(true);
+});
+
+it('не считает трассу безопасной, если у её края не хватает полного квартала для коллизий', () => {
+  // Arrange
+  const center = { lat: 0, lon: 0 };
+  const tile = { z: 15, x: 16384, y: 16384 };
+  const bounds = sourceTileLocalBounds(tile, center);
+  const z = (bounds.minZ + bounds.maxZ) / 2;
+  const points = [point(bounds.maxX - 160, z), point(bounds.maxX - 140, z)];
+  const loaded = [`${tile.z}/${tile.x}/${tile.y}`];
+  // Act
+  const roadCovered = routeHasCoverage(points, loaded, center, 120);
+  const drivingCovered = routeHasDrivingCoverage(points, loaded, center);
+  // Assert
+  expect(roadCovered).toBe(true);
+  expect(drivingCovered).toBe(false);
 });
 
 it('обновляет старые кварталы вдоль всего моста при изменении высоты дальнего конца', () => {

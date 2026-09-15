@@ -51,3 +51,14 @@ it('разные кузова одного цвета не подменяютс�
   try{expect(scene.materials.length).toBe(count);expect(van.root.getHierarchyBoundingVectors(true).max.y).toBeGreaterThan(sedan.root.getHierarchyBoundingVectors(true).max.y+.4);expect(another.wheels).toHaveLength(4);}
   finally{sedan.dispose();van.dispose();another.dispose();scene.dispose();engine.dispose();}
 });
+it('гоночный кузов получает номерные наклейки на обе двери',()=>{
+  // Arrange
+  const engine=new NullEngine(),scene=new Scene(engine);
+  // Act
+  const racer=createCar(scene,'#447788','racer','sport',true),ordinary=createCar(scene,'#447788','ordinary','sport');
+  // Assert
+  try{
+    const trim=(car:typeof racer)=>car.root.getChildMeshes().find(m=>m.name.includes('trim-')&&m.material?.name.endsWith('-alloy'))!;
+    expect(trim(racer).getVerticesData(VertexBuffer.PositionKind)!.length).toBeGreaterThan(trim(ordinary).getVerticesData(VertexBuffer.PositionKind)!.length);
+  }finally{racer.dispose();ordinary.dispose();scene.dispose();engine.dispose();}
+});
