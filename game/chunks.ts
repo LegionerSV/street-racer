@@ -49,7 +49,7 @@ export class ChunkInstallQueue<T> {
 }
 export function desiredChunks(p: Point, heading: number, quality: Settings['quality'], streaming = false, speedMetersPerSecond = 0) {
   const mobile=quality==='mobile',detail=mobile?250:quality==='high'?750:500;
-  const far = mobile ? 650 : quality === 'high' ? 1500 : quality === 'medium' ? 1100 : 800;
+  const far = mobile ? 650 : quality === 'high' ? 1000 : quality === 'medium' ? 900 : 800;
   const result: { key: string; lod: number; priority: number }[] = [];
   // На скорости 200 км/ч запас в 18 секунд покрывает четыре квартала по 250 м.
   const lookahead = streaming ? Math.min(4 * CHUNK_SIZE, Math.max(0, speedMetersPerSecond) * 18) : 0;

@@ -184,7 +184,17 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
   };
   const cells = new Map<string, Segment[]>(),
     segments: Segment[] = [],
-    result: RoadCrossing[] = [];
+    result: RoadCrossing[] = [],
+    edgeLengths = new Map<Edge, number>();
+  const edgeLength = (edge: Edge) => {
+    let length = edgeLengths.get(edge);
+    if (length === undefined) {
+      length = edge.points.slice(1).reduce((sum, point, i) => sum + distance2(point, edge.points[i]), 0);
+      edgeLengths.set(edge, length);
+    }
+    return length;
+  };
+  const distanceToEnd = (edge: Edge, point: Point) => Math.min(distance2(point, edge.points[0]), distance2(point, edge.points.at(-1)!));
   const keys = (s: Segment) => {
     const r = s.edge.width / 2 + SIDEWALK_WIDTH + CURB_WIDTH,
       keys: string[] = [];
@@ -286,6 +296,13 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
         for (const p of polygon) {
           const t = projectOnSegment(p, upper.a, upper.b).t,
             u = projectOnSegment(p, lower.a, lower.b).t;
+          const upperPoint = mixPoint(upper.a, upper.b, t),
+            lowerPoint = mixPoint(lower.a, lower.b, u);
+          // У въезда на мост соседнее полотно может иметь отдельные OSM-узлы.
+          // Плоское примыкание у торцов обеих дорог не является путепроводом.
+          if (upper.edge.bridge && Math.abs(upperPoint.y - lowerPoint.y) < 1.5) {
+            if (distanceToEnd(upper.edge, upperPoint) < Math.min(12, edgeLength(upper.edge) * .35) && distanceToEnd(lower.edge, lowerPoint) < 16) continue;
+          }
           // Короткие OSM-соединители у съезда не создают второй уровень.
           // Исключение локально у торцов: настоящее пересечение в середине
           // моста по-прежнему требует просвета, даже при связанном графе.
@@ -413,7 +430,7 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
       : Math.max(
           0,
           ...contacts.map(
-            (c) => MIN_ROAD_CLEARANCE + 0.03 - crossingClearance(c),
+            (c) => MIN_ROAD_CLEARANCE + 0.05 - crossingClearance(c),
           ),
         );
     if (Math.abs(rise) < 1e-6) continue;

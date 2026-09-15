@@ -45,6 +45,53 @@ it('закрывает оба направления моста при недо�
   expect(warnings).toEqual(['Дорога 2 закрыта: недостаточный просвет между уровнями.']);
 });
 
+it('не закрывает плоский въезд на мост из соседнего полотна без общего OSM-узла', () => {
+  // Arrange
+  const approach = road(1, [{ x: 4, y: 0, z: -40 }, { x: 4, y: 0, z: 0 }]);
+  const bridge = road(2, [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 20 }], true);
+  // Act
+  const warnings = validateClearance([approach, bridge]);
+  // Assert
+  expect(warnings).toEqual([]);
+  expect(bridge.blocked).toBe(false);
+});
+
+it('не закрывает соседнее полотно Московского проспекта у Ново-Московского моста', () => {
+  // Arrange — координаты из отчёта о производительности у въезда на мост.
+  const avenue = road(762292234, [
+    { x: 23.395, y: -8.018, z: -171.942 },
+    { x: 23.365, y: -8.031, z: -163.055 },
+  ]);
+  avenue.width = 14;
+  const bridge = road(28678607, [
+    { x: 23.831, y: -8.018, z: -185.601 },
+    { x: 25.095, y: -8.014, z: -183.672 },
+    { x: 26.360, y: -7.970, z: -181.743 },
+    { x: 27.624, y: -7.908, z: -179.814 },
+    { x: 28.889, y: -7.849, z: -177.885 },
+    { x: 30.153, y: -7.827, z: -175.956 },
+    { x: 31.418, y: -7.954, z: -174.027 },
+    { x: 32.682, y: -8.018, z: -172.098 },
+  ], true);
+  bridge.width = 7;
+  // Act
+  const warnings = validateClearance([avenue, bridge]);
+  // Assert
+  expect(warnings).toEqual([]);
+  expect(bridge.blocked).toBe(false);
+});
+
+it('продолжает закрывать реальный недостаточный просвет в середине моста', () => {
+  // Arrange
+  const lower = road(1, [{ x: -50, y: 0, z: 50 }, { x: 50, y: 0, z: 50 }]);
+  const bridge = road(2, [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 100 }], true);
+  // Act
+  const warnings = validateClearance([lower, bridge]);
+  // Assert
+  expect(warnings).toEqual(['Дорога 2 закрыта: недостаточный просвет между уровнями.']);
+  expect(bridge.blocked).toBe(true);
+});
+
 it('сохраняет проезд с просветом 6,5 м и не проверяет съезд как пересечение', () => {
   // Arrange
   const lower = road(1, [{ x: -50, y: 0, z: 0 }, { x: 50, y: 0, z: 0 }]);
