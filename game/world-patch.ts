@@ -11,6 +11,7 @@ import type {
   Route,
   World,
   WorldPatch,
+  WorldPatchMeta,
 } from './types';
 import { changedChunks, edgeKey } from './world-update';
 import { routeHasCoverage } from './stream-coverage';
@@ -23,13 +24,19 @@ const elevationKey = (grid: ElevationGrid) =>
 const pointKey = (point: Point) => `${point.x}/${point.y}/${point.z}`;
 const areaKey = (area: Area) => `${area.osmType ?? 'way'}/${area.id}`;
 
-function delta<T>(before: T[], after: T[], key: (value: T) => string) {
+function delta<T>(
+  before: T[],
+  after: T[],
+  key: (value: T) => string,
+  same: (left: T, right: T) => boolean = (left, right) =>
+    json(left) === json(right),
+) {
   const old = new Map(before.map((value) => [key(value), value])),
     addedOrUpdated: T[] = [];
   for (const value of after) {
     const id = key(value),
       previous = old.get(id);
-    if (!previous || json(previous) !== json(value)) addedOrUpdated.push(value);
+    if (!previous || !same(previous, value)) addedOrUpdated.push(value);
     old.delete(id);
   }
   return { addedOrUpdated, removed: [...old.values()] };
@@ -64,13 +71,24 @@ function candidateChunks(previous: World, next: World) {
   return chunks;
 }
 
-export function createWorldPatch(previous: World, next: World): WorldPatch {
+export function createWorldPatch(
+  previous: World,
+  next: World,
+  installedChunks?: Iterable<string>,
+): WorldPatch {
   const oldCoverage = new Set(previous.loadedTiles),
     newCoverage = new Set(next.loadedTiles),
     nodes = delta<RoadNode>(previous.nodes, next.nodes, (node) =>
       String(node.id),
     ),
-    edges = delta<Edge>(previous.edges, next.edges, edgeKey),
+    edges = delta<Edge>(
+      previous.edges,
+      next.edges,
+      edgeKey,
+      (left, right) =>
+        json({ ...left, id: 0, sourceHeightRange: undefined }) ===
+        json({ ...right, id: 0, sourceHeightRange: undefined }),
+    ),
     restrictions = delta<Restriction>(
       previous.restrictions,
       next.restrictions,
@@ -120,7 +138,99 @@ export function createWorldPatch(previous: World, next: World): WorldPatch {
     treesRemoved: trees.removed,
     elevationPatches: elevation.addedOrUpdated,
     elevationPatchesRemoved: elevation.removed.map(elevationKey),
-    dirtyChunks: changedChunks(previous, next, candidateChunks(previous, next)),
+    dirtyChunks: changedChunks(
+      previous,
+      next,
+      installedChunks ?? candidateChunks(previous, next),
+    ),
     invalidatedRoutes: [...invalidatedRoutes],
+  };
+}
+
+function applyDelta<T>(
+  previous: T[],
+  updated: T[],
+  removed: string[],
+  key: (value: T) => string,
+) {
+  const replacements = new Map(updated.map((value) => [key(value), value])),
+    gone = new Set(removed),
+    seen = new Set<string>();
+  const kept = previous.flatMap((value) => {
+    const id = key(value);
+    if (gone.has(id)) return [];
+    seen.add(id);
+    return [replacements.get(id) ?? value];
+  });
+  for (const value of updated)
+    if (!seen.has(key(value))) kept.push(value);
+  return kept;
+}
+
+export function applyWorldPatch(
+  previous: World,
+  patch: WorldPatch,
+  meta: WorldPatchMeta,
+): World {
+  const nodes = applyDelta(
+      previous.nodes,
+      patch.nodesAddedOrUpdated,
+      patch.nodesRemoved.map(String),
+      (node) => String(node.id),
+    ),
+    edges = applyDelta(
+      previous.edges,
+      patch.edgesAddedOrUpdated,
+      patch.edgesRemoved,
+      edgeKey,
+    ).map((edge, id) => (edge.id === id ? edge : { ...edge, id })),
+    restrictions = applyDelta(
+      previous.restrictions,
+      patch.restrictionsAddedOrUpdated,
+      patch.restrictionsRemoved.map(restrictionKey),
+      restrictionKey,
+    ),
+    buildings = applyDelta(
+      previous.buildings,
+      patch.buildingsAddedOrUpdated,
+      patch.buildingsRemoved.map(
+        (building) => `${building.osmType ?? 'way'}/${building.id}`,
+      ),
+      (building) => `${building.osmType ?? 'way'}/${building.id}`,
+    ),
+    areas = applyDelta(
+      previous.areas,
+      patch.areasAddedOrUpdated,
+      patch.areasRemoved.map(
+        (area) => `${area.osmType ?? 'way'}/${area.id}`,
+      ),
+      areaKey,
+    ),
+    trees = applyDelta(
+      previous.trees,
+      patch.treesAdded,
+      patch.treesRemoved.map(pointKey),
+      pointKey,
+    ),
+    elevationPatches = applyDelta(
+      previous.elevation.patches ?? [previous.elevation],
+      patch.elevationPatches,
+      patch.elevationPatchesRemoved,
+      elevationKey,
+    ),
+    loadedTiles = new Set(previous.loadedTiles ?? []);
+  patch.coverageRemoved.forEach((key) => loadedTiles.delete(key));
+  patch.coverageAdded.forEach((key) => loadedTiles.add(key));
+  return {
+    ...previous,
+    ...meta,
+    nodes,
+    edges,
+    restrictions,
+    buildings,
+    areas,
+    trees,
+    elevation: { ...meta.elevation, patches: elevationPatches },
+    loadedTiles: [...loadedTiles],
   };
 }

@@ -79,17 +79,25 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       maxElements: 360000,
     },
     high: {
-      blockingRadiusMeters: 2500,
-      targetRadiusMeters: 3000,
-      forwardTileRows: 4,
-      maxConcurrentTiles: 12,
-      maxUpdateTiles: 8,
-      maxElements: 360000,
+      blockingRadiusMeters: 700,
+      targetRadiusMeters: 800,
+      forwardTileRows: 1,
+      maxConcurrentTiles: 6,
+      maxUpdateTiles: 2,
+      maxElements: 100000,
     },
   };
 
 export function mapStreamingPolicy(quality: Settings['quality']) {
   return MAP_STREAMING_POLICIES[quality];
+}
+
+export function mapForwardRows(policy: MapStreamingPolicy, speedMetersPerSecond: number) {
+  return speedMetersPerSecond > 2 ? policy.forwardTileRows : 0;
+}
+
+export function mapRadiusAtSpeed(policy: MapStreamingPolicy, speedMetersPerSecond: number) {
+  return speedMetersPerSecond > 2 ? policy.targetRadiusMeters : policy.blockingRadiusMeters;
 }
 
 export function startupTiles(center: Center, radiusMeters = 1000) {
@@ -505,8 +513,8 @@ export class RegionStream {
     this.targetTileCount = tileOrder(
       { x: 0, y: 0, z: 0 },
       0,
-      this.policy.targetRadiusMeters,
-      this.policy.forwardTileRows,
+      this.policy.blockingRadiusMeters,
+      0,
       this.center,
     ).length;
     this.startupRawKeys = new Set<string>();
@@ -612,11 +620,12 @@ export class RegionStream {
     }
   }
 
-  snapshot(focus: Point): RegionData {
+  snapshot(focus: Point, full = true): RegionData {
     const elements = new Map<string, OSMElement>();
-    for (const tile of this.tiles.values())
-      for (const element of tile.elements)
-        elements.set(`${element.type}/${element.id}`, element);
+    if (full)
+      for (const tile of this.tiles.values())
+        for (const element of tile.elements)
+          elements.set(`${element.type}/${element.id}`, element);
     return {
       center: this.center,
       elements: [...elements.values()],
@@ -624,9 +633,11 @@ export class RegionStream {
         width: 2,
         size: 1,
         values: new Float32Array(4),
-        patches: [...this.tiles.values()].map((tile) =>
-          tileElevationForSession(tile, this.center),
-        ),
+        patches: full
+          ? [...this.tiles.values()].map((tile) =>
+              tileElevationForSession(tile, this.center),
+            )
+          : undefined,
       },
       drivingSide: this.side,
       fetchedAt: new Date().toISOString(),
@@ -645,14 +656,16 @@ export class RegionStream {
   async next(
     p: Point,
     heading: number,
-    latest?: () => { position: Point; heading: number },
+    latest?: () => { position: Point; heading: number; speedMetersPerSecond?: number },
+    speedMetersPerSecond = 0,
+    compactUpdate = false,
   ): Promise<RegionData | null> {
     this.control.signal.throwIfAborted();
     let order = tileOrder(
       p,
       heading,
-      this.policy.targetRadiusMeters,
-      this.policy.forwardTileRows,
+      mapRadiusAtSpeed(this.policy, speedMetersPerSecond),
+      mapForwardRows(this.policy, speedMetersPerSecond),
       this.center,
     );
     this.targetTileCount = order.length;
@@ -689,8 +702,8 @@ export class RegionStream {
         order = tileOrder(
           p,
           heading,
-          this.policy.targetRadiusMeters,
-          this.policy.forwardTileRows,
+          mapRadiusAtSpeed(this.policy, current.speedMetersPerSecond ?? speedMetersPerSecond),
+          mapForwardRows(this.policy, current.speedMetersPerSecond ?? speedMetersPerSecond),
           this.center,
         );
       }
@@ -789,7 +802,7 @@ export class RegionStream {
             elements: kept.get(result.key)?.elements.length,
           });
         }
-      return this.snapshot(p);
+      return this.snapshot(p, !compactUpdate);
     } catch {
       this.control.signal.throwIfAborted();
       this.status = 'Не удалось подгрузить участок. Повторим автоматически.';

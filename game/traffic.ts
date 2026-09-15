@@ -9,6 +9,7 @@ import { smoothPath, samplePath, type DrivingPath } from './driving-path';
 import { createTrafficCar, setCarLights, type CarVisual, type CarKind } from './visuals';
 import {edgeById, edgeStableId} from './road-graph';
 import { createRacerTraits, DEFAULT_RACER_TRAITS, racingLineOffset } from './racing-ai';
+import { TrafficNeighborIndex } from './traffic-neighbors';
 
 type Plan={ids:EdgeStableId[]; ends:number[]; path:DrivingPath; total:number; exhausted:boolean};
 type Agent={id:number;edge:EdgeStableId;distance:number;speed:number;point:Point;heading:number;stuck:number;visual?:CarVisual;body?:PhysicsAggregate;plan?:Plan;travel?:number;laneOffset?:number;avoidanceOffset?:number;avoidanceWay?:number;dynamic?:boolean;impact?:number;turn?:number;race?:{route:Route;index:number;lap:number;finished:boolean;progress:number;traits?:RacerTraits;finishTime?:number}};
@@ -128,7 +129,9 @@ export class Traffic {
     }
     // Решения принимаются по одному снимку, чтобы порядок массива не давал преимущество.
     const snapshot=this.agents.map(a=>({agent:a,point:a.dynamic&&a.visual? a.visual.root.position.clone():{...a.point},heading:a.heading,speed:a.speed}));
+    const neighborIndex = new TrafficNeighborIndex(snapshot);
     for(const a of this.agents){
+      const neighbors = neighborIndex.query(a.point, 130);
       if(!a.plan)this.makePlan(a);
       if(!a.race&&!a.plan!.exhausted&&a.plan!.total-(a.travel||0)<120){
         const cut=a.plan!.ends.findIndex(end=>end>(a.travel||0)-80);
@@ -138,7 +141,7 @@ export class Traffic {
       const plan=a.plan!,edge=edgeById(this.world,a.edge)!,traits=a.race?.traits||DEFAULT_RACER_TRAITS;
       if(a.avoidanceWay!==undefined&&(a.avoidanceWay!==edge.way||edge.bridge||edge.tunnel)){a.avoidanceOffset=undefined;a.avoidanceWay=undefined;}
       let gap=Infinity,leadSpeed=Infinity;const scanDistance=a.race?28+traits.reaction*42:60;
-      for(const b of snapshot)if(b.agent!==a&&Math.abs(b.point.y-a.point.y)<2.5){
+      for(const b of neighbors)if(b.agent!==a&&Math.abs(b.point.y-a.point.y)<2.5){
         const dx=b.point.x-a.point.x,dz=b.point.z-a.point.z,along=dx*Math.sin(a.heading)+dz*Math.cos(a.heading),lateral=Math.abs(dx*Math.cos(a.heading)-dz*Math.sin(a.heading));
         const aligned=Math.cos(b.heading-a.heading)>.45;
         if(aligned&&along>0&&along<scanDistance&&lateral<2.05&&along<gap){gap=along;leadSpeed=b.speed;}
@@ -147,7 +150,7 @@ export class Traffic {
       if(along>0&&lateral<2.05&&Math.abs(player.y-a.point.y)<2.5&&along<gap){gap=along;leadSpeed=playerSpeed;}
       const laneClear=(lane:number)=>{
         const shift=lane-(a.laneOffset??this.lane(a,edge)),margin=a.race?2.35-traits.aggression*.75:2.5,rear=a.race?-(16-traits.aggression*10):-14,front=a.race?45-traits.aggression*12:45;
-        const clear=snapshot.every(b=>{if(b.agent===a||Math.abs(b.point.y-a.point.y)>3)return true;const dx=b.point.x-a.point.x,dz=b.point.z-a.point.z;const ahead=dx*Math.sin(a.heading)+dz*Math.cos(a.heading),lateral=dx*Math.cos(a.heading)-dz*Math.sin(a.heading)-shift;return ahead<rear||ahead>front||Math.abs(lateral)>margin;});
+        const clear=neighbors.every(b=>{if(b.agent===a||Math.abs(b.point.y-a.point.y)>3)return true;const dx=b.point.x-a.point.x,dz=b.point.z-a.point.z;const ahead=dx*Math.sin(a.heading)+dz*Math.cos(a.heading),lateral=dx*Math.cos(a.heading)-dz*Math.sin(a.heading)-shift;return ahead<rear||ahead>front||Math.abs(lateral)>margin;});
         const playerLateral=dx*Math.cos(a.heading)-dz*Math.sin(a.heading)-shift;
         const playerClear=Math.abs(player.y-a.point.y)>3||along<rear||along>front||Math.abs(playerLateral)>margin;
         return clear&&playerClear;
@@ -165,7 +168,7 @@ export class Traffic {
         const approaching=edgeById(this.world,plan.ids[i])!,points=approaching.points,b=points.at(-1)!,c=points.at(-2)!;
         const axis=Math.abs(b.x-c.x)>Math.abs(b.z-c.z)?1:0,dist=plan.ends[i]-(a.travel||0);
         const nextEdge=plan.ids[i+1]?edgeById(this.world,plan.ids[i+1]):undefined;
-        if(nextEdge&&(nextEdge.laneProfile?.shared??(!nextEdge.oneWay&&nextEdge.width<5.6))&&snapshot.some(b=>b.agent!==a&&edgeById(this.world,b.agent.edge)!.way===nextEdge.way&&Math.cos(b.heading-a.heading)<0))stop=Math.min(stop,dist-5);
+        if(nextEdge&&(nextEdge.laneProfile?.shared??(!nextEdge.oneWay&&nextEdge.width<5.6))&&neighbors.some(b=>b.agent!==a&&edgeById(this.world,b.agent.edge)!.way===nextEdge.way&&Math.cos(b.heading-a.heading)<0))stop=Math.min(stop,dist-5);
         if(!a.race&&this.signals.has(approaching.to)&&signalPhase(time,axis)!=='green')stop=Math.min(stop,dist-5);
         if(!a.race&&outgoing(this.world,approaching.to).length>2&&dist<20){
           const r=this.reservations.get(approaching.to);

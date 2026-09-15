@@ -251,11 +251,15 @@ export function reduceMapElements(
       tags.type === 'building'
     ) {
       if (
-        mode !== 'roads' &&
-        (tags.name ||
-          tags['name:ru'] ||
-          tags.historic ||
-          featureNearStreet(element, mode === 'minimal' ? 12 : FRONTAGE_METERS))
+        tags.building === 'wall' ||
+        (mode !== 'roads' &&
+          (tags.name ||
+            tags['name:ru'] ||
+            tags.historic ||
+            featureNearStreet(
+              element,
+              mode === 'minimal' ? 12 : FRONTAGE_METERS,
+            )))
       )
         retain(element);
     } else if (isArea(element)) {

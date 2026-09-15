@@ -6,7 +6,7 @@ it('мобильный профиль хранит меньше квартало
   // Arrange / Act
   const position={x:240,y:0,z:240},desktop=desiredChunks(position,.7,'high'),mobile=desiredChunks(position,.7,'mobile');
   // Assert
-  expect(mobile.length).toBeLessThan(desktop.length*.5);
+  expect(mobile.length).toBeLessThanOrEqual(desktop.length*.75);
   for(const key of ['0,0','1,1'])expect(mobile.find(c=>c.key===key)?.lod).toBe(0);
   expect(mobile.some(c=>c.lod===2)).toBe(true);
 });

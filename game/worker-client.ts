@@ -6,9 +6,11 @@ import type {
   World,
   EdgeStableId,
   PreparedWorld,
+  PreparedPatch,
   Route,
   SourceTileData,
 } from './types';
+import { applyWorldPatch } from './world-patch';
 // oxlint-disable-next-line import/default -- Vite создаёт конструктор Worker для импорта с ?worker.
 import WorkerConstructor from './world.worker?worker';
 export class WorldWorker {
@@ -92,35 +94,55 @@ export class WorldWorker {
       return world;
     });
   }
-  async prepare(region: RegionData) {
+  async prepare(
+    region: RegionData,
+    installedChunks?: string[],
+    patchOnly = false,
+  ) {
     if (this.disposed) throw new Error('Загрузка отменена.');
     if (!this.world) throw new Error('Район ещё не подготовлен.');
-    // Долгая пересборка не занимает очередь кварталов под движущейся машиной.
-    this.preparationWorker?.terminate();
-    const worker = (this.preparationWorker = this.createWorker());
+    const streamed = !!this.sourceTiles && !!region.sourceTiles;
+    if (this.preparationWorker && this.preparationWorker !== this.worker)
+      this.preparationWorker.terminate();
+    // Потоковые тайлы уже хранятся в активном worker; повторная передача мира
+    // при каждом обновлении карты расходовала память браузера.
+    const worker = (this.preparationWorker = streamed
+      ? this.worker
+      : this.createWorker());
     this.preparedWorld = null;
     this.preparedSourceTiles = null;
     try {
-      await this.request<void>(
-        {
-          type: 'adopt',
-          world: this.world,
-          sourceTiles: this.sourceTiles
-            ? [...this.sourceTiles.values()]
-            : undefined,
-        },
+      if (!streamed)
+        await this.request<void>(
+          {
+            type: 'adopt',
+            world: this.world,
+            sourceTiles: this.sourceTiles
+              ? [...this.sourceTiles.values()]
+              : undefined,
+          },
+          worker,
+        );
+      const prepared = await this.prepareInWorker(
+        region,
         worker,
+        installedChunks,
+        patchOnly,
       );
-      const prepared = await this.prepareInWorker(region, worker);
       this.preparedWorld = prepared.world;
       return prepared;
     } catch (error) {
-      worker.terminate();
+      if (worker !== this.worker) worker.terminate();
       if (this.preparationWorker === worker) this.preparationWorker = null;
       throw error;
     }
   }
-  private prepareInWorker(region: RegionData, worker: Worker) {
+  private prepareInWorker(
+    region: RegionData,
+    worker: Worker,
+    installedChunks?: string[],
+    patchOnly = false,
+  ) {
     if (!this.sourceTiles || !region.sourceTiles)
       return this.request<PreparedWorld>({ type: 'prepare', region }, worker);
     const next = new Map(region.sourceTiles.map((tile) => [tile.key, tile])),
@@ -135,7 +157,7 @@ export class WorldWorker {
         );
       }),
       remove = [...this.sourceTiles.keys()].filter((key) => !next.has(key));
-    return this.request<PreparedWorld>(
+    return this.request<PreparedWorld | PreparedPatch>(
       {
         type: 'prepareTiles',
         update: {
@@ -146,12 +168,19 @@ export class WorldWorker {
           fetchedAt: region.fetchedAt,
           focus: region.focus,
           heightDatum: region.heightDatum,
+          installedChunks,
+          patchOnly,
         },
       },
       worker,
     ).then((prepared) => {
       this.preparedSourceTiles = next;
-      return prepared;
+      return 'world' in prepared
+        ? prepared
+        : {
+            world: applyWorldPatch(this.world!, prepared.patch, prepared.meta),
+            patch: prepared.patch,
+          };
     });
   }
   raceRoute(start: EdgeStableId, kind: Route['kind']) {
@@ -164,8 +193,10 @@ export class WorldWorker {
         new Error('Новая часть района ещё не подготовлена.'),
       );
     return this.request<void>({ type: 'commit' }, worker).then(() => {
-      this.worker.terminate();
-      this.worker = worker;
+      if (worker !== this.worker) {
+        this.worker.terminate();
+        this.worker = worker;
+      }
       this.preparationWorker = null;
       this.world = this.preparedWorld;
       this.preparedWorld = null;
@@ -189,7 +220,8 @@ export class WorldWorker {
   dispose() {
     this.disposed = true;
     this.worker.terminate();
-    this.preparationWorker?.terminate();
+    if (this.preparationWorker && this.preparationWorker !== this.worker)
+      this.preparationWorker.terminate();
     this.pending.forEach((p) => p.reject(new Error('Загрузка отменена.')));
     this.pending.clear();
   }

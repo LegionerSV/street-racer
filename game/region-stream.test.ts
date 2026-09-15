@@ -2,6 +2,8 @@ import { expect, it } from 'vitest';
 import { criticalChunks, desiredChunks } from './chunks';
 import {
   mapStreamingPolicy,
+  mapForwardRows,
+  mapRadiusAtSpeed,
   mapTileAt,
   retainTiles,
   startupTiles,
@@ -26,16 +28,18 @@ it('близкие точки старта используют одинаков
     first = startupTiles(center, radius),
     second = startupTiles(nearby, radius);
   // Assert
-  expect(first).toEqual(second);
-  expect(first.length).toBeGreaterThan(9);
-  expect(first.every((key) => /^15\/\d+\/\d+$/.test(key))).toBe(true);
+  const shared = first.filter(key => second.includes(key));
+  expect(latLonToSourceTile(center.lat, center.lon)).toEqual(latLonToSourceTile(nearby.lat, nearby.lon));
+  expect(shared.length).toBeGreaterThanOrEqual(Math.min(first.length, second.length) - 3);
+  expect(first.length).toBeGreaterThanOrEqual(9);
+  expect([...first, ...second].every((key) => /^15\/\d+\/\d+$/.test(key))).toBe(true);
 });
 
 it.each([
   ['mobile', 1500, 6],
   ['low', 2000, 8],
   ['medium', 2500, 10],
-  ['high', 2500, 10],
+  ['high', 700, 2],
 ] as const)('на качестве %s стартовое окно покрывает квадрат радиусом %i м', (quality, radius, chunks) => {
   // Arrange
   const start = { lat: 59.92328049468514, lon: 30.38644871921713 };
@@ -47,6 +51,43 @@ it.each([
   for (let x = -chunks; x < chunks; x++)
     for (let z = -chunks; z < chunks; z++)
       expect(tileReady(loaded, `${x},${z}`, start)).toBe(true);
+});
+
+it('высокое качество хранит только ближайшие source-тайлы и сохраняет запас по ходу движения', () => {
+  // Arrange
+  const start = { lat: 59.934, lon: 30.335 },
+    previousWindow = startupTiles(start, 1500),
+    point = { x: 0, y: 0, z: 0 };
+  // Act
+  const policy = mapStreamingPolicy('high'),
+    initial = startupTiles(start, policy.blockingRadiusMeters),
+    ahead = tileOrder(point, 0, policy.targetRadiusMeters, policy.forwardTileRows, start);
+  // Assert
+  expect(policy.targetRadiusMeters).toBe(800);
+  expect(policy.maxElements).toBe(100000);
+  expect(initial.length).toBeLessThan(previousWindow.length);
+  expect(ahead).toContain(mapTileAt({ x: 0, z: 800 }, start));
+  const kremlinTiles = startupTiles({ lat: 55.7534, lon: 37.6228 }, policy.blockingRadiusMeters);
+  expect(kremlinTiles).toContain('15/19808/10243');
+  expect(kremlinTiles.length).toBeLessThan(12);
+  const southernWallTiles = startupTiles({ lat: 55.7528, lon: 37.6216 }, policy.blockingRadiusMeters);
+  expect(southernWallTiles).toContain('15/19808/10243');
+  expect(southernWallTiles.length).toBeLessThan(12);
+});
+
+it('на стоянке не загружает будущие ряды карты, а при движении сохраняет опережение', () => {
+  // Arrange
+  const policy = mapStreamingPolicy('high');
+  // Act
+  const parked = mapForwardRows(policy, 0),
+    crawling = mapForwardRows(policy, 1),
+    driving = mapForwardRows(policy, 12);
+  // Assert
+  expect(parked).toBe(0);
+  expect(crawling).toBe(0);
+  expect(driving).toBe(1);
+  expect(mapRadiusAtSpeed(policy, 0)).toBe(policy.blockingRadiusMeters);
+  expect(mapRadiusAtSpeed(policy, 12)).toBe(policy.targetRadiusMeters);
 });
 
 it('метровое стартовое окно не сужается на высокой широте', () => {
@@ -61,7 +102,7 @@ it('метровое стартовое окно не сужается на вы
   expect(northTiles.length).toBeGreaterThanOrEqual(equatorTiles.length);
 });
 
-it('загружает подготовленные тайлы крупными пакетами на мощных устройствах', () => {
+it('ограничивает пакет обновления карты на мощных устройствах', () => {
   // Arrange / Act
   const mobile = mapStreamingPolicy('mobile'),
     low = mapStreamingPolicy('low'),
@@ -73,9 +114,19 @@ it('загружает подготовленные тайлы крупными 
     low.maxConcurrentTiles,
     medium.maxConcurrentTiles,
     high.maxConcurrentTiles,
-  ]).toEqual([4, 6, 8, 12]);
-  expect([mobile.maxUpdateTiles, low.maxUpdateTiles, medium.maxUpdateTiles, high.maxUpdateTiles]).toEqual([4, 6, 8, 8]);
-  expect([mobile.forwardTileRows, low.forwardTileRows, medium.forwardTileRows, high.forwardTileRows]).toEqual([4, 4, 4, 4]);
+  ]).toEqual([4, 6, 8, 6]);
+  expect([mobile.maxUpdateTiles, low.maxUpdateTiles, medium.maxUpdateTiles, high.maxUpdateTiles]).toEqual([4, 6, 8, 2]);
+  expect([mobile.forwardTileRows, low.forwardTileRows, medium.forwardTileRows, high.forwardTileRows]).toEqual([4, 4, 4, 1]);
+});
+it('не запрашивает в высоком качестве дальние тайлы сверх бюджета элементов', () => {
+  // Arrange
+  const policy = mapStreamingPolicy('high');
+  const petersburg = { lat: 59.934, lon: 30.335 };
+  // Act
+  const moving = tileOrder({ x: 0, y: 0, z: 0 }, 0, policy.targetRadiusMeters, policy.forwardTileRows, petersburg);
+  // Assert
+  expect(policy.targetRadiusMeters).toBe(800);
+  expect(moving.length).toBeLessThanOrEqual(55);
 });
 it('ставит четыре клетки по ходу движения перед соседними боковыми клетками', () => {
   // Arrange

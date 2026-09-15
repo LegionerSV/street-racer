@@ -3,7 +3,7 @@ import { boundsOf, overlaps, type Bounds } from './geometry';
 import { coverageBounds } from './stream-coverage';
 import { createRaceLocations, invalidateRaceRoutes } from './network';
 import { edgeById, edgeStableId, updateRoadMetrics } from './road-graph';
-import { distance, distance2, smoother } from './geo';
+import { distance, distance2, sampleElevation, smoother } from './geo';
 import { alignCarriagewayElevations } from './carriageways';
 import { validateClearance } from './clearance';
 export const edgeKey = edgeStableId;
@@ -106,7 +106,19 @@ export function changedChunks(
   const changed = [...new Set([...oldCoverage, ...newCoverage])].filter(
     (k) => oldCoverage.has(k) !== newCoverage.has(k),
   );
-  dirty.push(...coverageBounds(changed, next.center)!);
+  const changedCoverage = coverageBounds(changed, next.center) ?? [];
+  const revealExisting = (bounds: Bounds) => {
+    // Только прежняя геометрия, которую ограничивал индекс покрытия,
+    // требует пересборки без изменения OSM-объекта.
+    for (const coverage of changedCoverage)
+      if (overlaps(bounds, coverage))
+        dirty.push({
+          minX: Math.max(bounds.minX, coverage.minX) - 60,
+          maxX: Math.min(bounds.maxX, coverage.maxX) + 60,
+          minZ: Math.max(bounds.minZ, coverage.minZ) - 60,
+          maxZ: Math.min(bounds.maxZ, coverage.maxZ) + 60,
+        });
+  };
   const samePoints = (a: Point[], b: Point[]) =>
     a.length === b.length &&
     a.every((p, i) => p.x === b[i].x && p.y === b[i].y && p.z === b[i].z);
@@ -130,7 +142,7 @@ export function changedChunks(
     ) {
       dirty.push(boundsOf(edge.points, edge.width / 2 + 60));
       if (old) dirty.push(boundsOf(old.points, old.width / 2 + 60));
-    }
+    } else revealExisting(boundsOf(edge.points, edge.width / 2));
     roads.delete(edgeKey(edge));
   }
   for (const edge of roads.values())
@@ -140,6 +152,7 @@ export function changedChunks(
     for (const o of after) {
       const key = JSON.stringify(o);
       if (!old.delete(key)) dirty.push(boundsOf(points(o), 60));
+      else revealExisting(boundsOf(points(o)));
     }
     for (const o of old.values()) dirty.push(boundsOf(points(o), 60));
   }
@@ -155,8 +168,10 @@ export function changedChunks(
       p,
     ]),
   );
+  let elevationChanged = false;
   for (const patch of next.elevation.patches || [next.elevation]) {
     const old = patches.get(patchKey(patch));
+    patches.delete(patchKey(patch));
     if (
       !old ||
       old.width !== patch.width ||
@@ -166,18 +181,28 @@ export function changedChunks(
       old.values.length !== patch.values.length ||
       !old.values.every((v, i) => v === patch.values[i])
     ) {
-      const x = patch.offsetX || 0,
-        z = patch.offsetZ || 0,
-        sizeX = patch.sizeX ?? patch.size,
-        sizeZ = patch.sizeZ ?? patch.size;
-      dirty.push({
-        minX: x - sizeX / 2 - 60,
-        maxX: x + sizeX / 2 + 60,
-        minZ: z - sizeZ / 2 - 60,
-        maxZ: z + sizeZ / 2 + 60,
-      });
+      elevationChanged = true;
     }
   }
+  elevationChanged ||= patches.size > 0;
+  const terrainChangedIn = (x: number, z: number) => {
+    if (!elevationChanged) return false;
+    // DEM выходит далеко за пределы OSM-тайла. При смене одного тайла
+    // сравниваем итоговую поверхность квартала, а не полный охват DEM.
+    for (let ix = 0; ix <= 4; ix++)
+      for (let iz = 0; iz <= 4; iz++) {
+        const px = x * 250 + ix * 62.5,
+          pz = z * 250 + iz * 62.5;
+        if (
+          Math.abs(
+            sampleElevation(previous.elevation, px, pz) -
+              sampleElevation(next.elevation, px, pz),
+          ) > 0.03
+        )
+          return true;
+      }
+    return false;
+  };
   return [...installed].filter((key) => {
     const [x, z] = key.split(',').map(Number);
     return dirty.some((b) =>
@@ -187,6 +212,6 @@ export function changedChunks(
         minZ: z * 250,
         maxZ: (z + 1) * 250,
       }),
-    );
+    ) || terrainChangedIn(x, z);
   });
 }

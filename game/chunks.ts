@@ -48,8 +48,8 @@ export class ChunkInstallQueue<T> {
   }
 }
 export function desiredChunks(p: Point, heading: number, quality: Settings['quality'], streaming = false, speedMetersPerSecond = 0) {
-  const mobile=quality==='mobile',detail=mobile?250:quality==='high'?750:500;
-  const far = mobile ? 650 : quality === 'high' ? 1000 : quality === 'medium' ? 900 : 800;
+  const mobile=quality==='mobile',detail=mobile?250:quality==='high'?300:500;
+  const far = mobile ? 400 : quality === 'high' ? 500 : quality === 'medium' ? 900 : 800;
   const result: { key: string; lod: number; priority: number }[] = [];
   // На скорости 200 км/ч запас в 18 секунд покрывает четыре квартала по 250 м.
   const lookahead = streaming ? Math.min(4 * CHUNK_SIZE, Math.max(0, speedMetersPerSecond) * 18) : 0;
@@ -71,11 +71,10 @@ export function desiredChunks(p: Point, heading: number, quality: Settings['qual
 export function startupDrivingChunks(p: Point, heading: number, quality: Settings['quality']) {
   const cx = Math.floor(p.x / CHUNK_SIZE), cz = Math.floor(p.z / CHUNK_SIZE);
   return desiredChunks(p, heading, quality, true).filter(chunk => {
-    if (chunk.lod !== 0) return false;
     const [x, z] = chunk.key.split(',').map(Number);
-    const radius = quality === 'high' ? 2 : 1;
+    const radius = 1;
     return Math.abs(x - cx) <= radius && Math.abs(z - cz) <= radius;
-  });
+  }).map(chunk => ({ ...chunk, lod: 0 }));
 }
 
 // До начала движения нужны коллизии под машиной и впереди, включая запас
@@ -345,7 +344,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
       ribbon(result.structures, a, b, -outer-.2, outer+.2, 5.7, [.25, .28, .27]);
       if (lod === 0) for (const [start, end] of dashSpans(s.station, length, edge.laneProfile?.direction || 1, 30, 3)) ribbon(result.windows, mixPoint(a, b, start / length), mixPoint(a, b, end / length), w - .4, w - .1, 5.6, [.7, .85, .85]);
     }
-    if (edge.blocked && !edge.unloaded && s.index === 0 && (world.loadedTiles || (Math.abs(a.x) < 2490 && Math.abs(a.z) < 2490))) {
+    if (edge.blocked && (!edge.blockedReasons?.length || edge.blockedReasons.some(reason => reason !== 'coverage')) && !edge.unloaded && s.index === 0 && (world.loadedTiles || (Math.abs(a.x) < 2490 && Math.abs(a.z) < 2490))) {
       const length = distance2(a, b), nx = (b.z - a.z) / length, nz = -(b.x - a.x) / length;
       for (let k = -Math.floor(w / 1.4); k <= Math.floor(w / 1.4); k++) box(result.structures, { x: a.x + nx * k * 1.4, y: a.y, z: a.z + nz * k * 1.4 }, 1.3, .9, 1.3, k % 2 ? [.8, .33, .12] : [.67, .68, .58]);
     }

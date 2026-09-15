@@ -68,6 +68,26 @@ it('дедуплицирует halo-объект и удаляет его тол
   ).toHaveLength(3);
 });
 
+it('считает единственного владельца без потери общих halo-ссылок', () => {
+  // Arrange
+  const shared = { type: 'node' as const, id: 1, lat: 0, lon: 0 },
+    unique = { type: 'node' as const, id: 2, lat: 0, lon: 0.001 },
+    tiles = [
+      tile('15/16384/16384', [shared, unique]),
+      tile('15/16385/16384', [shared]),
+      tile('15/16386/16384', [shared]),
+    ];
+  // Act
+  const registry = SourceTileRegistry.fromRegion(region(tiles))!,
+    staged = registry.stage(region(tiles.slice(1)));
+  // Assert
+  expect(registry.referenceCount('node/1')).toBe(3);
+  expect(registry.referenceCount('node/2')).toBe(1);
+  expect(staged.registry.referenceCount('node/1')).toBe(2);
+  expect(staged.registry.referenceCount('node/2')).toBe(0);
+  expect(staged.registry.affectedTiles(staged.changed, staged.changedElements)).toContain('15/16386/16384');
+});
+
 it('удаляет OSM-объект и его рёбра после выгрузки последнего owning tile', () => {
   // Arrange
   const first = region([tile('15/16384/16384', road)]),

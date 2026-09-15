@@ -26,7 +26,7 @@ function sameTile(left: SourceTileData, right: SourceTileData) {
 export class SourceTileRegistry {
   private constructor(
     private readonly tiles: Map<string, SourceTileData>,
-    private readonly references: Map<string, Set<string>>,
+    private readonly references: Map<string, string | string[]>,
   ) {}
 
   static fromRegion(region: RegionData) {
@@ -36,15 +36,17 @@ export class SourceTileRegistry {
 
   private static fromTiles(sourceTiles: SourceTileData[]) {
     const tiles = new Map<string, SourceTileData>(),
-      references = new Map<string, Set<string>>();
+      references = new Map<string, string | string[]>();
     for (const tile of sourceTiles) {
       parseSourceTileKey(tile.key);
       tiles.set(tile.key, tile);
       for (const element of tile.elements) {
         const key = elementKey(element),
-          owners = references.get(key) ?? new Set<string>();
-        owners.add(tile.key);
-        references.set(key, owners);
+          owners = references.get(key);
+        if (!owners) references.set(key, tile.key);
+        else if (typeof owners === 'string') {
+          if (owners !== tile.key) references.set(key, [owners, tile.key]);
+        } else if (!owners.includes(tile.key)) owners.push(tile.key);
       }
     }
     return new SourceTileRegistry(tiles, references);
@@ -81,7 +83,8 @@ export class SourceTileRegistry {
   }
 
   referenceCount(key: string) {
-    return this.references.get(key)?.size ?? 0;
+    const owners = this.references.get(key);
+    return owners ? typeof owners === 'string' ? 1 : owners.length : 0;
   }
 
   keys() {
@@ -110,8 +113,11 @@ export class SourceTileRegistry {
     for (const key of affected)
       for (const element of this.tiles.get(key)?.elements ?? [])
         changedObjects.add(elementKey(element));
-    for (const key of changedObjects)
-      for (const owner of this.references.get(key) ?? []) affected.add(owner);
+    for (const key of changedObjects) {
+      const owners = this.references.get(key);
+      if (typeof owners === 'string') affected.add(owners);
+      else for (const owner of owners ?? []) affected.add(owner);
+    }
     return [...affected];
   }
 

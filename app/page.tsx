@@ -52,6 +52,7 @@ export default function Home() {
   const [diagnostics, setDiagnostics] = useState<ReturnType<Game['diagnostics']> | null>(null);
   const savedRace = useRef<string | null>(null);
   const gameRef = useRef<Game | null>(null);
+  const diagnosticsAtRef = useRef(0);
   const workerRef = useRef<WorldWorker | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -115,7 +116,7 @@ export default function Home() {
       setWorld(generated);
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
       const game = await Game.create(canvasRef.current!, generated, worker, settings, next => {
-        setHUD(next); if (new URLSearchParams(location.search).has('debug')) setDiagnostics(gameRef.current?.diagnostics() || null);
+        setHUD(next); if (new URLSearchParams(location.search).has('debug') && performance.now() - diagnosticsAtRef.current >= 10000) { diagnosticsAtRef.current = performance.now(); setDiagnostics(gameRef.current?.diagnostics() || null); }
         if (next.race?.phase !== 'finished') savedRace.current = null;
         else if (next.race.finishTime !== undefined) {
           const key = recordKey(center, next.race.route.id);
@@ -146,7 +147,8 @@ export default function Home() {
     const lifecycle = new AbortController();
     const register = (tool: unknown) => { try { void Promise.resolve(context.registerTool(tool, { signal: lifecycle.signal })).catch(() => {}); } catch { /* WebMCP необязателен для браузера игрока. */ } };
     register({ name: 'select_driving_region', title: 'Выбрать район', description: 'Выбрать стартовую точку с последующей подгрузкой улиц по ходу движения.', inputSchema: { type: 'object', properties: { lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false }, annotations: { readOnlyHint: false }, execute: async (input: unknown) => { const value = input as { lat: number; lon: number }; validateCenter(value); if (stateRef.current.stage !== 'select') throw new Error('Сначала вернитесь к выбору района.'); mapRef.current?.fire('locationselect', value); await new Promise(resolve => requestAnimationFrame(resolve)); return { center: value }; } });
-    register({ name: 'read_driving_status', title: 'Состояние игры', description: 'Прочитать выбранный район, режим и состояние загрузки игры.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true }, execute: () => ({ ...stateRef.current, game: gameRef.current?.diagnostics() || null }) });
+    register({ name: 'read_driving_status', title: 'Состояние игры', description: 'Прочитать выбранный район, режим и состояние загрузки игры.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true }, execute: () => ({ ...stateRef.current, game: gameRef.current?.diagnostics() || null, loading: new URLSearchParams(location.search).has('debug') ? loadingLogRef.current?.snapshot() || null : null }) });
+    if (new URLSearchParams(location.search).has('debug')) register({ name: 'inspect_road_closures', title: 'Закрытые дороги', description: 'Показать причины закрытия дорог по названию.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false }, annotations: { readOnlyHint: true }, execute: (input: unknown) => gameRef.current?.inspectRoadClosures((input as { name: string }).name) || [] });
     return () => lifecycle.abort();
   }, []);
   // Диагностика локального прототипа доступна только с явным параметром URL.

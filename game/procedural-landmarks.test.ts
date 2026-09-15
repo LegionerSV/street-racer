@@ -254,6 +254,19 @@ for (const [city, scenarios] of [
         expect(
           world.buildings.find((b) => b.id === 1360656)?.envelopeHeight,
         ).toBeGreaterThan(20);
+      if (scenario.key === 'relation/1359278') {
+        const outline = world.buildings.find((b) => b.id === 1359278);
+        const firstUpperTier = Math.min(
+          ...world.buildings
+            .filter((b) => b.part && b.group === outline?.group)
+            .map((b) => b.minHeight ?? 0)
+            .filter((height) => height >= 3),
+        );
+        expect(outline?.envelopeHeight).toBeGreaterThanOrEqual(
+          firstUpperTier - 1,
+        );
+        expect(outline?.osmTags?.height).toBe('0');
+      }
       if (['relation/19710429', 'relation/3084697'].includes(scenario.key))
         expect(
           world.buildings.find((b) => `${b.osmType}/${b.id}` === scenario.key)

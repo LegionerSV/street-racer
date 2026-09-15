@@ -50,6 +50,9 @@ export function mapTransitionBlocksDriving(dirtyChunks:Iterable<string>,critical
   const dirty=new Set(dirtyChunks);
   return [...criticalChunks].some(key=>dirty.has(key));
 }
+export function mapStreamCanUpdate(state: { preparingRaceActive: boolean; raceActive: boolean; driveTestActive: boolean; hidden: boolean }) {
+  return !state.preparingRaceActive && !state.raceActive && !state.hidden;
+}
 export class Game {
   readonly engine: Engine;
   readonly scene: Scene;
@@ -407,8 +410,7 @@ export class Game {
     this.onHUD({ opponents:this.race?opponentMarkers(this.traffic.racers):[], speed: this.player.groundSpeed * 3.6, gear: this.player.speed < -1 ? 'R' : String(Math.max(1, Math.min(6, Math.floor(Math.abs(this.player.speed) / 10) + 1))), fps: Math.round(this.engine.getFps()), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, heading: this.player.heading, paused: this.paused, loading: this.loading, mapStatus: this.preparingRace?'Прокладываем маршрут по загруженной карте…':this.mapStream?.status, race: this.race ? { ...this.race } : null, navigation:this.settings.navigator&&this.race?nextRaceTurn(this.race,this.player.position):null, nearRace: this.nearRace, message: this.message, chunks: this.chunks.size, vehicles: this.traffic.agents.filter(a => !!a.visual).length, street: safeEdge?.name, lanes: safeEdge ? laneCaption(safeEdge) : '', weather: this.atmosphere.state.label, hour: this.atmosphere.state.hour, wetness: this.atmosphere.state.wetness, slip: this.player.slip, odometer: this.odometer, nitro: this.player.nitro.charge, boosting: this.player.nitro.active&&!this.paused&&!this.loading });
   }
   private recoverAtMapBoundary(critical:string[]){
-    if(!needsRaceRecovery(!!this.race||!!this.driveTest,this.mapCoverage,critical,this.world.center))return critical;
-    if(this.driveTest)this.endDriveTest();
+    if(!needsRaceRecovery(!!this.race,this.mapCoverage,critical,this.world.center))return critical;
     this.recover();
     this.message='Впереди район ещё не загружен. Автомобиль возвращён на трассу.';
     return criticalChunks(this.player.position,this.player.heading,!!this.mapCoverage);
@@ -421,7 +423,7 @@ export class Game {
       const timer=setTimeout(finish,ms);signal.addEventListener('abort',finish,{once:true});
       if(signal.aborted)finish();
     });
-    const blocked=()=>this.preparingRace||!!this.race||!!this.driveTest||document.hidden;
+    const blocked=()=>!mapStreamCanUpdate({preparingRaceActive:this.preparingRace,raceActive:!!this.race,driveTestActive:!!this.driveTest,hidden:document.hidden});
     void (async()=>{
       let awaiting:RegionData|null=null;
       while(!this.disposed){
@@ -429,7 +431,7 @@ export class Game {
         try{
           const updateStarted=performance.now();
           const position=this.player.position;
-          const region:RegionData|null=awaiting??await stream.next({x:position.x,y:position.y,z:position.z},this.player.speed<0?this.player.heading+Math.PI:this.player.heading,()=>({position:{x:this.player.position.x,y:this.player.position.y,z:this.player.position.z},heading:this.player.speed<0?this.player.heading+Math.PI:this.player.heading}));
+          const region:RegionData|null=awaiting??await stream.next({x:position.x,y:position.y,z:position.z},this.player.speed<0?this.player.heading+Math.PI:this.player.heading,()=>({position:{x:this.player.position.x,y:this.player.position.y,z:this.player.position.z},heading:this.player.speed<0?this.player.heading+Math.PI:this.player.heading,speedMetersPerSecond:Math.abs(this.player.speed)}),Math.abs(this.player.speed),true);
           const fetchedAt=performance.now();
           if(this.disposed)return;
           if(!region){await wait(1500);continue;}
@@ -437,7 +439,8 @@ export class Game {
           while(!this.disposed&&blocked())await wait(1000);
           if(this.disposed)return;
           const prepareStarted=performance.now();
-          const prepared=await this.worker.prepare(region),next=prepared.world,patch=prepared.patch;
+          const installedChunks=[...new Set([...this.chunks.keys(),...this.wanted.map(chunk=>chunk.key),...criticalChunks(this.player.position,this.player.speed<0?this.player.heading+Math.PI:this.player.heading,true)])];
+          const prepared=await this.worker.prepare(region,installedChunks,true),next=prepared.world,patch=prepared.patch;
           const preparedAt=performance.now();
           const updateMetric={fetchMs:Math.round(fetchedAt-updateStarted),prepareMs:Math.round(preparedAt-prepareStarted),commitMs:0,dirtyCount:patch.dirtyChunks.length,installMs:0,maxFrameDelayMs:0,totalMs:0,tiles:next.loadedTiles?.length??0};
           this.mapUpdateTimings.push(updateMetric);
@@ -552,6 +555,10 @@ export class Game {
     const memory=(performance as Performance & {memory?:{usedJSHeapSize:number}}).memory;
     const planes=Frustum.GetPlanes(this.camera.getTransformationMatrix()),bounds=[...this.chunks.values()].flatMap(c=>c.buildingBounds),gpu=this.engineStats.gpuFrameTimeCounter;
     return {...this.frameTimings.summary(),mainThreadHeapMiB:memory?Math.round(memory.usedJSHeapSize/1048576):null,quality:this.settings.quality,loadedBuildings:bounds.length,visibleBuildings:bounds.filter(b=>b.isInFrustum(planes)).length,activeMeshes:this.scene.getActiveMeshes().length,triangles:Math.round(this.scene.getActiveIndices()/3),drawCalls:this.sceneStats.drawCallsCounter.current,gpuFrameMs:gpu?.count&&gpu.current>0?gpu.current/1e6:null,chunkInstallP95Ms:this.installTimings.summary().p95FrameMs,physicsSurfaces:[...this.chunks.values()].reduce((sum,c)=>sum+c.bodies.length,0),resolution:{width:this.engine.getRenderWidth(),height:this.engine.getRenderHeight()}};
+  }
+  inspectRoadClosures(name: string) {
+    const query = name.toLocaleLowerCase('ru');
+    return [...new Map(this.world.edges.filter(e => e.blocked && e.name.toLocaleLowerCase('ru').includes(query)).map(e => [e.way, { way: e.way, name: e.name, reasons: e.blockedReasons, bridge: e.bridge, tunnel: e.tunnel, issue: e.clearanceIssue, point: e.points[0] }])).values()];
   }
   resetPerformance(){this.frameTimings.reset();this.installTimings.reset();}
   exportPerformance(){

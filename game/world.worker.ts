@@ -83,14 +83,31 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         );
         preparedRegistry = staged.registry;
         indexWorld(prepared);
-        preparedPatch = createWorldPatch(world, prepared);
+        preparedPatch = createWorldPatch(
+          world,
+          prepared,
+          request.type === 'prepareTiles'
+            ? request.update.installedChunks
+            : undefined,
+        );
         response = {
           id: request.id,
           type: 'prepared',
-          prepared: {
-            world: prepared,
-            patch: preparedPatch,
-          },
+          prepared:
+            request.type === 'prepareTiles' && request.update.patchOnly
+              ? {
+                  patch: preparedPatch,
+                  meta: {
+                    center: prepared.center,
+                    drivingSide: prepared.drivingSide,
+                    heightDatum: prepared.heightDatum,
+                    warnings: prepared.warnings,
+                    spawnEdge: prepared.spawnEdge,
+                    routes: prepared.routes,
+                    elevation: { ...prepared.elevation, patches: undefined },
+                  },
+                }
+              : { world: prepared, patch: preparedPatch },
         };
       } else {
         if (request.type === 'prepareTiles')

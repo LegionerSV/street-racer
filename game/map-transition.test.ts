@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { mapTransitionBlocksDriving, mapTransitionChunks } from './runtime';
+import { mapStreamCanUpdate, mapTransitionBlocksDriving, mapTransitionChunks } from './runtime';
 
 it('перед переключением карты готовит только грязные кварталы под машиной', () => {
   // Arrange
@@ -14,6 +14,15 @@ it('перед переключением карты готовит только
     { key: '0,0', lod: 0 },
     { key: '3,0', lod: 0 },
   ]);
+});
+
+it('автопроезд продолжает подгружать карту, а гонка и скрытая вкладка ждут', () => {
+  // Arrange
+  const state = { preparingRaceActive: false, raceActive: false, driveTestActive: true, hidden: false };
+  // Act / Assert
+  expect(mapStreamCanUpdate(state)).toBe(true);
+  expect(mapStreamCanUpdate({ ...state, raceActive: true })).toBe(false);
+  expect(mapStreamCanUpdate({ ...state, hidden: true })).toBe(false);
 });
 
 it('не останавливает машину ради перестройки далёких кварталов', () => {

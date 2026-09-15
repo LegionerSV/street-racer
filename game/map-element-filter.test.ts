@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { reduceMapElements } from './map-element-filter';
+import { buildWorld } from './network';
 import type { OSMElement } from './types';
 
 const center = { lat: 0, lon: 0 };
@@ -102,6 +103,54 @@ it('сохраняет геометрию отношения здания у у�
 
   // Assert
   expect(result.elements).toEqual(elements);
+});
+
+it('сохраняет безымянные участки стены вдали от дороги при упрощении карты', () => {
+  // Arrange
+  const elements: OSMElement[] = [
+    { type: 'node', id: 1, lat: -0.001, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'tertiary' } },
+    { type: 'node', id: 3, lat: 0, lon: 0.003 },
+    { type: 'node', id: 4, lat: 0.0001, lon: 0.003 },
+    { type: 'node', id: 5, lat: 0.0001, lon: 0.0031 },
+    { type: 'way', id: 11, nodes: [3, 4, 5, 3] },
+    {
+      type: 'relation',
+      id: 2470033,
+      members: [{ type: 'way', ref: 11, role: 'outer' }],
+      tags: {
+        type: 'multipolygon',
+        building: 'wall',
+        'building:part': 'base',
+        height: '14',
+      },
+    },
+    { type: 'node', id: 6, lat: 0, lon: 0.004 },
+    { type: 'node', id: 7, lat: 0.0001, lon: 0.004 },
+    { type: 'node', id: 8, lat: 0.0001, lon: 0.0041 },
+    { type: 'way', id: 12, nodes: [6, 7, 8, 6], tags: { building: 'garage' } },
+  ];
+
+  // Act / Assert
+  for (const mode of ['standard', 'minimal', 'roads'] as const) {
+    const reduced = reduceMapElements(elements, center, mode).elements;
+    const keys = new Set(
+      reduced.map(
+        (element) => `${element.type}/${element.id}`,
+      ),
+    );
+    expect(keys.has('relation/2470033'), mode).toBe(true);
+    expect(keys.has('way/11'), mode).toBe(true);
+    expect(keys.has('node/3'), mode).toBe(true);
+    expect(keys.has('way/12'), mode).toBe(false);
+    const world = buildWorld({
+      center, elements: reduced,
+      elevation: { width: 2, size: 1000, values: new Float32Array(4) },
+      drivingSide: 'right', fetchedAt: 'test', heightDatum: 0,
+    });
+    expect(world.buildings.find(building => building.id === 2470033)?.height, mode).toBeGreaterThan(10);
+  }
 });
 
 it('оставляет приметное здание вдали от улицы и не опустошает клетку без улиц', () => {

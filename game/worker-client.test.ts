@@ -30,6 +30,8 @@ vi.mock('./world.worker?worker', () => ({
   default: class extends MockWorker {},
 }));
 import { WorldWorker } from './worker-client';
+import { buildWorld } from './network';
+import { createWorldPatch } from './world-patch';
 afterEach(() => {
   instances.length = 0;
 });
@@ -88,6 +90,59 @@ it('готовит обновление в отдельном worker, продо
   expect(await next).toEqual({ key: '2,0' });
   client.dispose();
   expect(background.terminated).toBe(true);
+});
+
+it('обновляет поток source-тайлов в активном worker без копирования целого мира', async () => {
+  // Arrange
+  const first = { ...region, sourceTiles: [{ key: '15/16384/16384', elements: [], elevation: region.elevation, checksum: 'first' }] },
+    nextRegion = { ...first, sourceTiles: [...first.sourceTiles, { key: '15/16385/16384', elements: [], elevation: region.elevation, checksum: 'next' }] },
+    client = new WorldWorker(),
+    building = client.build(first),
+    active = instances[0];
+  active.reply('world', { type: 'world', world });
+  await building;
+  // Act
+  const preparation = client.prepare(nextRegion);
+  // Assert
+  expect(instances).toHaveLength(1);
+  expect(active.requests.at(-1)?.type).toBe('prepareTiles');
+  active.reply('prepareTiles', { type: 'prepared', prepared: { world, patch: {} } });
+  await preparation;
+  const staged = client.preparedChunk('1,0', 0);
+  active.reply('chunk', { type: 'chunk', chunk: { key: 'prepared' } });
+  expect(await staged).toEqual({ key: 'prepared' });
+  const committing = client.commit();
+  active.reply('commit', { type: 'committed' });
+  await committing;
+  expect(active.terminated).toBe(false);
+  client.dispose();
+  expect(active.terminated).toBe(true);
+});
+it('при потоковом обновлении получает из worker патч вместо полной копии мира', async () => {
+  // Arrange
+  const first = { ...region, sourceTiles: [{ key: '15/16384/16384', elements: [], elevation: region.elevation, checksum: 'first' }] },
+    nextRegion = { ...first, sourceTiles: [...first.sourceTiles, { key: '15/16385/16384', elements: [], elevation: region.elevation, checksum: 'next' }] },
+    before = buildWorld({ ...first, loadedTiles: first.sourceTiles.map((tile) => tile.key) }),
+    after = { ...before, loadedTiles: nextRegion.sourceTiles.map((tile) => tile.key) },
+    patch = createWorldPatch(before, after, ['0,0']),
+    client = new WorldWorker(),
+    building = client.build(first),
+    active = instances[0];
+  active.reply('world', { type: 'world', world: before });
+  await building;
+  // Act
+  const preparation = client.prepare(nextRegion, ['0,0'], true);
+  expect(active.requests.at(-1)).toMatchObject({ type: 'prepareTiles', update: { patchOnly: true, installedChunks: ['0,0'] } });
+  active.reply('prepareTiles', { type: 'prepared', prepared: { patch, meta: {
+    center: after.center, drivingSide: after.drivingSide, heightDatum: after.heightDatum,
+    warnings: after.warnings, spawnEdge: after.spawnEdge, routes: after.routes,
+    elevation: { ...after.elevation, patches: undefined },
+  } } });
+  const prepared = await preparation;
+  // Assert
+  expect(instances).toHaveLength(1);
+  expect(prepared.world.loadedTiles).toEqual(after.loadedTiles);
+  client.dispose();
 });
 
 it('ошибка фонового worker не прерывает активную геометрию и допускает повтор', async () => {

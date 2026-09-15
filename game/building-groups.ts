@@ -200,5 +200,16 @@ export function resolveBuildingEnvelopes(buildings: Building[]) {
         .filter((h) => h >= 3 && h < b.height);
       if (bases.length && members.some((p) => p.height >= b.height * 0.8))
         b.envelopeHeight = Math.max(b.minHeight || 0, Math.min(...bases));
+      // У некоторых составных зданий общая оболочка размечена height=0,
+      // хотя все видимые части начинаются высоко над землёй. Достраиваем
+      // цоколь до нижнего яруса, сохраняя исходный тег и отдельные верхние части.
+      const firstTier = Math.min(...elevated.map((p) => p.minHeight || 0));
+      if (
+        Number.isFinite(firstTier) &&
+        b.height < firstTier &&
+        !members.some((p) => (p.minHeight || 0) <= 0.3) &&
+        (b.osmTags?.height === '0' || broad.length > 0)
+      )
+        b.envelopeHeight = firstTier;
     }
 }

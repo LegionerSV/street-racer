@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { desiredChunks, criticalChunks, startupDrivingChunks, ChunkBudget, ChunkInstallQueue, buildChunk } from './chunks';
+
+it('оставляет полную детализацию рядом с машиной и ограничивает дальние кварталы', () => {
+  // Arrange
+  const position = { x: 125, y: 0, z: 125 };
+
+  // Act
+  const chunks = desiredChunks(position, 0, 'high', true);
+
+  // Assert
+  expect(chunks.find(chunk => chunk.key === '1,1')?.lod).toBe(0);
+  expect(chunks.find(chunk => chunk.key === '2,0')?.lod).toBe(1);
+  expect(chunks.find(chunk => chunk.key === '2,2')).toBeUndefined();
+});
 import type { World } from './types';
 import { polygonContains } from './geo';
 
@@ -14,17 +27,17 @@ describe('Подготовка кварталов', () => {
     expect(chunks.map(c=>c.key)).toEqual(expect.arrayContaining(['-1,-1','1,1','-1,1','1,-1']));
     expect(chunks.every(c=>c.lod===0)).toBe(true);
   });
-  it('на высоком качестве до поездки устанавливает 25 ближних физических кварталов', () => {
+  it('на высоком качестве до поездки устанавливает девять ближних физических кварталов', () => {
     // Arrange
     const position = { x: 125, y: 0, z: 125 };
     // Act
     const chunks = startupDrivingChunks(position, 0, 'high');
     // Assert
-    expect(chunks).toHaveLength(25);
+    expect(chunks).toHaveLength(9);
     expect(chunks.every(chunk => chunk.lod === 0)).toBe(true);
-    expect(chunks.map(chunk => chunk.key)).toContain('-2,-2');
-    expect(chunks.map(chunk => chunk.key)).toContain('2,2');
-    expect(startupDrivingChunks({ x: 0, y: 0, z: 0 }, 0, 'high')).toHaveLength(25);
+    expect(chunks.map(chunk => chunk.key)).toContain('-1,-1');
+    expect(chunks.map(chunk => chunk.key)).toContain('1,1');
+    expect(startupDrivingChunks({ x: 0, y: 0, z: 0 }, 0, 'high')).toHaveLength(9);
   });
   it('хранит только ближнюю сцену на высоком качестве и готовит физику впереди на скорости', () => {
     // Arrange
@@ -33,11 +46,10 @@ describe('Подготовка кварталов', () => {
     const chunks = desiredChunks(position, 0, 'high', true);
     const fast = desiredChunks(position, 0, 'high', true, 200 / 3.6);
     // Assert
-    expect(chunks.length).toBeLessThanOrEqual(70);
-    expect(chunks.map(chunk => chunk.key)).toContain('0,4');
-    expect(chunks.find(chunk => chunk.key === '0,4')?.lod).toBe(1);
+    expect(chunks.length).toBeLessThanOrEqual(40);
+    expect(chunks.map(chunk => chunk.key)).not.toContain('0,4');
     expect(fast.find(chunk => chunk.key === '0,4')?.lod).toBe(0);
-    expect(startupDrivingChunks(position, 0, 'high')).toHaveLength(25);
+    expect(startupDrivingChunks(position, 0, 'high')).toHaveLength(9);
   });
   it('не строит тротуар у дворовой дороги', () => {
     // Arrange
@@ -47,6 +59,18 @@ describe('Подготовка кварталов', () => {
     const chunk=buildChunk(world,'0,0',0);
     // Assert
     expect(chunk.sidewalks?.indices).toHaveLength(0);
+  });
+  it('не ставит бетонные блоки на временном краю покрытия карты', () => {
+    // Arrange
+    const edge = { id: 0, stableId: '1/1/2/0', way: 1, from: 1, to: 2, length: 100, width: 7, lanes: 2, speed: 14, name: 'набережная реки Фонтанки', bridge: false, tunnel: false, layer: 0, points: [{ x: 100, y: 0, z: 20 }, { x: 100, y: 0, z: 120 }], blocked: true, blockedReasons: ['coverage'] };
+    const world = { center: { lat: 0, lon: 0 }, nodes: [], edges: [edge], restrictions: [], buildings: [], areas: [], trees: [], elevation: { width: 2, size: 5600, values: new Float32Array(4) }, drivingSide: 'right', warnings: [], spawnEdge: null, routes: [] } as World;
+    // Act
+    const unfinished = buildChunk(world, '0,0', 0);
+    edge.blockedReasons = ['clearance'];
+    const closed = buildChunk(world, '0,0', 0);
+    // Assert
+    expect(unfinished.structures.indices).toHaveLength(0);
+    expect(closed.structures.indices.length).toBeGreaterThan(0);
   });
   it('не оставляет тротуарный отступ на стороне без тротуара', () => {
     // Arrange

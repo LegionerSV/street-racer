@@ -199,7 +199,7 @@ it('устанавливает готовую фоновую клетку, не 
     ...base, ...id, coreBounds: sourceTileBounds(id), bufferedBounds: sourceTileBounds(id),
   });
   let settled = false;
-  const next = stream.next({ x: 0, y: 0, z: 0 }, 0).then((region) => {
+  const next = stream.next({ x: 0, y: 0, z: 0 }, 0, undefined, 12).then((region) => {
     settled = true;
     return region;
   });
@@ -236,7 +236,7 @@ it('освобождает бюджет декора ради новой дор�
   const tileFor = (id: SourceTileId): MapTile => ({
     ...base, ...id, coreBounds: sourceTileBounds(id), bufferedBounds: sourceTileBounds(id),
   });
-  const next = stream.next({ x: 0, y: 0, z: 0 }, 0);
+  const next = stream.next({ x: 0, y: 0, z: 0 }, 0, undefined, 12);
 
   try {
     // Act
@@ -271,6 +271,21 @@ it('освобождает бюджет декора ради новой дор�
     await next;
     stream.dispose();
   }
+});
+it('для потокового обновления не собирает заново все OSM-элементы и весь рельеф', async () => {
+  // Arrange
+  mockedDownloads();
+  const stream = new RegionStream({ lat: 0, lon: 0 }, 'mobile');
+  const initial = await stream.start(new AbortController().signal, () => {});
+  // Act
+  const compact = stream.snapshot({ x: 10, y: 0, z: 20 }, false);
+  // Assert
+  expect(initial.elements.length).toBeGreaterThan(0);
+  expect(compact.elements).toEqual([]);
+  expect(compact.elevation.patches).toBeUndefined();
+  expect(compact.sourceTiles?.length).toBe(initial.sourceTiles?.length);
+  expect(compact.focus).toEqual({ x: 10, y: 0, z: 20 });
+  stream.dispose();
 });
 it('повторно использует глобальные артефакты из IndexedDB без загрузки OSM и DEM', async () => {
   // Arrange
@@ -402,12 +417,12 @@ it('старт отдаёт глобальное окно, затем фон о�
       blockingTiles: 0,
       retainedTiles: first.loadedTiles!.length,
     });
-    expect(stream.diagnostics().targetTiles).toBeGreaterThan(
+    expect(stream.diagnostics().targetTiles).toBe(
       first.loadedTiles!.length,
     );
     // Act — уезжаем на десятки километров, не накапливая старые клетки.
     for (let i = 1; i <= 20; i++)
-      await stream.next({ x: i * 1000, y: 0, z: 0 }, Math.PI / 2);
+      await stream.next({ x: i * 1000, y: 0, z: 0 }, Math.PI / 2, undefined, 12);
     const last = stream.snapshot({ x: 20000, y: 0, z: 0 });
     // Assert
     expect(last.loadedTiles!.length).toBeLessThanOrEqual(
@@ -508,7 +523,7 @@ it('восстанавливает источник после временно�
   cells.mockRejectedValue(new Error('Временный сбой'));
   try {
     // Act
-    const failed = await stream.next({ x: 0, y: 0, z: 0 }, 0);
+    const failed = await stream.next({ x: 0, y: 0, z: 0 }, 0, undefined, 12);
     // Assert
     expect(failed).toBeNull();
     expect((stream as unknown as { source: MapSource }).source).not.toBe(
@@ -517,7 +532,7 @@ it('восстанавливает источник после временно�
     // Act
     cells.mockResolvedValue([{ type: 'node', id: 2, lat: 0, lon: 0 }]);
     vi.advanceTimersByTime(30001);
-    const recovered = await stream.next({ x: 0, y: 0, z: 0 }, 0);
+    const recovered = await stream.next({ x: 0, y: 0, z: 0 }, 0, undefined, 12);
     // Assert
     expect(recovered).not.toBeNull();
   } finally {
