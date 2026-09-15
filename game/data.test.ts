@@ -7,10 +7,102 @@ import {
   loadRegion,
   regionKey,
   abortableDelay,
+  fetchElevationTile,
 } from './data';
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe('Повторы загрузки рельефа', () => {
+  const url =
+    'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/12/2477/1279.png';
+
+  it('повторяет временный сетевой сбой и возвращает успешный ответ', async () => {
+    // Arrange
+    const response = new Response('image');
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(response);
+    vi.stubGlobal('fetch', request);
+
+    // Act
+    const result = await fetchElevationTile(url, new AbortController().signal);
+
+    // Assert
+    expect(result).toBe(response);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls.map(([input]) => input)).toEqual([url, url]);
+  });
+
+  it('повторяет временный ответ сервера, но не повторяет 404', async () => {
+    // Arrange
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status: 503 }))
+      .mockResolvedValueOnce(new Response('image'))
+      .mockResolvedValueOnce(new Response('', { status: 404 }));
+    vi.stubGlobal('fetch', request);
+    const signal = new AbortController().signal;
+
+    // Act
+    const recovered = await fetchElevationTile(url, signal);
+    const missing = await fetchElevationTile(url, signal);
+
+    // Assert
+    expect(recovered.ok).toBe(true);
+    expect(missing.status).toBe(404);
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it('останавливает ожидание повтора сразу после отмены', async () => {
+    // Arrange
+    const control = new AbortController();
+    const request = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', request);
+    const loading = fetchElevationTile(url, control.signal);
+
+    // Act
+    await Promise.resolve();
+    control.abort(new DOMException('Отменено', 'AbortError'));
+
+    // Assert
+    await expect(loading).rejects.toMatchObject({ name: 'AbortError' });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('не принимает ответ, пришедший после отмены запроса', async () => {
+    // Arrange
+    const control = new AbortController();
+    const request = vi.fn(async () => {
+      control.abort(new DOMException('Отменено', 'AbortError'));
+      return new Response('image');
+    });
+    vi.stubGlobal('fetch', request);
+
+    // Act / Assert
+    await expect(fetchElevationTile(url, control.signal)).rejects.toMatchObject(
+      {
+        name: 'AbortError',
+      },
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('после трёх сетевых сбоев сообщает об ошибке по-русски', async () => {
+    // Arrange
+    const request = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', request);
+
+    // Act / Assert
+    await expect(
+      fetchElevationTile(url, new AbortController().signal),
+    ).rejects.toThrow(
+      'Не удалось загрузить рельеф: ошибка сетевого запроса. Повторите попытку.',
+    );
+    expect(request).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('Загрузка и сохранение района', () => {

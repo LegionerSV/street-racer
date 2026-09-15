@@ -2,7 +2,7 @@ import type { Center, OSMElement, RegionData } from './types';
 import { TERRAIN_GRID_SIZE, TERRAIN_GRID_WIDTH } from './terrain-policy';
 import { sampleGroundFootprint } from './dem-sampling';
 import { bounds, decodeTerrarium, toGeo, lerp } from './geo';
-import { MapSource, splitMapBox } from './map-source';
+import { MapSource, splitMapBox, abortableDelay } from './map-source';
 import type { LoadingLog } from './loading-log';
 export { abortableDelay } from './map-source';
 
@@ -82,6 +82,54 @@ function tileCoord(lat: number, lon: number, z: number) {
     y: ((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2) * n,
   };
 }
+
+const ELEVATION_FETCH_ATTEMPTS = 3;
+const ELEVATION_RETRY_DELAY_MS = 350;
+
+export async function fetchElevationTile(
+  url: string,
+  signal: AbortSignal,
+  onAttempt?: (attempt: number) => void,
+): Promise<Response> {
+  for (let attempt = 1; attempt <= ELEVATION_FETCH_ATTEMPTS; attempt++) {
+    signal.throwIfAborted();
+    onAttempt?.(attempt);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]),
+      });
+      signal.throwIfAborted();
+    } catch (error) {
+      signal.throwIfAborted();
+      const temporary =
+        error instanceof TypeError ||
+        (error instanceof DOMException && error.name === 'TimeoutError');
+      if (!temporary) throw error;
+      if (attempt === ELEVATION_FETCH_ATTEMPTS)
+        throw new Error(
+          'Не удалось загрузить рельеф: ошибка сетевого запроса. Повторите попытку.',
+          { cause: error },
+        );
+      await abortableDelay(
+        ELEVATION_RETRY_DELAY_MS * 2 ** (attempt - 1),
+        signal,
+      );
+      continue;
+    }
+    if (
+      response.status !== 408 &&
+      response.status !== 429 &&
+      response.status < 500
+    )
+      return response;
+    if (attempt === ELEVATION_FETCH_ATTEMPTS) return response;
+    void response.body?.cancel().catch(() => {});
+    await abortableDelay(ELEVATION_RETRY_DELAY_MS * 2 ** (attempt - 1), signal);
+  }
+  throw new Error('Не удалось загрузить рельеф. Повторите попытку.');
+}
+
 export async function loadElevations(
   center: Center,
   signal: AbortSignal,
@@ -132,18 +180,21 @@ export async function loadElevations(
         const [x, y] = queue.shift()!,
           key = `height:${z}/${x}/${y}`;
         const end = log?.start('Тайл рельефа', { tile: `${z}/${x}/${y}` });
+        let attempts = 0;
+        let httpStatus: number | undefined;
         try {
           let pixels = await cacheGet<Uint8ClampedArray>(key);
           const cacheHit = !!pixels;
-          let httpStatus: number | undefined;
           if (!pixels) {
-            const response = await fetch(
+            const response = await fetchElevationTile(
               `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`,
-              { signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) },
+              signal,
+              (attempt) => {
+                attempts = attempt;
+              },
             );
             httpStatus = response.status;
             if (!response.ok) {
-              end?.('error', { httpStatus });
               throw new Error(
                 `Не удалось загрузить рельеф: сервер ответил ${response.status}. Повторите попытку.`,
               );
@@ -160,13 +211,15 @@ export async function loadElevations(
             pixels = ctx.getImageData(0, 0, 256, 256).data;
             await cachePut(key, pixels);
           }
-          end?.('success', { cacheHit, httpStatus });
+          end?.('success', { cacheHit, httpStatus, attempts });
           images.set(`${x},${y}`, pixels);
           finished++;
           progress('Загружаем рельеф', 65 + (18 * finished) / jobs.length);
         } catch (error) {
           end?.(signal.aborted ? 'cancelled' : 'error', {
             error: error instanceof Error ? error.message : String(error),
+            attempts,
+            httpStatus,
           });
           throw error;
         }
