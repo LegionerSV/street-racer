@@ -1,14 +1,16 @@
-import { Scene, MeshBuilder, ShaderMaterial, Effect, Vector3, Color3, Color4, DirectionalLight, HemisphericLight, Mesh, LinesMesh, ShadowGenerator, DefaultRenderingPipeline, RawTexture, Constants, Texture, StandardMaterial, FresnelParameters } from '@babylonjs/core';
+import { Scene, MeshBuilder, ShaderMaterial, Effect, Vector3, Color3, Color4, DirectionalLight, HemisphericLight, Mesh, LinesMesh, ShadowGenerator, DefaultRenderingPipeline, RawTexture, Constants, Texture, StandardMaterial, FresnelParameters, type BaseTexture } from '@babylonjs/core';
 import type { Camera } from '@babylonjs/core';
 import { weatherAt, type WeatherOptions } from './weather';
 import { makeEnvironment } from './visuals';
 import { seeded } from './geo';
+import { asphaltSurface } from './surface-textures';
 import {isLightQuality} from './quality';
 export class Atmosphere {
   private sun:DirectionalLight; private ambient:HemisphericLight; private sky:Mesh; private skyMaterial:ShaderMaterial;
   private rain:LinesMesh;private drops:Vector3[][];private shadows:ShadowGenerator|null;private pipeline:DefaultRenderingPipeline|null;
   private rainClock=0;
   private shadowClock=0;private quality='';
+  private reliefMaps:[StandardMaterial,BaseTexture|null][]=[];
   state=weatherAt(0);
   constructor(private scene:Scene,private camera:Camera,private materials:Record<string,StandardMaterial>,quality:string){
     makeEnvironment(scene);
@@ -43,12 +45,19 @@ export class Atmosphere {
     this.skyMaterial.backFaceCulling=false;this.skyMaterial.disableDepthWrite=true;
     this.sky=MeshBuilder.CreateSphere('sky-dome',{diameter:4200,segments:24},scene);this.sky.material=this.skyMaterial;this.sky.isPickable=false;this.sky.infiniteDistance=true;this.sky.applyFog=false;
     this.drops=[];this.rain=this.makeRain(quality);
-    const size=128,noise=new Uint8Array(size*size*4);for(let i=0;i<size*size;i++){const n=190+seeded(i*19)*65;noise[i*4]=noise[i*4+1]=noise[i*4+2]=n;noise[i*4+3]=255;}
-    const asphalt=new RawTexture(noise,size,size,Constants.TEXTUREFORMAT_RGBA,scene,true,false,Texture.TRILINEAR_SAMPLINGMODE);asphalt.wrapU=asphalt.wrapV=Texture.WRAP_ADDRESSMODE;
-    materials.road.diffuseTexture=asphalt;materials.road.reflectionTexture=scene.environmentTexture;
+    const size=128,{colour,normal,specular}=asphaltSurface(size);
+    const asphalt=new RawTexture(colour,size,size,Constants.TEXTUREFORMAT_RGBA,scene,true,false,Texture.TRILINEAR_SAMPLINGMODE);
+    const relief=new RawTexture(normal,size,size,Constants.TEXTUREFORMAT_RGBA,scene,true,false,Texture.TRILINEAR_SAMPLINGMODE);
+    const sheen=new RawTexture(specular,size,size,Constants.TEXTUREFORMAT_RGBA,scene,true,false,Texture.TRILINEAR_SAMPLINGMODE);
+    for(const map of [asphalt,relief,sheen])map.wrapU=map.wrapV=Texture.WRAP_ADDRESSMODE;
+    relief.level=.55;relief.gammaSpace=sheen.gammaSpace=false;
+    materials.road.diffuseTexture=asphalt;materials.road.bumpTexture=relief;materials.road.specularTexture=sheen;materials.road.reflectionTexture=scene.environmentTexture;
     materials.road.reflectionFresnelParameters=new FresnelParameters({bias:.02,power:5,leftColor:new Color3(.22,.25,.28),rightColor:Color3.Black()});
     materials.water.reflectionTexture=scene.environmentTexture;materials.water.reflectionFresnelParameters=new FresnelParameters({bias:.25,power:3,leftColor:Color3.White(),rightColor:new Color3(.05,.12,.18)});
+    for(const role of ['road','facade0','facade1','facade2'])if(materials[role])this.reliefMaps.push([materials[role],materials[role].bumpTexture]);
+    this.configureRelief(quality);
   }
+  private configureRelief(quality:string){for(const [material,map] of this.reliefMaps)material.bumpTexture=isLightQuality(quality)?null:map;}
   private makePipeline(quality:string){
     if(quality==='mobile'){
       const processing=this.scene.imageProcessingConfiguration;processing.toneMappingEnabled=false;processing.contrast=1;processing.exposure=1;
@@ -71,6 +80,7 @@ export class Atmosphere {
   update(seconds:number,dt:number,position:Vector3,options:WeatherOptions,quality:string){
     if(this.quality!==quality){
       this.quality=quality;this.pipeline?.dispose();this.pipeline=this.makePipeline(quality);
+      this.configureRelief(quality);
       if(isLightQuality(quality)){this.shadows?.dispose();this.shadows=null;}
       else{this.shadows??=this.makeShadows(quality);this.shadows.mapSize=quality==='high'?2048:1024;}
       this.scene.shadowsEnabled=true;
@@ -88,8 +98,9 @@ export class Atmosphere {
     this.scene.fogDensity=(quality==='mobile'?.0022:quality==='high'?.00065:.001)+(s.rain*.0012);
     for(const role of ['facade0','facade1','facade2'])this.materials[role]?.emissiveColor.setAll((1-s.daylight)*.65);
     this.materials.windows.emissiveColor.setAll(.12+(1-s.daylight)*.8);this.materials.windows.diffuseColor.setAll(.22+s.daylight*.25);
-    this.materials.road.specularColor.setAll(.12+s.wetness*.7);this.materials.road.specularPower=32+s.wetness*160;
-    this.materials.road.reflectionFresnelParameters!.leftColor.setAll(.04+s.wetness*.35);
+    this.materials.road.specularColor.setAll(.12+s.wetness*.7);this.materials.road.specularPower=32+s.wetness*72;
+    this.materials.road.reflectionFresnelParameters!.leftColor.setAll(.04+s.wetness*.12);
+    this.materials.road.reflectionFresnelParameters!.rightColor.setAll(.02+s.wetness*.65);
     this.materials.water.diffuseColor=Color3.Lerp(new Color3(.035,.09,.13),new Color3(.08,.25,.32),s.daylight);
     this.rain.setEnabled(s.rain>.02);this.rain.alpha=.38*s.rain;this.rain.position.copyFrom(position);
     this.rainClock+=dt;

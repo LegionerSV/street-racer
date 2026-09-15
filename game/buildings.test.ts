@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { buildChunk } from './chunks';
 import { buildWorld } from './network';
+import { facadeStyle } from './buildings';
 import type { Building, World } from './types';
 const building: Building = {
   id: 1,
@@ -125,4 +126,28 @@ it('сохраняет материал, цвет, этажность и тип 
     roofHeight: 3,
     osmType: 'way',
   });
+});
+
+it.each([
+  ['brick', '#aabbcc', 0],
+  ['stone', '#bd7d58', 1],
+  ['glass', '#6598c4', 2],
+] as const)('сохраняет цвет %s и материал из OSM в геометрии фасада', (material, facadeColour, style) => {
+  // Arrange
+  const elements = [
+    ...building.footprint.map((p, i) => ({ type: 'node' as const, id: i + 1, lat: p.z / 111320, lon: p.x / 111320 })),
+    { type: 'way' as const, id: 40, nodes: [1, 2, 3, 4, 1], tags: { building: 'yes', height: '18', 'building:material': material, 'building:colour': facadeColour, 'roof:colour': '#224466' } },
+  ];
+  const generated = buildWorld({ center: { lat: 0, lon: 0 }, elements, elevation: world().elevation, drivingSide: 'right', fetchedAt: 'test' });
+
+  // Act
+  const chunk = buildChunk(generated, '0,0', 0), facade = chunk.facades![style];
+  const colours = (mesh: { colors?: number[] }) => Array.from({ length: (mesh.colors?.length ?? 0) / 4 }, (_, index) => mesh.colors!.slice(index * 4, index * 4 + 3));
+  const expected = [1, 3, 5].map(index => parseInt(facadeColour.slice(index, index + 2), 16) / 255);
+
+  // Assert
+  expect(facadeStyle(generated.buildings[0])).toBe(style);
+  expect(facade.indices.length).toBeGreaterThan(0);
+  expect(colours(facade)).toContainEqual(expected);
+  expect(colours(chunk.buildings)).toContainEqual([34 / 255, 68 / 255, 102 / 255]);
 });

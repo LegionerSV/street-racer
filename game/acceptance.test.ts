@@ -9,6 +9,7 @@ import { buildChunk } from './chunks';
 import { PlayerCar } from './vehicle';
 import { Atmosphere } from './atmosphere';
 import { material, createCar, setCarLights } from './visuals';
+import { streetMaterials } from './street-materials';
 const physics=async()=>HavokPhysics({wasmBinary:Uint8Array.from(await readFile(new URL('../node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm',import.meta.url))).buffer});
 it.each([0,.06])('машина возвращается с травы через обочину на поперечном склоне %s',async grade=>{
   // Arrange
@@ -67,7 +68,11 @@ it('освещение и дождь создаются и освобождаю�
     system.update(0,1/60,Vector3.Zero(),{hour:12,weather:'rain'},'low');scene.render();
     // Assert
     expect(system.state.rain).toBe(1);expect(system.state.daylight).toBe(1);expect(scene.getMeshByName('rain')!.isEnabled()).toBe(true);
+    expect(materials.road.diffuseTexture).toBeTruthy();expect(materials.road.bumpTexture).toBeNull();expect(materials.road.specularTexture).toBeTruthy();
+    expect(materials.road.reflectionFresnelParameters!.rightColor.r).toBeGreaterThan(materials.road.reflectionFresnelParameters!.leftColor.r);
+    const wetSpecular=materials.road.specularColor.r;
     system.update(0,1/60,Vector3.Zero(),{hour:0,weather:'clear'},'low');scene.render();expect(scene.getMeshByName('rain')!.isEnabled()).toBe(false);
+    expect(materials.road.specularColor.r).toBeLessThan(wetSpecular);
   }finally{system.dispose();scene.dispose();engine.dispose();}
 });
 
@@ -75,13 +80,15 @@ it('мобильное качество освобождает солнечны�
   // Arrange
   const engine=new NullEngine(),scene=new Scene(engine),camera=new FreeCamera('camera',new Vector3(0,3,-8),scene);
   const materials=Object.fromEntries(['road','water','windows'].map(key=>[key,material(scene,key,'#ffffff')]));
+  const facade=streetMaterials(scene).facades[0];materials.facade0=facade;
   const system=new Atmosphere(scene,camera,materials,'high');
   try{
     // Act
+    expect(materials.road.bumpTexture).toBeTruthy();expect(facade.bumpTexture).toBeTruthy();expect(materials.road.bumpTexture!.gammaSpace).toBe(false);expect(materials.road.specularTexture!.gammaSpace).toBe(false);
     system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'rain'},'mobile');scene.render();
     // Assert
-    expect(scene.shadowsEnabled).toBe(true);expect(scene.getLightByName('sun')!.getShadowGenerator()).toBeNull();expect(scene.getMeshByName('rain')!.getTotalVertices()).toBe(192);expect(system.state.wetness).toBe(1);
-    system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'clear'},'high');expect(scene.shadowsEnabled).toBe(true);
+    expect(scene.shadowsEnabled).toBe(true);expect(scene.getLightByName('sun')!.getShadowGenerator()).toBeNull();expect(scene.getMeshByName('rain')!.getTotalVertices()).toBe(192);expect(system.state.wetness).toBe(1);expect(materials.road.bumpTexture).toBeNull();expect(facade.bumpTexture).toBeNull();
+    system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'clear'},'high');expect(scene.shadowsEnabled).toBe(true);expect(materials.road.bumpTexture).toBeTruthy();expect(facade.bumpTexture).toBeTruthy();
     system.update(0,1/30,Vector3.Zero(),{hour:12,weather:'rain'},'mobile');expect(scene.shadowsEnabled).toBe(true);expect(scene.getLightByName('sun')!.getShadowGenerator()).toBeNull();expect(scene.getMeshByName('rain')!.getTotalVertices()).toBe(192);
   }finally{system.dispose();scene.dispose();engine.dispose();}
 });

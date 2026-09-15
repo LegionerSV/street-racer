@@ -7,6 +7,7 @@ import {
   type Scene,
 } from '@babylonjs/core';
 import { seeded } from './geo';
+import { facadeSurface } from './surface-textures';
 function texture(scene: Scene, name: string, pixels: Uint8Array, size: number) {
   const t = new RawTexture(
     pixels,
@@ -24,46 +25,18 @@ function texture(scene: Scene, name: string, pixels: Uint8Array, size: number) {
   return t;
 }
 export function streetMaterials(scene: Scene) {
-  const facades = ['brick', 'stone', 'modern'].map((style, index) => {
-    const size = 128,
-      diffuse = new Uint8Array(size * size * 4),
-      emission = new Uint8Array(diffuse.length);
-    for (let y = 0; y < size; y++)
-      for (let x = 0; x < size; x++) {
-        const px = x % 64,
-          py = y % 64,
-          window =
-            index === 2
-              ? px > 7 && px < 57 && py > 12 && py < 54
-              : px > 15 && px < 48 && py > 18 && py < 51;
-        const frame = window && (px % 16 < 2 || py === 34),
-          mortar =
-            index === 0 &&
-            (y % 8 === 0 || (x + (Math.floor(y / 8) % 2) * 12) % 24 === 0);
-        const cornice = index === 1 && (py < 4 || py > 59),
-          noise = seeded(x + y * size) * 0.08;
-        const wall = mortar ? 0.62 : cornice ? 1 : 0.86 + noise;
-        const rgb = window
-          ? frame
-            ? [0.42, 0.48, 0.48]
-            : [0.12, 0.21, 0.27]
-          : [wall, wall, wall];
-        const lit =
-            window &&
-            !frame &&
-            (Math.floor(x / 64) + Math.floor(y / 64) * 2 + index) % 3 !== 0,
-          base = (y * size + x) * 4;
-        for (let c = 0; c < 3; c++) {
-          diffuse[base + c] = rgb[c] * 255;
-          emission[base + c] = lit ? [220, 169, 92][c] : 0;
-        }
-        diffuse[base + 3] = emission[base + 3] = 255;
-      }
+  const facades = ['brick', 'stone', 'modern'].map((style) => {
+    const size = 128;
+    const { diffuse, emission, normal } = facadeSurface(style as 'brick' | 'stone' | 'modern', size);
     const mat = new StandardMaterial('facade-' + style, scene);
     mat.diffuseTexture = texture(scene, style + '-windows', diffuse, size);
     mat.emissiveTexture = texture(scene, style + '-night', emission, size);
+    mat.bumpTexture = texture(scene, style + '-relief', normal, size);
+    mat.bumpTexture.level = .75;
+    mat.bumpTexture.gammaSpace = false;
     for (const t of [mat.diffuseTexture, mat.emissiveTexture] as RawTexture[])
       t.uScale = t.vScale = 0.5;
+    (mat.bumpTexture as RawTexture).uScale = (mat.bumpTexture as RawTexture).vScale = 0.5;
     mat.backFaceCulling = false;
     mat.twoSidedLighting = true;
     mat.maxSimultaneousLights = 8;
