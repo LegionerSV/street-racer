@@ -48,6 +48,52 @@ it('использует фасадные текстуры вблизи и си�
   );
 });
 
+it('не рисует жилые окна на триумфальной арке и городской стене', () => {
+  // Arrange
+  const arch = { ...building, kind: 'triumphal_arch', roof: 'flat' };
+  const wall = { ...building, kind: 'yes', roof: 'flat', osmTags: { historic: 'citywalls' } };
+  // Act
+  const archChunk = buildChunk(world(arch), '0,0', 0);
+  const wallChunk = buildChunk(world(wall), '0,0', 0);
+  // Assert
+  expect(archChunk.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
+  expect(wallChunk.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
+  expect(buildChunk(world(), '0,0', 0).facades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
+});
+
+it('оставляет центральный проём триумфальных ворот открытым без дорожного тега', () => {
+  // Arrange
+  const gate = {
+    ...building,
+    kind: 'triumphal_arch',
+    roof: 'flat',
+    height: 24,
+    footprint: [
+      { x: 10, y: 0, z: 10 }, { x: 50, y: 0, z: 10 },
+      { x: 50, y: 0, z: 20 }, { x: 10, y: 0, z: 20 },
+    ],
+  };
+  // Act
+  const chunk = buildChunk(world(gate), '0,0', 0);
+  const triangles = Array.from({ length: chunk.buildings.indices.length / 3 }, (_, i) =>
+    chunk.buildings.indices.slice(i * 3, i * 3 + 3).map((index) => ({
+      x: chunk.buildings.positions[index * 3],
+      y: chunk.buildings.positions[index * 3 + 1],
+      z: chunk.buildings.positions[index * 3 + 2],
+    })),
+  );
+  const covers = (x: number, y: number) => triangles.some((t) => {
+    if (!t.every((p) => Math.abs(p.z - 10) < .01)) return false;
+    const cross = (a: typeof t[number], b: typeof t[number]) =>
+      (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
+    const signs = [cross(t[0], t[1]), cross(t[1], t[2]), cross(t[2], t[0])];
+    return signs.every((n) => n >= -1e-6) || signs.every((n) => n <= 1e-6);
+  });
+  // Assert
+  expect(covers(30, 6)).toBe(false);
+  expect(covers(30, 19)).toBe(true);
+});
+
 it('в закрытом дворе оставляет коробку здания без дворовых фасадов и сохраняет фасад у улицы', () => {
   // Arrange
   const road = { id: 0, stableId: '9/1/2/0', way: 9, from: 1, to: 2, length: 100, width: 7, lanes: 2, speed: 14, name: 'Улица', category: 'residential', bridge: false, tunnel: false, layer: 0, points: [{x: 15,y:0,z:10},{x:15,y:0,z:110}], blocked: false };

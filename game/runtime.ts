@@ -25,6 +25,8 @@ import {isLightQuality,resolutionScale} from './quality';
 import { streetMaterials } from './street-materials';
 import { FrameTimings } from './performance';
 import { VehicleLighting } from './vehicle-lighting';
+import { VehicleContactShadows } from './vehicle-contact-shadows';
+import { treeInstances } from './tree-instances';
 import { worldLandmarks } from './landmarks';
 import {advanceDrivingPhysics,ChasePosition} from './driving-frame';
 import {renderFirstFrame} from './render-ready';
@@ -71,6 +73,7 @@ export class Game {
   private atmosphere: Atmosphere;
   private facadeMaterials:StandardMaterial[];
   private vehicleLighting:VehicleLighting;
+  private vehicleContactShadows:VehicleContactShadows;
   private engineStats:EngineInstrumentation;
   private sceneStats:SceneInstrumentation;
   private frameTimings=new FrameTimings();
@@ -196,6 +199,7 @@ export class Game {
     this.signalMaterials = [material(this.scene, 'red-on', '#ff4938', true), material(this.scene, 'yellow-on', '#ffca57', true), material(this.scene, 'green-on', '#80efb2', true), material(this.scene, 'signal-off', '#15212a')];
     for (let i = 0; i < 4; i++) { const light = new PointLight(`streetlight-${i}`, Vector3.Zero(), this.scene); light.diffuse = new Color3(1, .78, .45); light.range = 20; light.intensity = 0; this.lampLights.push(light); }
     this.vehicleLighting=new VehicleLighting(this.scene);
+    this.vehicleContactShadows=new VehicleContactShadows(this.scene);
     const nitroMat=material(this.scene,'nitro-flame','#6eefff',true);
     for(const x of [-.57,.57]){
       const jet=MeshBuilder.CreateCylinder('player-nitro-jet',{height:.9,diameterTop:0,diameterBottom:.21,tessellation:8},this.scene);
@@ -270,10 +274,13 @@ export class Game {
     }
     if (chunk.trees.length) {
       const trunk = MeshBuilder.CreateCylinder(`${chunk.key}:trunks`, { diameter: .55, height: 7, tessellation: 5 }, this.scene); trunk.material = this.materials.trunk;
-      const foliage = MeshBuilder.CreateSphere(`${chunk.key}:foliage`, { diameter: 9, segments: 3 }, this.scene); foliage.material = this.materials.tree;
-      const matrices = new Float32Array(chunk.trees.length * 16), leaves = new Float32Array(matrices.length);
-      chunk.trees.forEach((p, i) => { const base = i * 16; matrices[base] = matrices[base + 5] = matrices[base + 10] = matrices[base + 15] = 1; matrices[base + 12] = p.x; matrices[base + 13] = p.y + 3.5; matrices[base + 14] = p.z; leaves.set(matrices.subarray(base, base + 16), base); leaves[base + 13] = p.y + 8.5; });
-      trunk.thinInstanceSetBuffer('matrix', matrices, 16); foliage.thinInstanceSetBuffer('matrix', leaves, 16); trunk.isPickable = foliage.isPickable = false; meshes.push(trunk, foliage);
+      const branch = MeshBuilder.CreateCylinder(`${chunk.key}:branches`, { diameter: .22, height: 3.5, tessellation: 4 }, this.scene); branch.material = this.materials.trunk;
+      const foliage = MeshBuilder.CreateSphere(`${chunk.key}:foliage`, { diameter: 6.2, segments: 4 }, this.scene); foliage.material = this.materials.tree;
+      const shape = treeInstances(chunk.trees);
+      trunk.thinInstanceSetBuffer('matrix', shape.trunks, 16);
+      branch.thinInstanceSetBuffer('matrix', shape.branches, 16);
+      foliage.thinInstanceSetBuffer('matrix', shape.leaves, 16);
+      trunk.isPickable = branch.isPickable = foliage.isPickable = false; meshes.push(trunk, branch, foliage);
     }
     this.chunks.get(chunk.key)?.dispose();
     const buildingBounds=(indexWorld(this.world).buildings.get(chunk.key)||[]).map(b=>new BoundingBox(new Vector3(Math.min(...b.footprint.map(p=>p.x)),Math.min(...b.footprint.map(p=>p.y))+(b.minHeight||0),Math.min(...b.footprint.map(p=>p.z))),new Vector3(Math.max(...b.footprint.map(p=>p.x)),Math.max(...b.footprint.map(p=>p.y))+(b.envelopeHeight??b.height),Math.max(...b.footprint.map(p=>p.z)))));
@@ -384,7 +391,9 @@ export class Game {
     this.camera.setTarget(this.lookTarget);this.camera.fov+=(.94+Math.min(.14,this.player.groundSpeed*.002)+(this.player.nitro.active?.06:0)-this.camera.fov)*(1-Math.exp(-dt*7));
     this.nitroJets.forEach((jet,i)=>{jet.setEnabled(this.player.nitro.active&&!this.paused&&!this.loading);jet.scaling.y=.9+.12*Math.sin(this.time*40+i);});
     this.atmosphere.update(this.time,this.paused||this.loading?0:dt,p,this.settings,this.settings.quality);
-    this.vehicleLighting.update(dt,this.player.visual,this.traffic.agents.flatMap(a=>a.visual?[a.visual]:[]),this.settings.quality,this.atmosphere.state.daylight);
+    const trafficVisuals=this.traffic.agents.flatMap(a=>a.visual?[a.visual]:[]);
+    this.vehicleLighting.update(dt,this.player.visual,trafficVisuals,this.settings.quality,this.atmosphere.state.daylight);
+    this.vehicleContactShadows.update(this.player.visual,trafficVisuals,this.atmosphere.state.daylight);
     const sheltered=(indexWorld(this.world).segments.get(tileKey(p.x,p.z))||[]).some(s=>s.edge.tunnel&&projectOnSegment(p,s.a,s.b).distance<s.edge.width/2+1&&Math.abs(projectOnSegment(p,s.a,s.b).point.y-p.y)<3);
     this.scene.getMeshByName('rain')?.setEnabled(!sheltered&&this.atmosphere.state.rain>.02);
     this.nearRace = null;
@@ -609,6 +618,6 @@ export class Game {
     this.streamingControl.abort();this.mapStream?.dispose();this.worker.dispose();
       window.removeEventListener('keydown', this.onKeyDown); window.removeEventListener('keyup', this.onKeyUp); window.removeEventListener('blur', this.onBlur); window.removeEventListener('resize', this.resize);
     document.removeEventListener('visibilitychange', this.onVisibility);
-    this.engine.stopRenderLoop(); this.engineStats.dispose();this.sceneStats.dispose();this.clearControls(); this.vehicleLighting.dispose();this.atmosphere.dispose(); this.sound.dispose(); this.traffic.dispose(); this.player.dispose(); this.chunks.forEach(c => c.dispose()); this.chunks.clear(); this.scene.dispose(); this.engine.dispose();
+    this.engine.stopRenderLoop(); this.engineStats.dispose();this.sceneStats.dispose();this.clearControls(); this.vehicleLighting.dispose();this.vehicleContactShadows.dispose();this.atmosphere.dispose(); this.sound.dispose(); this.traffic.dispose(); this.player.dispose(); this.chunks.forEach(c => c.dispose()); this.chunks.clear(); this.scene.dispose(); this.engine.dispose();
   }
 }

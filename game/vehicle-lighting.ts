@@ -3,11 +3,30 @@ import {
   ShadowGenerator,
   Vector3,
   Color3,
+  Constants,
+  RawTexture,
+  Texture,
   type AbstractMesh,
   type Scene,
 } from '@babylonjs/core';
 import type { CarVisual } from './visuals';
 import type { Settings } from './types';
+
+export function headlightPattern(size: number) {
+  const pixels = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const u = (x + .5) / size, v = (y + .5) / size;
+    const cutoff = u < .52 ? .43 : .43 - .12 * Math.min(1, (u - .52) / .08);
+    const edge = Math.max(0, Math.min(1, (v - cutoff + .012) / .024));
+    const spread = Math.max(0, 1 - Math.pow(Math.abs(u - .5) / .52, 4));
+    const reach = Math.max(0, 1 - Math.pow(Math.max(0, v - .83) / .17, 2));
+    const brightness = Math.round(255 * edge * spread * reach);
+    const i = (y * size + x) * 4;
+    pixels[i] = pixels[i + 1] = pixels[i + 2] = brightness;
+    pixels[i + 3] = 255;
+  }
+  return pixels;
+}
 
 export function headlightCasters(
   scene: Scene,
@@ -48,7 +67,12 @@ export class VehicleLighting {
   }[] = [];
   private clock = 0;
   private quality = '';
+  private pattern: RawTexture;
   constructor(private scene: Scene) {
+    const size = 128;
+    this.pattern = new RawTexture(headlightPattern(size), size, size, Constants.TEXTUREFORMAT_RGBA, scene, false, true, Texture.BILINEAR_SAMPLINGMODE);
+    this.pattern.gammaSpace = false;
+    this.pattern.wrapU = this.pattern.wrapV = Texture.CLAMP_ADDRESSMODE;
     for (let i = 0; i < 3; i++) {
       const light = new SpotLight(
         'vehicle-beam-' + i,
@@ -61,6 +85,7 @@ export class VehicleLighting {
       light.diffuse = new Color3(0.76, 0.88, 1);
       light.specular = Color3.Black();
       light.range = 55;
+      light.projectionTexture = this.pattern;
       light.intensity = 0;
       light.renderPriority = 10 - i;
       const shadow = new ShadowGenerator(i === 0 ? 512 : 256, light);
@@ -151,5 +176,6 @@ export class VehicleLighting {
       p.shadow.dispose();
       p.light.dispose();
     }
+    this.pattern.dispose();
   }
 }

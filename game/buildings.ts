@@ -1,6 +1,6 @@
 import { roofForm } from './roof-forms';
 import earcut from 'earcut';
-import { footprintPrism, subtractPrisms, type Prism } from './geometry';
+import { footprintPrism, roadPrism, subtractPrisms, type Prism } from './geometry';
 import { distance2, mixPoint } from './geo';
 import type { Building, MeshData, Point } from './types';
 type Colour = [number, number, number];
@@ -113,6 +113,49 @@ export function facadeStyle(b: Building) {
       ? 2
       : 1;
 }
+export function hasFacadeWindows(b: Building) {
+  const tags = b.osmTags || {};
+  return tags.window !== 'no' &&
+    !['triumphal_arch', 'wall', 'fortification'].includes(b.kind || '') &&
+    !['citywalls', 'city_wall'].includes(tags.historic || '') &&
+    !['city_wall', 'wall'].includes(tags.barrier || '') &&
+    tags['building:part'] !== 'wall';
+}
+
+function triumphalOpening(b: Building, foundationFloor?: number) {
+  const ring = b.footprint;
+  let longest = 0, ux = 1, uz = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], q = ring[(i + 1) % ring.length],
+      length = distance2(a, q);
+    if (length > longest) {
+      longest = length;
+      ux = (q.x - a.x) / length;
+      uz = (q.z - a.z) / length;
+    }
+  }
+  const center = ring.reduce((p, q) => ({ x: p.x + q.x / ring.length, z: p.z + q.z / ring.length }), { x: 0, z: 0 });
+  const vx = -uz, vz = ux;
+  const depth = Math.max(...ring.map(p => Math.abs((p.x - center.x) * vx + (p.z - center.z) * vz)));
+  const floor = (foundationFloor ?? Math.min(...ring.map(p => p.y))) - .3;
+  const width = Math.min(14, longest * .42), rise = Math.min(14, b.height * .58);
+  const point = (side: number, end: number, y: number): Point => ({
+    x: center.x + ux * side * width / 2 + vx * end * depth,
+    y,
+    z: center.z + uz * side * width / 2 + vz * end * depth,
+  });
+  const mask = roadPrism(
+    { x: center.x - vx * (depth + 2), y: floor, z: center.z - vz * (depth + 2) },
+    { x: center.x + vx * (depth + 2), y: floor, z: center.z + vz * (depth + 2) },
+    width,
+    10000,
+    rise,
+  );
+  return { mask, interior: [
+    ...[-1, 1].map(side => [point(side, -1, floor), point(side, 1, floor), point(side, 1, floor + rise), point(side, -1, floor + rise)]),
+    [point(-1, -1, floor + rise), point(1, -1, floor + rise), point(1, 1, floor + rise), point(-1, 1, floor + rise)],
+  ] };
+}
 function parsedColour(value?: string): Colour | undefined {
   let hex = named[value?.toLowerCase() || ''] || value || '';
   if (/^#[\da-f]{3}$/i.test(hex))
@@ -222,7 +265,9 @@ export function appendBuilding(
       return;
   }
   const detailed =
-    lod === 0 && !(b.part && b.group) && b.osmTags?.window !== 'no';
+    lod === 0 && !(b.part && b.group) && hasFacadeWindows(b);
+  const gateOpening = b.kind === 'triumphal_arch' ? triumphalOpening(b, foundationFloor) : undefined;
+  const masks = gateOpening ? [...openings, gateOpening.mask] : openings;
   const polygon = (
     mesh: MeshData,
     points: Point[],
@@ -233,7 +278,7 @@ export function appendBuilding(
       ...p,
       ...(uv ? { u: uv[i * 2], v: uv[i * 2 + 1] } : {}),
     }));
-    for (const piece of subtractPrisms(vertices, openings))
+    for (const piece of subtractPrisms(vertices, masks))
       emitPolygon(
         mesh,
         piece,
@@ -294,6 +339,7 @@ export function appendBuilding(
     Math.max(...flat.map((p) => p.y)) + (b.minHeight || 0),
   );
   const roofY = (p: Point) => Math.min(...planes.map((plane) => plane(p)));
+  for (const side of gateOpening?.interior || []) emitPolygon(shell, side, c);
   const style = facadeStyle(b),
     floorHeight = Math.max(
       2.5,

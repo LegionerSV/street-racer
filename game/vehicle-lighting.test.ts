@@ -1,7 +1,20 @@
 import { expect, it } from 'vitest';
 import { NullEngine, Scene, Vector3 } from '@babylonjs/core';
 import { createCar, createTrafficCar } from './visuals';
-import { headlightCasters, VehicleLighting } from './vehicle-lighting';
+import { headlightCasters, headlightPattern, VehicleLighting } from './vehicle-lighting';
+
+it('ближний свет имеет горизонтальную отсечку со ступенькой справа', () => {
+  // Arrange
+  const size = 128;
+  // Act
+  const pixels = headlightPattern(size);
+  const sample = (x: number, y: number) => pixels[(y * size + x) * 4];
+  // Assert
+  expect(sample(30, 35)).toBeLessThan(10);
+  expect(sample(30, 62)).toBeGreaterThan(100);
+  expect(sample(98, 44)).toBeGreaterThan(sample(30, 44) + 80);
+  expect(sample(98, 62)).toBeGreaterThan(100);
+});
 
 it('дневной свет фар не выбеливает асфальт, кузова и ограждения', () => {
   // Arrange
