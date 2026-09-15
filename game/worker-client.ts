@@ -204,16 +204,16 @@ export class WorldWorker {
       this.preparedSourceTiles = null;
     });
   }
-  chunk(key: string, lod: number, cacheLimit = 32) {
-    return this.request<ChunkData>({ type: 'chunk', key, lod, cacheLimit });
+  chunk(key: string, lod: number, cacheLimit = 32, closeCourtyards = false) {
+    return this.request<ChunkData>({ type: 'chunk', key, lod, cacheLimit, closeCourtyards });
   }
-  preparedChunk(key: string, lod: number) {
+  preparedChunk(key: string, lod: number, closeCourtyards = false) {
     if (!this.preparationWorker)
       return Promise.reject(
         new Error('Новая часть района ещё не подготовлена.'),
       );
     return this.request<ChunkData>(
-      { type: 'chunk', key, lod, prepared: true },
+      { type: 'chunk', key, lod, prepared: true, closeCourtyards },
       this.preparationWorker,
     );
   }

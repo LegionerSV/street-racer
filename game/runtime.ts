@@ -54,6 +54,7 @@ export function mapStreamCanUpdate(state: { preparingRaceActive: boolean; raceAc
   return !state.preparingRaceActive && !state.raceActive && !state.hidden;
 }
 export class Game {
+  private readonly closeCourtyards = new URLSearchParams(location.search).get('courtyards') === 'closed';
   readonly engine: Engine;
   readonly scene: Scene;
   readonly player: PlayerCar;
@@ -144,7 +145,7 @@ export class Game {
       const first = game.wanted.filter(c => startup.has(c.key) && c.lod === 0);
       for (let i = 0; i < first.length; i++) {
         signal.throwIfAborted();
-        const prepare=()=>worker.chunk(first[i].key,0,settings.quality==='mobile'?8:32);
+        const prepare=()=>worker.chunk(first[i].key,0,settings.quality==='mobile'?8:32,game.closeCourtyards);
         const chunk=await(log?log.measure('Стартовый квартал / подготовка',prepare,{key:first[i].key}):prepare());signal.throwIfAborted();
         if(log)await log.measure('Стартовый квартал / установка',()=>game.install(chunk),{key:chunk.key});else game.install(chunk);
         progress(`Готовим улицы рядом с машиной · ${i + 1}/${first.length}`, 87 + (i + 1) / first.length * 12);
@@ -291,7 +292,7 @@ export class Game {
     const next = this.wanted.find(c => !this.pending.has(c.key) && !this.installQueue.has(c.key) && (this.chunks.get(c.key)?.lod !== c.lod||this.staleChunks.has(c.key)));
     if (!next) return;
     this.pending.add(next.key);
-    void this.worker.chunk(next.key, next.lod,this.settings.quality==='mobile'?8:32).then(chunk => {
+    void this.worker.chunk(next.key, next.lod,this.settings.quality==='mobile'?8:32,this.closeCourtyards).then(chunk => {
       if (!this.disposed && this.wanted.some(c => c.key === chunk.key && c.lod === chunk.lod)) this.installQueue.enqueue(chunk.key,chunk);
     }).catch(e => { if (!this.disposed) { this.streamFailure = e instanceof Error ? e.message : 'Не удалось подготовить квартал.'; this.message = this.streamFailure; this.paused = true; this.clearControls(); } }).finally(() => this.pending.delete(next.key));
   }
@@ -459,7 +460,7 @@ export class Game {
             const missing=mapTransitionChunks(patch.dirtyChunks,criticalKeys).filter(chunk=>!staged.has(chunk.key));
             if(missing.length){
               this.suspendPump=false;
-              for(const chunk of missing)staged.set(chunk.key,await this.worker.preparedChunk(chunk.key,chunk.lod));
+              for(const chunk of missing)staged.set(chunk.key,await this.worker.preparedChunk(chunk.key,chunk.lod,this.closeCourtyards));
               continue;
             }
             this.suspendPump=true;
@@ -565,7 +566,7 @@ export class Game {
     const data={recordedAt:new Date().toISOString(),center:this.world.center,settings:this.settings,device:navigator.userAgent,performance:this.performanceReport(),diagnostics:this.diagnostics(),map:mapDiagnostics(this.world,this.player.position),sceneChunks:{installed:[...this.chunks].map(([key,c])=>({key,lod:c.lod})),pending:[...this.pending]}};
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='street-racer-performance.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
-  diagnostics() { return { streaming:this.mapStream?.diagnostics(), mapUpdates:this.mapUpdateTimings, performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, loadingReasons:this.loadingReasons, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
+  diagnostics() { return { courtyards:this.closeCourtyards?'closed':'open', streaming:this.mapStream?.diagnostics(), mapUpdates:this.mapUpdateTimings, performance:this.performanceReport(), simulationRate: this.activeWallSeconds>1 ? this.time/this.activeWallSeconds : 1, meshes: this.scene.meshes.length, chunks: this.chunks.size, pending: this.pending.size, fps: this.engine.getFps(), trafficCars: this.traffic.agents.filter(a => !a.race).length, weather: this.atmosphere.state, odometer: this.odometer, offRoad: this.player.offRoad, slip: this.player.slip, racers: this.traffic.racers.map(a => ({ id: a.id, speed: a.speed * 3.6, progress: a.race!.progress, point: a.point })), worldRoads: this.world.edges.length, worldBuildings: this.world.buildings.length, landmarkModels:worldLandmarks(this.world).map(m=>({id:m.asset.id,source:m.asset.source,license:m.asset.license})), worldBridges: this.world.edges.filter(e => e.bridge && !e.blocked).length, worldTunnels: this.world.edges.filter(e => e.tunnel && !e.blocked).length, routes: this.world.routes.map(r => ({ kind: r.kind, km: r.length / 1000 })), position: { x: this.player.position.x, y: this.player.position.y, z: this.player.position.z }, speed: this.player.groundSpeed * 3.6, grounded: this.player.grounded, race: this.race?.phase || null, racePosition: this.race?.position, loading: this.loading, loadingReasons:this.loadingReasons, error: this.streamFailure, test: this.driveTest ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance } : this.testReport }; }
   startDriveTest() {
     if(this.suspendPump)return;
     if (this.driveTest) { this.endDriveTest(); return; }

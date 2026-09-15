@@ -145,10 +145,10 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       if (request.prepared && !prepared)
         throw new Error('Новая часть района ещё не подготовлена.');
       cache.setLimit(request.cacheLimit || 32);
-      const id = `${request.key}/${request.lod}`,
+      const id = `${request.key}/${request.lod}${request.closeCourtyards?'c':'o'}`,
         chunk = request.prepared
-          ? buildChunk(prepared!, request.key, request.lod)
-          : cache.get(id) || buildChunk(world, request.key, request.lod);
+          ? buildChunk(prepared!, request.key, request.lod, request.closeCourtyards)
+          : cache.get(id) || buildChunk(world, request.key, request.lod, request.closeCourtyards);
       if (!request.prepared) cache.touch(id, chunk);
       response = { id: request.id, type: 'chunk', chunk };
     } else throw new Error('Неизвестная команда подготовки района.');

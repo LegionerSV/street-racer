@@ -105,7 +105,7 @@ export default function Home() {
     const log=new LoadingLog(center,settings.quality);loadingLogRef.current=log;setHasLoadingLog(true);setLoadingSeconds(0);
     setMessage(''); setRecord(null); setStage('loading'); setProgress({ text: 'Открываем район', percent: 1 });
     const update = (text: string, percent: number) => { if (attempt === attemptRef.current) setProgress({ text, percent }); };
-    const mapStream=new RegionStream(center,settings.quality,log);
+    const mapStream=new RegionStream(center,settings.quality,log,new URLSearchParams(location.search).get('courtyards')==='closed');
     try {
       validateCenter(center);
       const [region,{Game}]=await Promise.all([log.measure('Данные района',()=>mapStream.start(abort.signal,update)),log.measure('Загрузка игрового движка',()=>import('@/game/runtime'))]);abort.signal.throwIfAborted();

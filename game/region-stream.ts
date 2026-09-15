@@ -286,7 +286,9 @@ export class RegionStream {
     readonly center: Center,
     quality: Settings['quality'],
     private log?: LoadingLog,
+    private closeCourtyards = false,
   ) {
+    if (this.closeCourtyards) this.detailMode = 'minimal';
     this.policy = mapStreamingPolicy(quality);
     this.maxElements = this.policy.maxElements;
     this.log?.start('Политика окна source-тайлов', {
@@ -380,18 +382,20 @@ export class RegionStream {
     mode: MapDetailMode,
     raw?: ElementBreakdown,
   ) {
+    const requestedMode = this.closeCourtyards && mode === 'standard' ? 'minimal' : mode;
     const currentMode = tile.checksum.split('|')[1] as
         | MapDetailMode
         | undefined,
       effectiveMode =
         currentMode &&
-        DETAIL_MODES.indexOf(currentMode) > DETAIL_MODES.indexOf(mode)
+        DETAIL_MODES.indexOf(currentMode) > DETAIL_MODES.indexOf(requestedMode)
           ? currentMode
-          : mode;
+          : requestedMode;
     const filtered = reduceMapElements(
       tile.elements,
       sourceTileCenter({ z: tile.z, x: tile.x, y: tile.y }),
       effectiveMode,
+      this.closeCourtyards,
     );
     return {
       tile: {

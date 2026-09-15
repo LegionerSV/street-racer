@@ -46,6 +46,21 @@ it('использует фасадные текстуры вблизи и си�
       near.facades!.reduce((sum, m) => sum + m.indices.length, 0),
   );
 });
+
+it('в закрытом дворе оставляет коробку здания без дворовых фасадов и сохраняет фасад у улицы', () => {
+  // Arrange
+  const road = { id: 0, stableId: '9/1/2/0', way: 9, from: 1, to: 2, length: 100, width: 7, lanes: 2, speed: 14, name: 'Улица', category: 'residential', bridge: false, tunnel: false, layer: 0, points: [{x: 15,y:0,z:10},{x:15,y:0,z:110}], blocked: false };
+
+  // Act
+  const yard = buildChunk(world(), '0,0', 0, true),
+    street = buildChunk({ ...world(), edges: [road] } as World, '0,0', 0, true);
+
+  // Assert
+  expect(yard.facades!.every(mesh => mesh.indices.length === 0)).toBe(true);
+  expect(yard.buildings.indices.length).toBeGreaterThan(0);
+  expect(street.facades!.some(mesh => mesh.indices.length > 0)).toBe(true);
+  expect(yard.buildings.indices.length).toBeLessThan(buildChunk(world(), '0,0', 0).buildings.indices.length);
+});
 it.each(['gabled', 'hipped', 'pyramidal', 'skillion'])(
   'строит крышу %s в пределах полной высоты здания',
   (roof) => {

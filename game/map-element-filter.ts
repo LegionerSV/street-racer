@@ -45,6 +45,15 @@ function isRoad(element: OSMElement) {
   );
 }
 
+function isCourtyardRoad(element: OSMElement) {
+  const tags = element.tags ?? {};
+  return tags.highway === 'service' &&
+    !tags.bridge && (!tags.tunnel || tags.tunnel === 'building_passage') &&
+    !tags.name && !tags['name:ru'] && !tags.ref &&
+    (tags.service === 'driveway' || tags.service === 'parking_aisle' ||
+      !tags.service || tags.service === 'alley');
+}
+
 function isArea(element: OSMElement) {
   const tags = element.tags ?? {};
   return (
@@ -160,6 +169,7 @@ export function reduceMapElements(
   elements: OSMElement[],
   center: Center,
   mode: MapDetailMode = 'standard',
+  closeCourtyards = false,
 ) {
   const byKey = new Map(elements.map((element) => [keyOf(element), element])),
     nodeById = new Map(
@@ -178,12 +188,12 @@ export function reduceMapElements(
       pointCache.set(id, value);
       return value;
     },
-    roads = elements.filter(isRoad),
+    roads = elements.filter(element => isRoad(element) && (!closeCourtyards || !isCourtyardRoad(element))),
     streets = roads.filter((road) => road.tags?.highway !== 'service');
 
   // В клетке только с внутриквартальными дорогами используем их как ориентир.
   const frontageRoads = streets.length ? streets : roads;
-  if (!frontageRoads.length && mode === 'standard')
+  if (!frontageRoads.length && mode === 'standard' && !closeCourtyards)
     return {
       elements,
       stats: { raw: summarize(elements), kept: summarize(elements) },
@@ -241,8 +251,10 @@ export function reduceMapElements(
   for (const element of elements) {
     const tags = element.tags ?? {};
     if (
-      isRoad(element) ||
-      (element.type === 'relation' && tags.type === 'restriction')
+      (isRoad(element) && (!closeCourtyards || !isCourtyardRoad(element))) ||
+      (element.type === 'relation' && tags.type === 'restriction' &&
+        (!closeCourtyards || !(element.members ?? []).some(member =>
+          member.type === 'way' && isCourtyardRoad(byKey.get(`way/${member.ref}`) ?? element))))
     ) {
       retain(element);
     } else if (

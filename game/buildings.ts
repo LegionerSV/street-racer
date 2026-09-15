@@ -181,6 +181,24 @@ function clip(points: Point[], plane: (p: Point) => number) {
   }
   return output;
 }
+
+export function appendBuildingSilhouette(b: Building, mesh: MeshData, foundationFloor?: number) {
+  const rings = [b.footprint, ...(b.holes || [])],
+    flat = rings.flat(), holes: number[] = [];
+  let count = b.footprint.length;
+  for (const ring of rings.slice(1)) { holes.push(count); count += ring.length; }
+  const floor = (foundationFloor ?? Math.min(...flat.map(p => p.y))) + (b.minHeight || 0) - .3,
+    top = Math.max(...flat.map(p => p.y)) + b.height,
+    wallColour = colour(b),
+    roofColour = parsedColour(b.roofColour) || wallColour.map(v => v * .48) as Colour;
+  for (const ring of rings) for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], next = ring[(i + 1) % ring.length];
+    emitPolygon(mesh, [{...a,y:floor},{...next,y:floor},{...next,y:top},{...a,y:top}], wallColour);
+  }
+  const indices = earcut(flat.flatMap(p => [p.x,p.z]), holes);
+  for (let i = 0; i < indices.length; i += 3)
+    emitPolygon(mesh, indices.slice(i,i+3).map(index => ({...flat[index],y:top})), roofColour);
+}
 export function appendBuilding(
   b: Building,
   lod: number,
@@ -188,6 +206,7 @@ export function appendBuilding(
   facades: MeshData[],
   openings: Prism[] = [],
   foundationFloor?: number,
+  detailedEdge?: (ring: Point[], index: number) => boolean,
 ) {
   if (b.envelopeHeight !== undefined)
     b = { ...b, height: b.envelopeHeight, roof: 'flat', roofHeight: 0 };
@@ -275,7 +294,7 @@ export function appendBuilding(
     Math.max(...flat.map((p) => p.y)) + (b.minHeight || 0),
   );
   const roofY = (p: Point) => Math.min(...planes.map((plane) => plane(p)));
-  const facade = detailed ? facades[facadeStyle(b)] : shell,
+  const style = facadeStyle(b),
     floorHeight = Math.max(
       2.5,
       (eaves - floor) /
@@ -283,10 +302,12 @@ export function appendBuilding(
     );
   for (const ring of rings)
     for (let i = 0; i < ring.length; i++) {
+      const edgeDetailed = detailed && (!detailedEdge || detailedEdge(ring, i));
       const a = ring[i],
         b = ring[(i + 1) % ring.length],
         length = distance2(a, b),
         cuts = [0, 1];
+      const facade = edgeDetailed ? facades[style] : shell;
       for (let j = 0; j < planes.length; j++)
         for (let k = j + 1; k < planes.length; k++) {
           const da = planes[j](a) - planes[k](a),
@@ -308,7 +329,7 @@ export function appendBuilding(
             { ...start, y: ya },
           ],
           c,
-          detailed
+          edgeDetailed
             ? [
                 (cuts[j - 1] * length) / 3.6,
                 0,
@@ -322,7 +343,7 @@ export function appendBuilding(
             : undefined,
         );
       }
-      if (detailed) {
+      if (edgeDetailed) {
         const area = ring.reduce(
             (sum, p, j) =>
               sum +

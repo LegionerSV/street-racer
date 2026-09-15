@@ -4,7 +4,7 @@ import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
 import { SpatialGrid,boundsOf,roadPrism,footprintPrism,surfacePrism,subtractPrisms,type Prism } from './geometry';
-import { appendBuilding } from './buildings';
+import { appendBuilding, appendBuildingSilhouette } from './buildings';
 import { worldLandmarks,appendLandmark } from './landmarks';
 import { dashSpans, periodicOffsets } from './markings';
 import { BRIDGE_DECK_THICKNESS, SIDEWALK_WIDTH, CURB_WIDTH, CURB_HEIGHT } from './clearance';
@@ -231,7 +231,7 @@ export function indexWorld(world: World): Index {
   worldIndices.set(world, index); return index;
 }
 
-export function buildChunk(world: World, key: string, lod: number): ChunkData {
+export function buildChunk(world: World, key: string, lod: number, closeCourtyards = false): ChunkData {
   const index = indexWorld(world), segments = index.segments.get(key) || [], owned = index.owned.get(key) || [];
   const [cx, cz] = key.split(',').map(Number), x0 = cx * 250, z0 = cz * 250;
   const result: ChunkData = { key, lod, terrain: empty(), road: empty(), shoulders: empty(), sidewalks: empty(), landmarks:empty(), facades:[empty(),empty(),empty()], markings: empty(), structures: empty(), treeTrunks:empty(), buildings: empty(), windows: empty(), water: empty(), trees: [], lamps: [], breakables:[] };
@@ -374,6 +374,25 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
   for(const model of models)appendLandmark(result.landmarks!,model,lod);
   for (const building of index.buildings.get(key) || []) {
     if(models.some(model=>model.asset.kind==='building'&&model.asset.osm.some(ref=>ref.type===(building.osmType||'way')&&ref.id===building.id)))continue;
+    const tags=building.osmTags??{},significant=!!(building.part||building.group||tags.name||tags['name:ru']||tags.historic||tags.tourism||building.kind==='wall'||['cathedral','church','chapel','mosque','tower'].includes(building.kind||''));
+    const frontageEdges=new Set<number>();
+    if(closeCourtyards&&!significant){
+      const publicSegments=index.spatial.query(boundsOf(building.footprint,24)).filter(s=>s.edge.category!=='service');
+      for(let i=0;i<building.footprint.length;i++){
+        const a=building.footprint[i],b=building.footprint[(i+1)%building.footprint.length],length=distance2(a,b)||1;
+        if(publicSegments.some(s=>{
+          const roadLength=distance2(s.a,s.b)||1,
+            parallel=Math.abs(((b.x-a.x)*(s.b.x-s.a.x)+(b.z-a.z)*(s.b.z-s.a.z))/(length*roadLength));
+          if(parallel<.5)return false;
+          return [a,mixPoint(a,b,.5),b].some(p=>projectOnSegment(p,s.a,s.b).distance<=24);
+        }))frontageEdges.add(i);
+      }
+      if(!frontageEdges.size){
+        const grounded={...building,footprint:building.footprint.map(p=>({...p,y:terrainHeight(p.x,p.z)})),holes:building.holes?.map(r=>r.map(p=>({...p,y:terrainHeight(p.x,p.z)})))};
+        appendBuildingSilhouette(grounded,result.buildings);
+        continue;
+      }
+    }
     const groundRing=(ring:Point[])=>ring.flatMap((p,i)=>{
       const q=ring[(i+1)%ring.length],cuts=new Set([0,1]);
       // Внутри треугольника земля линейна: минимумы на пересечениях
@@ -386,7 +405,7 @@ export function buildChunk(world: World, key: string, lod: number): ChunkData {
     const groundVertex=(p:Point)=>({...p,y:terrainHeight(p.x,p.z)});
     const grounded={...building,footprint:building.footprint.map(groundVertex),holes:building.holes?.map(r=>r.map(groundVertex))};
     const roads=index.spatial.query(boundsOf(building.footprint)).filter(s=>!s.edge.tunnel&&!s.edge.bridge).map(s=>roadPrism(s.a,s.b,s.edge.width+.6,10000,s.edge.passage?5.5:4.5));
-    appendBuilding(grounded,lod,result.buildings,result.facades!,roads,foundationFloor);
+    appendBuilding(grounded,lod,result.buildings,result.facades!,roads,foundationFloor,closeCourtyards&&!significant?(ring,i)=>ring===grounded.footprint&&frontageEdges.has(i):undefined);
     for(const s of index.spatial.query(boundsOf(building.footprint)).filter(s=>s.edge.passage)){
       const length=distance2(s.a,s.b)||1,nx=(s.b.z-s.a.z)/length,nz=-(s.b.x-s.a.x)/length;
       for(const side of [-1,1]){

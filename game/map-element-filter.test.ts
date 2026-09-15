@@ -5,6 +5,34 @@ import type { OSMElement } from './types';
 
 const center = { lat: 0, lon: 0 };
 
+it('в режиме закрытых дворов убирает безымянные служебные проезды, сохраняя улицы и именованный подъезд', () => {
+  // Arrange
+  const elements: OSMElement[] = [
+    { type: 'node', id: 1, lat: 0, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'node', id: 3, lat: 0.002, lon: 0 },
+    { type: 'node', id: 4, lat: 0.003, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+    { type: 'way', id: 11, nodes: [2, 3], tags: { highway: 'service', service: 'driveway' } },
+    { type: 'way', id: 12, nodes: [3, 4], tags: { highway: 'service', name: 'Подъезд к музею' } },
+    { type: 'way', id: 13, nodes: [1, 3], tags: { highway: 'service', tunnel: 'yes' } },
+    { type: 'way', id: 14, nodes: [2, 4], tags: { highway: 'service', bridge: 'yes' } },
+  ];
+
+  // Act
+  const open = reduceMapElements(elements, center);
+  const closed = reduceMapElements(elements, center, 'standard', true);
+
+  // Assert
+  expect(open.elements.some(element => element.id === 11)).toBe(true);
+  expect(closed.elements.some(element => element.id === 11)).toBe(false);
+  expect(closed.elements.some(element => element.id === 10)).toBe(true);
+  expect(closed.elements.some(element => element.id === 12)).toBe(true);
+  expect(closed.elements.some(element => element.id === 13)).toBe(true);
+  expect(closed.elements.some(element => element.id === 14)).toBe(true);
+  expect(closed.elements.some(element => element.id === 3)).toBe(true);
+});
+
 it('сохраняет проезжие улицы, ограничения поворотов и их точки', () => {
   // Arrange
   const elements: OSMElement[] = [
