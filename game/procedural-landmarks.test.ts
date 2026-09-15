@@ -17,7 +17,7 @@ import { createWorldPatch } from './world-patch';
 const mesh = (): MeshData => ({ positions: [], indices: [], colors: [] });
 const render = (b: Building, lod: number) => {
   const shell = mesh(),
-    facades = [mesh(), mesh(), mesh()];
+    facades = [mesh(), mesh(), mesh(), mesh()];
   appendBuilding(b, lod, shell, facades);
   return {
     shell,

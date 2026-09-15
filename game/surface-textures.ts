@@ -15,7 +15,7 @@ export function normalMap(height: Float32Array, size: number, strength: number) 
   return pixels;
 }
 
-export function facadeSurface(style: 'brick' | 'stone' | 'modern', size: number) {
+export function facadeSurface(style: 'brick' | 'stone' | 'modern' | 'wood', size: number) {
   const diffuse = new Uint8Array(size * size * 4);
   const emission = new Uint8Array(diffuse.length);
   const height = new Float32Array(size * size);
@@ -23,11 +23,14 @@ export function facadeSurface(style: 'brick' | 'stone' | 'modern', size: number)
     const px = x % 64, py = y % 64;
     const window = style === 'modern'
       ? px > 7 && px < 57 && py > 12 && py < 54
+      : style === 'wood'
+        ? px > 19 && px < 44 && py > 21 && py < 50
       : px > 15 && px < 48 && py > 18 && py < 51;
-    const frame = window && (px % 16 < 2 || py === 34);
+    const frame = window && (style === 'wood' ? px === 31 || py === 34 : px % 16 < 2 || py === 34);
     const mortar = style === 'brick' && (y % 8 === 0 || (x + (Math.floor(y / 8) % 2) * 12) % 24 === 0);
     const stoneJoint = style === 'stone' && (y % 8 === 0 || x % 48 === 0);
     const panelJoint = style === 'modern' && (x % 24 === 0 || y % 16 === 0);
+    const boardJoint = style === 'wood' && y % 8 === 0;
     const cornice = style === 'stone' && (py < 4 || py > 59);
     const grain = seeded(x + y * size) - .5;
     const brickTone = seeded(Math.floor(x / 12) + Math.floor(y / 8) * 17) - .5;
@@ -36,12 +39,14 @@ export function facadeSurface(style: 'brick' | 'stone' | 'modern', size: number)
       ? mortar ? 128 : Math.round(216 + brickTone * 42 + grain * 12)
       : style === 'stone'
         ? cornice ? 240 : stoneJoint ? 188 : Math.round(220 + stoneTone * 22 + grain * 18)
-        : panelJoint ? 171 : Math.round(231 + grain * 14);
+        : style === 'wood'
+          ? boardJoint ? 116 : Math.round(205 + (seeded(Math.floor(y / 8) * 37) - .5) * 28 + grain * 16)
+          : panelJoint ? 171 : Math.round(231 + grain * 14);
     const base = (y * size + x) * 4;
     height[y * size + x] = window ? (frame ? .6 : .08)
-      : mortar || stoneJoint || panelJoint ? .23 : cornice ? .95 : .75 + grain * .12;
+      : mortar || stoneJoint || panelJoint || boardJoint ? .23 : cornice ? .95 : .75 + grain * .12;
     const rgb = window ? frame ? [107, 122, 122] : [31, 54, 69] : [shade, shade, shade];
-    const lit = window && !frame && (Math.floor(x / 64) + Math.floor(y / 64) * 2 + ['brick', 'stone', 'modern'].indexOf(style)) % 3 !== 0;
+    const lit = window && !frame && (Math.floor(x / 64) + Math.floor(y / 64) * 2 + ['brick', 'stone', 'modern', 'wood'].indexOf(style)) % 3 !== 0;
     for (let c = 0; c < 3; c++) {
       diffuse[base + c] = rgb[c];
       emission[base + c] = lit ? [220, 169, 92][c] : 0;

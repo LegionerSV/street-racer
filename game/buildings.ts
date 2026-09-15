@@ -106,6 +106,8 @@ const named: Record<string, string> = {
   lightyellow: '#ffffe0',
 };
 export function facadeStyle(b: Building) {
+  if (['wood', 'timber', 'logs'].includes(b.material || '') ||
+    (!b.material && b.appearance === 'cottage' && b.colour < .72)) return 3;
   return b.material === 'brick'
     ? 0
     : ['glass', 'metal', 'steel'].includes(b.material || '') ||
@@ -190,6 +192,11 @@ function colour(b: Building): Colour {
       [0.56, 0.64, 0.68],
       [0.65, 0.68, 0.7],
       [0.46, 0.56, 0.6],
+    ],
+    [
+      [0.73, 0.51, 0.34],
+      [0.78, 0.64, 0.43],
+      [0.54, 0.39, 0.29],
     ],
   ];
   return palettes[facadeStyle(b)][Math.min(2, Math.floor(b.colour * 3))];

@@ -8,6 +8,33 @@ const road = (id: number, nodes: number[], tags = {}): OSMElement => ({ type: 'w
 const region = (elements: OSMElement[]): RegionData => ({ center: { lat: 0, lon: 0 }, elements, elevation: { size: 5600, width: 2, values: new Float32Array(4) }, fetchedAt: '2026-09-05', drivingSide: 'right' });
 
 describe('Дорожная сеть', () => {
+  it('оставляет здания без указанной высоты низкими и сохраняет явные этажи', () => {
+    // Arrange
+    const elements: OSMElement[] = [];
+    for (const [id, lon, tags] of [
+      [10, 0, { building: 'yes' }],
+      [20, .002, { building: 'detached' }],
+      [30, .004, { building: 'bungalow' }],
+      [40, .006, { building: 'yes', 'building:levels': '5' }],
+      [50, .008, { building: 'yes', height: '18' }],
+      [60, .010, { building: 'apartments' }],
+      [70, .012, { building: 'semidetached_house' }],
+      [80, .014, { building: 'shed' }],
+    ] as const) {
+      const ids = [1, 2, 3, 4].map(n => id + n);
+      [[lon, 0], [lon + .001, 0], [lon + .001, .001], [lon, .001]].forEach(([x, y], i) => elements.push(node(ids[i], x, y)));
+      elements.push({ type: 'way', id, nodes: [...ids, ids[0]], tags });
+    }
+    // Act
+    const buildings = buildWorld(region(elements)).buildings;
+    // Assert
+    expect(buildings.map(b => [b.id, b.height, b.levels])).toEqual([
+      [10, 6, 2], [20, 6, 2], [30, 6, 2], [40, 15, 5], [50, 18, 6],
+      [60, expect.any(Number), expect.any(Number)],
+      [70, 6, 2], [80, 3, 1],
+    ]);
+    expect(buildings.find(b => b.id === 60)!.height).toBeGreaterThan(9);
+  });
   it('сохраняет класс дороги и не назначает тротуар дворовым проездам', () => {
     // Arrange
     const input = region([

@@ -25,9 +25,9 @@ function texture(scene: Scene, name: string, pixels: Uint8Array, size: number) {
   return t;
 }
 export function streetMaterials(scene: Scene) {
-  const facades = ['brick', 'stone', 'modern'].map((style) => {
+  const facades = ['brick', 'stone', 'modern', 'wood'].map((style) => {
     const size = 128;
-    const { diffuse, emission, normal } = facadeSurface(style as 'brick' | 'stone' | 'modern', size);
+    const { diffuse, emission, normal } = facadeSurface(style as 'brick' | 'stone' | 'modern' | 'wood', size);
     const mat = new StandardMaterial('facade-' + style, scene);
     mat.diffuseTexture = texture(scene, style + '-windows', diffuse, size);
     mat.emissiveTexture = texture(scene, style + '-night', emission, size);

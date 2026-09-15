@@ -173,6 +173,20 @@ it('сохраняет материал, цвет, этажность и тип 
     osmType: 'way',
   });
 });
+it('рисует доски у стилизованного малого дома и сохраняет указанный кирпич', () => {
+  // Arrange
+  const cottage = { ...building, height: 6, levels: 2, appearance: 'cottage' as const, roof: 'gabled' };
+  const brick = { ...cottage, material: 'brick' };
+  // Act
+  const woodenChunk = buildChunk(world(cottage), '0,0', 0);
+  const brickChunk = buildChunk(world(brick), '0,0', 0);
+  // Assert
+  expect(facadeStyle(cottage)).toBe(3);
+  expect(woodenChunk.facades![3].indices.length).toBeGreaterThan(0);
+  expect(facadeStyle(brick)).toBe(0);
+  expect(brickChunk.facades![0].indices.length).toBeGreaterThan(0);
+  expect(facadeStyle({ ...cottage, colour: .9 })).toBe(1);
+});
 
 it.each([
   ['brick', '#aabbcc', 0],

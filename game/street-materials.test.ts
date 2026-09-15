@@ -25,6 +25,17 @@ it('дневная отделка различима и не добавляет 
   expect(brick.normal).not.toEqual(stone.normal);
   expect(stone.normal).not.toEqual(modern.normal);
 });
+it('деревянный фасад показывает горизонтальные доски и оконные рамы', () => {
+  // Arrange
+  const size = 128;
+  const pixel = (data: Uint8Array, x: number, y: number) => data[(y * size + x) * 4];
+  // Act
+  const wood = facadeSurface('wood', size);
+  // Assert
+  expect(Math.abs(pixel(wood.diffuse, 25, 7) - pixel(wood.diffuse, 25, 8))).toBeGreaterThan(25);
+  expect(pixel(wood.diffuse, 25, 20)).not.toBe(pixel(wood.diffuse, 25, 30));
+  expect(wood.normal).toHaveLength(size * size * 4);
+});
 
 it('фасады сохраняют три общих типа, но получают рельеф и разную отделку', () => {
   // Arrange
@@ -34,11 +45,11 @@ it('фасады сохраняют три общих типа, но получ�
     const { facades } = streetMaterials(scene);
 
     // Assert
-    expect(facades).toHaveLength(3);
+    expect(facades).toHaveLength(4);
     expect(facades.every(material => material.diffuseTexture && material.emissiveTexture && material.bumpTexture)).toBe(true);
     expect(facades.every(material => material.bumpTexture?.gammaSpace === false)).toBe(true);
-    expect(new Set(facades.map(material => material.bumpTexture)).size).toBe(3);
-    expect(scene.materials.filter(material => material.name.startsWith('facade-'))).toHaveLength(3);
+    expect(new Set(facades.map(material => material.bumpTexture)).size).toBe(4);
+    expect(scene.materials.filter(material => material.name.startsWith('facade-'))).toHaveLength(4);
   } finally { scene.dispose(); engine.dispose(); }
 });
 

@@ -234,7 +234,7 @@ export function indexWorld(world: World): Index {
 export function buildChunk(world: World, key: string, lod: number, closeCourtyards = false): ChunkData {
   const index = indexWorld(world), segments = index.segments.get(key) || [], owned = index.owned.get(key) || [];
   const [cx, cz] = key.split(',').map(Number), x0 = cx * 250, z0 = cz * 250;
-  const result: ChunkData = { key, lod, terrain: empty(), road: empty(), shoulders: empty(), sidewalks: empty(), landmarks:empty(), facades:[empty(),empty(),empty()], markings: empty(), structures: empty(), treeTrunks:empty(), buildings: empty(), windows: empty(), water: empty(), trees: [], lamps: [], breakables:[] };
+  const result: ChunkData = { key, lod, terrain: empty(), road: empty(), shoulders: empty(), sidewalks: empty(), landmarks:empty(), facades:[empty(),empty(),empty(),empty()], markings: empty(), structures: empty(), treeTrunks:empty(), buildings: empty(), windows: empty(), water: empty(), trees: [], lamps: [], breakables:[] };
   const waterLevel = (area: World['areas'][number]) => Math.min(...area.points.map(p => p.y)) - .4;
   // Одинаковая сетка на обоих LOD сохраняет стыки; различается детализация объектов.
   const n = 20, terrain = result.terrain;

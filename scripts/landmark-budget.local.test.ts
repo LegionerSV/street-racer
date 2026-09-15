@@ -38,7 +38,7 @@ it('геометрия реальных ансамблей укладывает�
     // Act
     for (const lod of [0, 2]) {
       const start = performance.now(),
-        meshes = [mesh(), mesh(), mesh(), mesh()];
+        meshes = [mesh(), mesh(), mesh(), mesh(), mesh()];
       for (const b of world.buildings)
         appendBuilding(b, lod, meshes[0], meshes.slice(1));
       if (process.env.LANDMARK_PROFILE && lod === 0)
@@ -173,7 +173,7 @@ it.skipIf(
         bytes = 0,
         maxChunk = 0;
       for (const plan of plans) {
-        const meshes = [mesh(), mesh(), mesh(), mesh()];
+        const meshes = [mesh(), mesh(), mesh(), mesh(), mesh()];
         for (const b of index.buildings.get(plan.key) || [])
           appendBuilding(b, plan.lod, meshes[0], meshes.slice(1));
         const count = meshes.reduce((n, m) => n + m.indices.length / 3, 0);

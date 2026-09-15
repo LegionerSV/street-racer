@@ -8,6 +8,7 @@ import { alignCarriagewayElevations } from './carriageways';
 import { fitBridgeClearance, fitTunnelDepth, validateClearance } from './clearance';
 import { roadLayout, directedLanes,roadTypes } from './lanes';
 import {buildingCoveredByParts} from './buildings';
+import { applyBuildingAppearances } from './building-appearance';
 import {SpatialGrid,boundsOf,overlaps} from './geometry';
 import {coverageBounds,pointHasCoverage,routeHasCoverage,routeHasDrivingCoverage} from './stream-coverage';
 import { edgeById, edgeIndex, edgeStableId, makeEdgeStableId, updateRoadMetrics } from './road-graph';
@@ -154,7 +155,9 @@ export function buildWorld(region: RegionData): World {
     const footprintBounds=boundsOf(footprint);
     if(objectBounds && !objectBounds.some(b=>overlaps(b,footprintBounds)))return;
     if (((t.building && t.building !== 'no') || isBuildingPart(t)) && t.location !== 'underground') {
-      const fallback = ['house', 'detached', 'garage', 'garages'].includes(t.building) ? 6 : 10 + Math.floor(seeded(e.id) * 6) * 3;
+      const fallback = ['garage', 'garages', 'shed', 'hut'].includes(t.building) ? 3 :
+        ['yes', 'house', 'detached', 'semi_detached', 'semidetached_house', 'bungalow', 'cabin', 'farm'].includes(t.building) ? 6 :
+        10 + Math.floor(seeded(e.id) * 6) * 3;
       const height = clamp(osmLength(t.height) ?? (tagsNumber(t['building:levels'], fallback / 3) * 3 + (osmLength(t['roof:height']) ?? (osmLength(t['roof:levels']) ?? 0)*3)), .1, 600);
       buildings.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', footprint, holes, height, minHeight: clamp(osmLength(t.min_height) ?? tagsNumber(t['building:min_level'], 0) * 3, 0, height), part: isBuildingPart(t), colour: seeded(e.id), roof: t['roof:shape'] || 'flat', material:t['building:material'] || t['building:facade:material'] || t.material,facadeColour:t['building:colour'] || t['building:facade:colour'] || t['building:facade:color'] || t.colour,levels:tagsNumber(t['building:levels'],Math.max(1,Math.round(height/3))),kind:t.building,roofHeight:osmLength(t['roof:height']),roofDirection:osmDirection(t['roof:direction']),roofAngle:t['roof:angle'] && /^\d+(?:\.\d+)?$/.test(t['roof:angle'])?Number(t['roof:angle']):undefined,roofLevels:osmLength(t['roof:levels']),roofColour:t['roof:colour'],roofMaterial:t['roof:material'],group:groupOf.get(osmKey(e)),osmTags:{...t},roofOrientation:t['roof:orientation'] });
     } else if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir') areas.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', points: footprint, holes, kind: 'water', railing:t.waterway === 'riverbank' || t.water === 'river' ? 'river' : undefined });
@@ -185,6 +188,7 @@ export function buildWorld(region: RegionData): World {
   // Пересечение дороги вырезается локально при построении геометрии здания.
   // Поднимать или удалять целый дом ради одной арки нельзя.
   buildings.splice(0,buildings.length,...filteredBuildings);
+  applyBuildingAppearances(buildings);
   const nodes = [...roadNodes.values()];
   alignCarriagewayElevations(edges, roadNodes, elevation, region.drivingSide);
   const neighbours = new Map<number, Set<number>>();
