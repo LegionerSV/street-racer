@@ -153,7 +153,7 @@ export function buildWorld(region: RegionData): World {
     if (footprint.length < 3 || (!coverage && footprint.every(p => Math.abs(p.x) > 2800 || Math.abs(p.z) > 2800))) return;
     const footprintBounds=boundsOf(footprint);
     if(objectBounds && !objectBounds.some(b=>overlaps(b,footprintBounds)))return;
-    if ((t.building && t.building !== 'no') || isBuildingPart(t)) {
+    if (((t.building && t.building !== 'no') || isBuildingPart(t)) && t.location !== 'underground') {
       const fallback = ['house', 'detached', 'garage', 'garages'].includes(t.building) ? 6 : 10 + Math.floor(seeded(e.id) * 6) * 3;
       const height = clamp(osmLength(t.height) ?? (tagsNumber(t['building:levels'], fallback / 3) * 3 + (osmLength(t['roof:height']) ?? (osmLength(t['roof:levels']) ?? 0)*3)), .1, 600);
       buildings.push({ id: e.id, osmType:e.type==='relation'?'relation':'way', footprint, holes, height, minHeight: clamp(osmLength(t.min_height) ?? tagsNumber(t['building:min_level'], 0) * 3, 0, height), part: isBuildingPart(t), colour: seeded(e.id), roof: t['roof:shape'] || 'flat', material:t['building:material'] || t['building:facade:material'] || t.material,facadeColour:t['building:colour'] || t['building:facade:colour'] || t['building:facade:color'] || t.colour,levels:tagsNumber(t['building:levels'],Math.max(1,Math.round(height/3))),kind:t.building,roofHeight:osmLength(t['roof:height']),roofDirection:osmDirection(t['roof:direction']),roofAngle:t['roof:angle'] && /^\d+(?:\.\d+)?$/.test(t['roof:angle'])?Number(t['roof:angle']):undefined,roofLevels:osmLength(t['roof:levels']),roofColour:t['roof:colour'],roofMaterial:t['roof:material'],group:groupOf.get(osmKey(e)),osmTags:{...t},roofOrientation:t['roof:orientation'] });

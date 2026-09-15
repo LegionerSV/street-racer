@@ -189,12 +189,10 @@ export function resolveBuildingEnvelopes(buildings: Building[]) {
         largest >= area(b.footprint) * 0.15
           ? elevated.filter((p) => area(p.footprint) >= largest * 0.7)
           : [];
-      // У пространственно найденной группы мелкий карниз не задаёт высоту
-      // всей оболочки: при наличии широкого яруса используем его основание.
-      const candidates =
-        b.group === `${b.osmType || 'way'}/${b.id}` && broad.length
-          ? broad
-          : members;
+      // Низкий размеченный цоколь может задавать основание комплекса.
+      // Высокий карниз не уменьшает всю оболочку без широкого яруса под ним.
+      const lowTier = members.filter(p => (p.minHeight || 0) >= 3 && (p.minHeight || 0) <= 10);
+      const candidates = lowTier.length ? lowTier : broad;
       const bases = candidates
         .map((p) => p.minHeight || 0)
         .filter((h) => h >= 3 && h < b.height);
@@ -212,4 +210,23 @@ export function resolveBuildingEnvelopes(buildings: Building[]) {
       )
         b.envelopeHeight = firstTier;
     }
+  const byGroup = new Map<string, Building[]>();
+  for (const b of buildings) if (b.group) {
+    const members = byGroup.get(b.group) || [];
+    members.push(b);
+    byGroup.set(b.group, members);
+  }
+  for (const members of byGroup.values()) {
+    const outline = members.find(b => !b.part);
+    if (!outline) continue;
+    const outlineArea = area(outline.footprint);
+    for (const part of members) {
+      const min = part.minHeight || 0;
+      if (!part.part || min < 12 || area(part.footprint) > outlineArea * .02) continue;
+      const center = part.footprint.reduce((p,q)=>({x:p.x+q.x/part.footprint.length,y:0,z:p.z+q.z/part.footprint.length}),{x:0,y:0,z:0});
+      const support = Math.max(0,...members.filter(b=>b!==part&&(b.envelopeHeight??b.height)<=min+.1&&area(b.footprint)>=area(part.footprint)*.9&&polygonContains(center,b.footprint)).map(b=>b.envelopeHeight??b.height));
+      // Тег min_height сохраняется: достраиваем лишь недостающую опору башни.
+      if (support > 0 && min-support > 2) part.supportMinHeight = support;
+    }
+  }
 }

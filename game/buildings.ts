@@ -187,7 +187,7 @@ export function appendBuildingSilhouette(b: Building, mesh: MeshData, foundation
     flat = rings.flat(), holes: number[] = [];
   let count = b.footprint.length;
   for (const ring of rings.slice(1)) { holes.push(count); count += ring.length; }
-  const floor = (foundationFloor ?? Math.min(...flat.map(p => p.y))) + (b.minHeight || 0) - .3,
+  const floor = (foundationFloor ?? Math.min(...flat.map(p => p.y))) + (b.supportMinHeight ?? b.minHeight ?? 0) - .3,
     top = Math.max(...flat.map(p => p.y)) + b.height,
     wallColour = colour(b),
     roofColour = parsedColour(b.roofColour) || wallColour.map(v => v * .48) as Colour;
@@ -255,7 +255,7 @@ export function appendBuilding(
     ),
     floor =
       (foundationFloor ?? Math.min(...flat.map((p) => p.y))) +
-      (b.minHeight || 0) -
+      (b.supportMinHeight ?? b.minHeight ?? 0) -
       0.3;
   const top = Math.max(...flat.map((p) => p.y)) + b.height,
     c = colour(b),

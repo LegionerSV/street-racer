@@ -1,7 +1,8 @@
 import { expect, it } from 'vitest';
-import { buildingGroups } from './building-groups';
+import { buildingGroups, resolveBuildingEnvelopes } from './building-groups';
 import { reduceMapElements } from './map-element-filter';
-import type { OSMElement } from './types';
+import { buildWorld } from './network';
+import type { Building, OSMElement } from './types';
 const center = { lat: 0, lon: 0 };
 function square(
   id: number,
@@ -154,4 +155,38 @@ it('вложенная группа и её части принадлежат о
     expect(groupOf.get('way/6')).toBe('relation/1');
     expect(groupOf.get('way/5')).toBe('relation/1');
   }
+});
+it('подземный торговый комплекс не поднимает весь контур над дорогой, но его павильон остаётся виден', () => {
+  // Arrange
+  const elements: OSMElement[] = [
+    ...square(10, 0, 0, 100, {}),
+    ...square(20, 10, 10, 8, { 'building:part': 'yes', height: '3' }),
+    { type: 'relation', id: 30, tags: { type: 'multipolygon', building: 'retail', location: 'underground', layer: '-1', 'building:levels:underground': '4' }, members: [{ type: 'way', ref: 10, role: 'outer' }] },
+  ];
+  // Act
+  const world = buildWorld({ center, elements, drivingSide: 'right', fetchedAt: 'test', elevation: { width: 2, size: 5600, values: new Float32Array(4) } });
+  // Assert
+  expect(world.buildings.map(b => b.id)).toEqual([20]);
+});
+it('мелкие приподнятые детали не уменьшают оболочку высотного отеля', () => {
+  // Arrange
+  const footprint = [{x:0,y:0,z:0},{x:100,y:0,z:0},{x:100,y:0,z:100},{x:0,y:0,z:100}];
+  const parent: Building = {id:1,osmType:'relation',footprint,height:48,colour:.5,roof:'flat',group:'relation/1'};
+  const detail: Building = {id:2,footprint:[{x:2,y:0,z:2},{x:4,y:0,z:2},{x:4,y:0,z:4},{x:2,y:0,z:4}],height:19.5,minHeight:17.5,part:true,colour:.5,roof:'flat',group:'relation/1'};
+  const upper: Building = {...detail,id:3,height:53,minHeight:50};
+  // Act
+  resolveBuildingEnvelopes([parent,detail,upper]);
+  // Assert
+  expect(parent.envelopeHeight).toBeUndefined();
+});
+it('нижний узкий ярус башни получает опору до крыши общей оболочки', () => {
+  // Arrange
+  const parent: Building = {id:1,footprint:[{x:0,y:0,z:0},{x:100,y:0,z:0},{x:100,y:0,z:100},{x:0,y:0,z:100}],height:9,colour:.5,roof:'flat',group:'relation/1'};
+  const lower: Building = {id:2,footprint:[{x:10,y:0,z:10},{x:14,y:0,z:10},{x:14,y:0,z:14},{x:10,y:0,z:14}],height:43,minHeight:37,part:true,colour:.5,roof:'flat',group:'relation/1'};
+  const tip: Building = {...lower,id:3,height:57,minHeight:43};
+  // Act
+  resolveBuildingEnvelopes([parent,lower,tip]);
+  // Assert
+  expect(lower.supportMinHeight).toBe(9);
+  expect(tip.supportMinHeight).toBeUndefined();
 });
