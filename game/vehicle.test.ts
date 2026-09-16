@@ -2,9 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { NullEngine, Scene, Vector3, MeshBuilder, PhysicsAggregate, PhysicsShapeType, HavokPlugin } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import { readFile } from 'node:fs/promises';
-import { PlayerCar } from './vehicle';
+import { PlayerCar, surfaceRollingResistance } from './vehicle';
 
 describe('Физическая машина', () => {
+  it('бездорожье сильнее гасит скорость, не затрагивая дорожное сопротивление', () => {
+    // Arrange / Act
+    const road=surfaceRollingResistance(30,false),offRoad=surfaceRollingResistance(30,true);
+    // Assert
+    expect(road).toBe(1950);expect(offRoad).toBe(7200);
+  });
   it('нитро даёт заметный дополнительный разгон за три секунды на скорости 72 км/ч', async()=>{
     // Arrange
     const havok=await HavokPhysics({wasmBinary:Uint8Array.from(await readFile(new URL('../node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm',import.meta.url))).buffer});

@@ -2,6 +2,13 @@ import type {Point} from './types';
 
 export type TrafficMotion={point:Point;heading:number;speed:number};
 
+export function trafficClearancePoint(planned:Point,dynamic:boolean,actual?:Point){return dynamic&&actual?actual:planned;}
+
+export function spawnClearance(candidate:Point,player:Point,traffic:Point[],playerClearance=35,trafficClearance=15){
+  const distance=(point:Point)=>Math.hypot(candidate.x-point.x,candidate.z-point.z);
+  return distance(player)>=playerClearance&&traffic.every(point=>distance(point)>=trafficClearance);
+}
+
 export function trajectoryConflict(a:TrafficMotion,b:TrafficMotion,horizon=4,radius=4){
   const av={x:Math.sin(a.heading)*Math.max(0,a.speed),z:Math.cos(a.heading)*Math.max(0,a.speed)};
   const bv={x:Math.sin(b.heading)*Math.max(0,b.speed),z:Math.cos(b.heading)*Math.max(0,b.speed)};

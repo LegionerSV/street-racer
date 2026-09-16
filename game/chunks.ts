@@ -130,17 +130,26 @@ export function chunkCacheWeight(chunk: ChunkData) {
 }
 export class ChunkInstallQueue<T> {
   private entries = new Map<string, T>();
+  private active?: { key: string; steps: Iterator<void> };
   constructor(readonly budgetMs = 3) {}
   get size() {
-    return this.entries.size;
+    return this.entries.size + Number(!!this.active);
   }
   has(key: string) {
-    return this.entries.has(key);
+    return this.active?.key === key || this.entries.has(key);
   }
   enqueue(key: string, value: T) {
+    if (this.active?.key === key) {
+      this.active.steps.return?.();
+      this.active = undefined;
+    }
     this.entries.set(key, value);
   }
   delete(key: string) {
+    if (this.active?.key === key) {
+      this.active.steps.return?.();
+      this.active = undefined;
+    }
     this.entries.delete(key);
   }
   drain(install: (value: T) => void, now = () => performance.now()) {
@@ -158,6 +167,33 @@ export class ChunkInstallQueue<T> {
       current = now();
     }
     return { installed, installMs: current - started };
+  }
+  drainSteps(
+    install: (value: T) => Iterator<void>,
+    now = () => performance.now(),
+  ) {
+    const started = now();
+    let completed = 0,
+      steps = 0,
+      current = started;
+    while (
+      (this.active || this.entries.size) &&
+      (steps === 0 || current - started < this.budgetMs)
+    ) {
+      if (!this.active) {
+        const first = this.entries.entries().next().value as [string, T];
+        this.entries.delete(first[0]);
+        this.active = { key: first[0], steps: install(first[1]) };
+      }
+      const result = this.active.steps.next();
+      steps++;
+      if (result.done) {
+        this.active = undefined;
+        completed++;
+      }
+      current = now();
+    }
+    return { completed, steps, installMs: current - started };
   }
 }
 export function desiredChunks(

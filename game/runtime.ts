@@ -68,7 +68,12 @@ import { VehicleLighting } from './vehicle-lighting';
 import { VehicleContactShadows } from './vehicle-contact-shadows';
 import { treeInstances } from './tree-instances';
 import { worldLandmarks } from './landmarks';
-import { advanceDrivingPhysics, ChasePosition } from './driving-frame';
+import {
+  advanceDrivingPhysics,
+  ChasePosition,
+  DRIVING_PHYSICS_STEP_SECONDS,
+  DRIVING_PHYSICS_SUBSTEP_MS,
+} from './driving-frame';
 import { renderFirstFrame } from './render-ready';
 import type { LoadingLog } from './loading-log';
 import { RegionStream, tileReady } from './region-stream';
@@ -83,6 +88,7 @@ import { nextRaceTurn } from './navigation';
 import { ImpactSpeeds, shouldBreak } from './breakables';
 import { signalApproaches } from './signal-approaches';
 import { sampleWorldSurface } from './surface-contact';
+import { chooseClearRespawn, RecoveryWatchdog } from './driving-safety';
 
 type BreakableLoaded = {
   mesh: Mesh;
@@ -163,6 +169,7 @@ export class Game {
   private lookTarget = Vector3.Zero();
   private cameraForward = Vector3.Forward();
   private chasePosition = new ChasePosition();
+  private recoveryWatchdog = new RecoveryWatchdog();
   private input = new DrivingInput();
   private keys = this.input.keys;
   private disposed = false;
@@ -391,8 +398,10 @@ export class Game {
       new Vector3(0, -9.81, 0),
       new HavokPlugin(true, havok),
     );
-    this.scene.getPhysicsEngine()!.setTimeStep(1 / 60);
-    this.scene.getPhysicsEngine()!.setSubTimeStep(1000 / 60);
+    this.scene
+      .getPhysicsEngine()!
+      .setTimeStep(DRIVING_PHYSICS_STEP_SECONDS);
+    this.scene.getPhysicsEngine()!.setSubTimeStep(DRIVING_PHYSICS_SUBSTEP_MS);
     this.scene.physicsEnabled = false;
     this.camera = new FreeCamera('chase-camera', Vector3.Zero(), this.scene);
     this.camera.minZ = 0.5;
@@ -534,7 +543,7 @@ export class Game {
     document.addEventListener('visibilitychange', this.onVisibility);
     this.scene.onBeforePhysicsObservable.add(() => {
       if (this.paused || this.loading) return;
-      const dt = 1 / 60;
+      const dt = DRIVING_PHYSICS_STEP_SECONDS;
       this.time += dt;
       this.previous.copyFrom(this.player.position);
       this.player.wetness = this.atmosphere.state.wetness;
@@ -570,7 +579,12 @@ export class Game {
       if (this.paused || this.loading) return;
       this.odometer += distance2(this.previous, this.player.position);
       if (this.race) {
-        advanceRace(this.race, this.player.position, 1 / 60, this.previous);
+        advanceRace(
+          this.race,
+          this.player.position,
+          DRIVING_PHYSICS_STEP_SECONDS,
+          this.previous,
+        );
         const own = playerProgress(this.race, this.player.position);
         this.race.position =
           1 +
@@ -607,12 +621,20 @@ export class Game {
     return mesh;
   }
   private install(chunk: ChunkData) {
+    for (const _step of this.installSteps(chunk)) {
+      // На стартовом экране квартал можно собрать целиком: игровой цикл ещё не запущен.
+    }
+  }
+  private *installSteps(chunk: ChunkData): Generator<void> {
     if (this.disposed) return;
-    const started = performance.now();
+    let stepStarted = performance.now(),
+      installMs = 0,
+      committed = false;
     const meshes: Mesh[] = [],
       bodies: PhysicsAggregate[] = [],
       breakables: BreakableLoaded[] = [],
-      lamps = [...chunk.lamps];
+      lamps = [...chunk.lamps],
+      collisionMeshes: Mesh[] = [];
     const surfaces: [string, MeshData | undefined, StandardMaterial][] = [
       'terrain',
       'shoulders',
@@ -637,36 +659,41 @@ export class Game {
     chunk.bareFacades?.forEach((data, i) =>
       surfaces.push(['bareFacade' + i, data, this.materials['bareFacade' + i]]),
     );
-    for (const [role, data, mat] of surfaces) {
-      if (!data) continue;
-      const mesh = this.makeMesh(`${chunk.key}:${role}`, data, mat);
-      if (!mesh) continue;
-      if (role === 'treeTrunks') {
-        mesh.isVisible = false;
-        mesh.receiveShadows = false;
+    try {
+      for (const [role, data, mat] of surfaces) {
+        if (!data) continue;
+        const mesh = this.makeMesh(`${chunk.key}:${role}`, data, mat);
+        if (!mesh) continue;
+        if (role === 'treeTrunks') {
+          mesh.isVisible = false;
+          mesh.receiveShadows = false;
+        }
+        meshes.push(mesh);
+        if (
+          chunk.lod === 0 &&
+          [
+            'terrain',
+            'shoulders',
+            'sidewalks',
+            'road',
+            'structures',
+            'treeTrunks',
+            'buildings',
+            'landmarks',
+          ].includes(role)
+        ) {
+          mesh.isPickable =
+            role === 'structures' ||
+            role === 'buildings' ||
+            role === 'landmarks';
+          collisionMeshes.push(mesh);
+        }
+        installMs += performance.now() - stepStarted;
+        yield;
+        stepStarted = performance.now();
       }
-      meshes.push(mesh);
-      if (
-        chunk.lod === 0 &&
-        ([
-          'terrain',
-          'shoulders',
-          'sidewalks',
-          'road',
-          'structures',
-          'treeTrunks',
-          'buildings',
-          'landmarks',
-        ].includes(role) ||
-          role.startsWith('facade') ||
-          role.startsWith('bareFacade'))
-      ) {
-        mesh.isPickable =
-          role === 'structures' ||
-          role === 'buildings' ||
-          role === 'landmarks' ||
-          role.startsWith('facade') ||
-          role.startsWith('bareFacade');
+      // Фасады совпадают с объёмом buildings, поэтому отдельные MESH-коллайдеры для них дублируют работу Havok.
+      for (const mesh of collisionMeshes) {
         bodies.push(
           new PhysicsAggregate(
             mesh,
@@ -675,117 +702,140 @@ export class Game {
             this.scene,
           ),
         );
+        installMs += performance.now() - stepStarted;
+        yield;
+        stepStarted = performance.now();
       }
-    }
-    for (const [i, prop] of chunk.breakables.entries()) {
-      const pole = prop.kind === 'pole',
-        mesh = pole
-          ? MeshBuilder.CreateCylinder(
-              `${chunk.key}:breakable-pole-${i}`,
-              { height: 7, diameter: 0.16, tessellation: 6 },
-              this.scene,
-            )
-          : MeshBuilder.CreateBox(
-              `${chunk.key}:breakable-fence-${i}`,
-              { width: 0.14, height: 1.05, depth: prop.length || 2 },
-              this.scene,
-            );
-      mesh.position.copyFromFloats(
-        prop.point.x,
-        prop.point.y + (pole ? 3.5 : 0.525),
-        prop.point.z,
-      );
-      mesh.rotation.y = prop.heading;
-      mesh.material = this.materials.structures;
-      mesh.isPickable = false;
-      if (pole) {
-        const head = MeshBuilder.CreateBox(
-          'streetlight-head',
-          { width: 0.7, height: 0.14, depth: 1.4 },
+      for (const [i, prop] of chunk.breakables.entries()) {
+        const pole = prop.kind === 'pole',
+          mesh = pole
+            ? MeshBuilder.CreateCylinder(
+                `${chunk.key}:breakable-pole-${i}`,
+                { height: 7, diameter: 0.16, tessellation: 6 },
+                this.scene,
+              )
+            : MeshBuilder.CreateBox(
+                `${chunk.key}:breakable-fence-${i}`,
+                { width: 0.14, height: 1.05, depth: prop.length || 2 },
+                this.scene,
+              );
+        mesh.position.copyFromFloats(
+          prop.point.x,
+          prop.point.y + (pole ? 3.5 : 0.525),
+          prop.point.z,
+        );
+        mesh.rotation.y = prop.heading;
+        mesh.material = this.materials.structures;
+        mesh.isPickable = false;
+        if (pole) {
+          const head = MeshBuilder.CreateBox(
+            'streetlight-head',
+            { width: 0.7, height: 0.14, depth: 1.4 },
+            this.scene,
+          );
+          head.parent = mesh;
+          head.position.set(0, 3.45, 0);
+          head.material = this.materials.windows;
+          head.isPickable = false;
+        }
+        const lamp = pole
+          ? lamps.find((p) => p.x === prop.point.x && p.z === prop.point.z)
+          : undefined;
+        meshes.push(mesh);
+        breakables.push({
+          mesh,
+          pole,
+          fenceType: prop.fenceType,
+          broken: false,
+          lamp,
+        });
+        installMs += performance.now() - stepStarted;
+        yield;
+        stepStarted = performance.now();
+      }
+      if (chunk.trees.length) {
+        const trunk = MeshBuilder.CreateCylinder(
+          `${chunk.key}:trunks`,
+          { diameter: 0.55, height: 7, tessellation: 5 },
           this.scene,
         );
-        head.parent = mesh;
-        head.position.set(0, 3.45, 0);
-        head.material = this.materials.windows;
-        head.isPickable = false;
+        trunk.material = this.materials.trunk;
+        const branch = MeshBuilder.CreateCylinder(
+          `${chunk.key}:branches`,
+          {
+            diameterTop: 0.14,
+            diameterBottom: 0.34,
+            height: 3.5,
+            tessellation: 5,
+          },
+          this.scene,
+        );
+        branch.material = this.materials.trunk;
+        const foliage = MeshBuilder.CreateSphere(
+          `${chunk.key}:foliage`,
+          { diameter: 6.2, segments: 4 },
+          this.scene,
+        );
+        foliage.material = this.materials.tree;
+        const shape = treeInstances(chunk.trees);
+        trunk.thinInstanceSetBuffer('matrix', shape.trunks, 16);
+        branch.thinInstanceSetBuffer('matrix', shape.branches, 16);
+        foliage.thinInstanceSetBuffer('matrix', shape.leaves, 16);
+        trunk.isPickable = branch.isPickable = foliage.isPickable = false;
+        meshes.push(trunk, branch, foliage);
+        installMs += performance.now() - stepStarted;
+        yield;
+        stepStarted = performance.now();
       }
-      const lamp = pole
-        ? lamps.find((p) => p.x === prop.point.x && p.z === prop.point.z)
-        : undefined;
-      meshes.push(mesh);
-      breakables.push({
-        mesh,
-        pole,
-        fenceType: prop.fenceType,
-        broken: false,
-        lamp,
-      });
-    }
-    if (chunk.trees.length) {
-      const trunk = MeshBuilder.CreateCylinder(
-        `${chunk.key}:trunks`,
-        { diameter: 0.55, height: 7, tessellation: 5 },
-        this.scene,
+      const buildingBounds = (
+        indexWorld(this.world).buildings.get(chunk.key) || []
+      ).map(
+        (b) =>
+          new BoundingBox(
+            new Vector3(
+              Math.min(...b.footprint.map((p) => p.x)),
+              Math.min(...b.footprint.map((p) => p.y)) + (b.minHeight || 0),
+              Math.min(...b.footprint.map((p) => p.z)),
+            ),
+            new Vector3(
+              Math.max(...b.footprint.map((p) => p.x)),
+              Math.max(...b.footprint.map((p) => p.y)) +
+                (b.envelopeHeight ?? b.height),
+              Math.max(...b.footprint.map((p) => p.z)),
+            ),
+          ),
       );
-      trunk.material = this.materials.trunk;
-      const branch = MeshBuilder.CreateCylinder(
-        `${chunk.key}:branches`,
-        {
-          diameterTop: 0.14,
-          diameterBottom: 0.34,
-          height: 3.5,
-          tessellation: 5,
+      this.chunks.get(chunk.key)?.dispose();
+      this.chunks.set(chunk.key, {
+        lod: chunk.lod,
+        meshes,
+        bodies,
+        breakables,
+        lamps,
+        buildingBounds,
+        dispose: () => {
+          breakables.forEach((p) => p.body?.dispose());
+          bodies.forEach((b) => b.dispose());
+          meshes.forEach((m) => m.dispose());
         },
-        this.scene,
-      );
-      branch.material = this.materials.trunk;
-      const foliage = MeshBuilder.CreateSphere(
-        `${chunk.key}:foliage`,
-        { diameter: 6.2, segments: 4 },
-        this.scene,
-      );
-      foliage.material = this.materials.tree;
-      const shape = treeInstances(chunk.trees);
-      trunk.thinInstanceSetBuffer('matrix', shape.trunks, 16);
-      branch.thinInstanceSetBuffer('matrix', shape.branches, 16);
-      foliage.thinInstanceSetBuffer('matrix', shape.leaves, 16);
-      trunk.isPickable = branch.isPickable = foliage.isPickable = false;
-      meshes.push(trunk, branch, foliage);
+      });
+      committed = true;
+      installMs += performance.now() - stepStarted;
+      this.installTimings.add(installMs);
+      const metric = this.patchInstallMetrics.get(chunk.key);
+      if (metric) {
+        metric.installMs += installMs;
+        this.frameDelayMetric = metric;
+      }
+      this.patchInstallMetrics.delete(chunk.key);
+      this.staleChunks.delete(chunk.key);
+    } finally {
+      if (!committed) {
+        breakables.forEach((prop) => prop.body?.dispose());
+        bodies.forEach((body) => body.dispose());
+        meshes.forEach((mesh) => mesh.dispose());
+      }
     }
-    this.chunks.get(chunk.key)?.dispose();
-    const buildingBounds = (
-      indexWorld(this.world).buildings.get(chunk.key) || []
-    ).map(
-      (b) =>
-        new BoundingBox(
-          new Vector3(
-            Math.min(...b.footprint.map((p) => p.x)),
-            Math.min(...b.footprint.map((p) => p.y)) + (b.minHeight || 0),
-            Math.min(...b.footprint.map((p) => p.z)),
-          ),
-          new Vector3(
-            Math.max(...b.footprint.map((p) => p.x)),
-            Math.max(...b.footprint.map((p) => p.y)) +
-              (b.envelopeHeight ?? b.height),
-            Math.max(...b.footprint.map((p) => p.z)),
-          ),
-        ),
-    );
-    this.chunks.set(chunk.key, {
-      lod: chunk.lod,
-      meshes,
-      bodies,
-      breakables,
-      lamps,
-      buildingBounds,
-      dispose: () => {
-        breakables.forEach((p) => p.body?.dispose());
-        bodies.forEach((b) => b.dispose());
-        meshes.forEach((m) => m.dispose());
-      },
-    });
-    this.installTimings.add(performance.now() - started);
-    this.staleChunks.delete(chunk.key);
   }
   private refreshWanted() {
     this.wanted = desiredChunks(
@@ -1069,17 +1119,11 @@ export class Game {
         if (nearest) this.lastSafeEdge = edgeStableId(nearest);
       }
     }
-    this.installQueue.drain((chunk) => {
-      const metric = this.patchInstallMetrics.get(chunk.key);
-      if (this.wanted.some((c) => c.key === chunk.key && c.lod === chunk.lod)) {
-        const started = performance.now();
-        this.install(chunk);
-        if (metric) {
-          metric.installMs += performance.now() - started;
-          this.frameDelayMetric = metric;
-        }
-      }
+    this.installQueue.drainSteps((chunk) => {
+      if (this.wanted.some((c) => c.key === chunk.key && c.lod === chunk.lod))
+        return this.installSteps(chunk);
       this.patchInstallMetrics.delete(chunk.key);
+      return [][Symbol.iterator]();
     });
     this.pump();
     const p = this.player.position,
@@ -1115,6 +1159,20 @@ export class Game {
       this.engine.getDeltaTime(),
       !this.paused && !this.loading,
     );
+    if (!this.paused && !this.loading) {
+      const surface = sampleWorldSurface(this.world, p.x, p.z, p.y),
+        up = this.player.visual.root.getDirection(Vector3.Up());
+      if (
+        this.recoveryWatchdog.update(dt, {
+          height: p.y,
+          surfaceHeight: surface.height,
+          upY: up.y,
+          grounded: this.player.grounded,
+          speed: this.player.groundSpeed,
+        })
+      )
+        this.recover();
+    }
     if (
       (!this.mapCoverage && (Math.abs(p.x) > 2495 || Math.abs(p.z) > 2495)) ||
       p.y < -200 ||
@@ -1123,7 +1181,9 @@ export class Game {
       this.recover();
     const bodyForward = this.player.visual.root.getDirection(Vector3.Forward());
     bodyForward.y = 0;
-    bodyForward.normalize();
+    if (bodyForward.lengthSquared() < 0.01)
+      bodyForward.copyFrom(this.cameraForward);
+    else bodyForward.normalize();
     if (
       this.camera.position.lengthSquared() < 1 ||
       Vector3.Distance(this.camera.position, p) > 25
@@ -1240,15 +1300,20 @@ export class Game {
       );
       this.checkpointGlow.position.set(point.x, point.y + 0.2, point.z);
     }
-    this.sound.update(
-      this.player.speed,
-      this.keys.has('KeyW') ||
+    this.sound.update({
+      speed: this.player.speed,
+      throttle:
+        this.keys.has('KeyW') ||
         this.keys.has('ArrowUp') ||
         this.keys.has('ShiftLeft') ||
         this.keys.has('ShiftRight'),
-      this.settings.volume,
-      this.paused || this.loading,
-    );
+      slip: this.player.slip,
+      offRoad: this.player.offRoad,
+      wetness: this.player.wetness,
+      impact: this.player.impactLevel,
+      volume: this.settings.volume,
+      paused: this.paused || this.loading,
+    });
     if (!this.paused && !this.loading)
       this.activeWallSeconds += this.engine.getDeltaTime() / 1000;
     this.scene.render();
@@ -1258,9 +1323,10 @@ export class Game {
     }
   }
   private emit() {
-    const safeEdge = this.lastSafeEdge
-      ? edgeById(this.world, this.lastSafeEdge)
-      : undefined;
+    const safeEdge =
+      !this.player.offRoad && this.player.grounded
+        ? drivingEdgeAt(this.world, this.player.position, this.player.heading)
+        : undefined;
     this.onHUD({
       opponents: this.race ? opponentMarkers(this.traffic.racers) : [],
       speed: this.player.groundSpeed * 3.6,
@@ -1294,7 +1360,7 @@ export class Game {
       message: this.message,
       chunks: this.chunks.size,
       vehicles: this.traffic.agents.filter((a) => !!a.visual).length,
-      street: safeEdge?.name,
+      street: safeEdge?.name || (safeEdge ? 'Безымянная улица' : 'Вне дороги'),
       lanes: safeEdge ? laneCaption(safeEdge) : '',
       weather: this.atmosphere.state.label,
       hour: this.atmosphere.state.hour,
@@ -1518,14 +1584,9 @@ export class Game {
           this.traffic.applyWorldPatch(next, patch);
           this.world = next;
           this.mapCoverage = newCoverage;
-          const installStarted = performance.now();
           for (const chunk of transitionData) {
-            this.install(chunk);
-            this.patchInstallMetrics.delete(chunk.key);
+            this.installQueue.enqueue(chunk.key, chunk);
           }
-          const transitionInstallMs = performance.now() - installStarted;
-          updateMetric.installMs += transitionInstallMs;
-          if (transitionData.length) this.frameDelayMetric = updateMetric;
           const matchedSafe = safe
             ? next.edges.find((e) => !e.blocked && edgeKey(e) === edgeKey(safe))
             : undefined;
@@ -1649,8 +1710,24 @@ export class Game {
           'Поблизости пока нет загруженной дороги для возвращения.';
         return;
       }
-      this.player.reset(edge, this.world.drivingSide);
+      const occupied = this.traffic.agents.map((agent) =>
+        agent.dynamic && agent.visual
+          ? {
+              x: agent.visual.root.position.x,
+              y: agent.visual.root.position.y,
+              z: agent.visual.root.position.z,
+            }
+          : agent.point,
+      );
+      const pose = chooseClearRespawn(edge, this.world.drivingSide, occupied);
+      if (!pose) {
+        this.recoveryWatchdog.reset();
+        return;
+      }
+      this.player.teleport(pose.point, pose.heading);
     }
+    this.recoveryWatchdog.reset();
+    this.chasePosition.reset();
     this.clearControls();
     this.refreshWanted();
     this.streamClock = 0;
@@ -1707,6 +1784,9 @@ export class Game {
         this.world.drivingSide,
         2,
       );
+      this.recoveryWatchdog?.reset();
+      this.chasePosition?.reset();
+      this.camera?.position.setAll(0);
       this.traffic.startRace(route);
       this.refreshWanted();
       this.clearControls();
@@ -1912,6 +1992,9 @@ export class Game {
       this.world.drivingSide,
       2,
     );
+    this.recoveryWatchdog?.reset();
+    this.chasePosition?.reset();
+    this.camera?.position.setAll(0);
     this.paused = false;
     this.clearControls();
     this.resetPerformance();
@@ -2011,6 +2094,8 @@ export class Game {
     const edge = candidates[0];
     this.lastSafeEdge = edgeStableId(edge);
     this.player.reset(edge, this.world.drivingSide);
+    this.recoveryWatchdog?.reset();
+    this.chasePosition?.reset();
     this.paused = false;
     this.refreshWanted();
     this.streamClock = 0;

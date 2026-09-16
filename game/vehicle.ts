@@ -1,29 +1,31 @@
 import { PhysicsAggregate, PhysicsShapeType, PhysicsRaycastResult, PhysicsPrestepType, Quaternion, Vector3, Scene } from '@babylonjs/core';
 import type { PhysicsEngine } from '@babylonjs/core/Physics/v2/physicsEngine';
-import { clamp, pointAt, pathLengths } from './geo';
+import { clamp } from './geo';
 import { createCar, setCarLights } from './visuals';
 import { tyreGrip } from './weather';
 import { NitroCharge } from './nitro';
-import { laneOffsets } from './lanes';
 import type { Edge, Point } from './types';
+import { respawnPose } from './driving-safety';
+
+export function surfaceRollingResistance(speed:number,offRoad:boolean){return speed*(offRoad?240:65);}
 export class PlayerCar {
   readonly visual; readonly aggregate: PhysicsAggregate;
   readonly nitro=new NitroCharge();
   speed=0; steering=0; grounded=false; slip=0; wetness=0; offRoad=false; private hasDriven=false; private clock=0; private impact=0;
   constructor(private scene: Scene) {
     this.visual=createCar(scene,'#268fba','player');
-    this.aggregate=new PhysicsAggregate(this.visual.root,PhysicsShapeType.BOX,{mass:1200,friction:.18,restitution:.22},scene);
-    this.aggregate.body.setMassProperties({mass:1200,centerOfMass:new Vector3(0,-.28,0),inertia:new Vector3(1700/1200,2100/1200,760/1200)});
-    this.aggregate.body.setAngularDamping(.55);this.aggregate.body.setLinearDamping(.015);
+    this.aggregate=new PhysicsAggregate(this.visual.root,PhysicsShapeType.BOX,{mass:1200,friction:.18,restitution:.04},scene);
+    this.aggregate.body.setMassProperties({mass:1200,centerOfMass:new Vector3(0,-.38,0),inertia:new Vector3(1700/1200,2100/1200,760/1200)});
+    this.aggregate.body.setAngularDamping(.65);this.aggregate.body.setLinearDamping(.015);
     this.aggregate.body.setCollisionCallbackEnabled(true);
     this.aggregate.body.getCollisionObservable().add(e=>{if(e.impulse>450)this.impact=.5;});
   }
   get groundSpeed(){const v=this.aggregate.body.getLinearVelocity();return Math.hypot(v.x,v.z);}
   get position():Vector3{return this.visual.root.position;}
   get heading(){const f=this.visual.root.getDirection(Vector3.Forward());return Math.atan2(f.x,f.z);}
+  get impactLevel(){return this.impact;}
   reset(edge:Edge,side:'left'|'right',d=10){
-    const s=pointAt(edge.points,pathLengths(edge.points),Math.min(d,edge.length*.4)),o=laneOffsets(edge,side).at(-1)??0;
-    this.teleport({x:s.point.x+Math.cos(s.heading)*o,y:s.point.y+.88,z:s.point.z-Math.sin(s.heading)*o},s.heading);
+    const pose=respawnPose(edge,side,Math.min(d,edge.length*.4));this.teleport(pose.point,pose.heading);
   }
   teleport(p:Point,heading:number){
     this.hasDriven=false;this.steering=0;this.speed=0;this.impact=0;this.nitro.interrupt();
@@ -39,6 +41,7 @@ export class PlayerCar {
     mesh.computeWorldMatrix(true);
     const f=mesh.getDirection(Vector3.Forward()).normalize(),r=mesh.getDirection(Vector3.Right()).normalize(),up=mesh.getDirection(Vector3.Up()).normalize();
     const velocity=body.getLinearVelocity(),angular=body.getAngularVelocity();this.speed=Vector3.Dot(velocity,f);
+    const angularSpeed=angular.length();if(angularSpeed>4.5)body.setAngularVelocity(angular.scale(4.5/angularSpeed));
     const boostRequest=keys.has('ShiftLeft')||keys.has('ShiftRight');
     const throttle=!hold&&(keys.has('KeyW')||keys.has('ArrowUp')||boostRequest),brake=!hold&&(keys.has('KeyS')||keys.has('ArrowDown')),handbrake=!hold&&keys.has('Space');
     if(throttle||brake)this.hasDriven=true;
@@ -84,7 +87,8 @@ export class PlayerCar {
       let drive=throttle&&!handbrake?9500*(1-clamp(this.speed,0,90)/90):0;
       if(brake)drive=this.speed>1?-16000:this.speed>-12?-4500:0;
       if(handbrake)drive-=clamp(this.speed*3000,-11000,11000);
-      if(!throttle&&!brake)drive-=this.speed*65;
+      if(!throttle&&!brake)drive-=surfaceRollingResistance(this.speed,this.offRoad);
+      else if(this.offRoad)drive-=this.speed*175;
       if(parking)drive=-this.speed*9000+1200*9.81*f.y;
       drive=clamp(drive,-16500*grip,12500*grip);
       drive+=boost*10000*grip*(1-clamp(this.speed,0,110)/110);

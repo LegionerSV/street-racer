@@ -35,7 +35,11 @@ import {
 } from './racing-ai';
 import { TrafficNeighborIndex } from './traffic-neighbors';
 import { signalApproaches } from './signal-approaches';
-import { trajectoryConflict } from './traffic-conflicts';
+import {
+  spawnClearance,
+  trafficClearancePoint,
+  trajectoryConflict,
+} from './traffic-conflicts';
 
 type Plan = {
   ids: EdgeStableId[];
@@ -370,12 +374,12 @@ export class Traffic {
     a.body = new PhysicsAggregate(
       a.visual.root,
       PhysicsShapeType.BOX,
-      { mass: 1200, friction: 0.18, restitution: 0.25 },
+      { mass: 1200, friction: 0.18, restitution: 0.04 },
       this.scene,
     );
     a.body.body.setMassProperties({
       mass: 1200,
-      centerOfMass: new Vector3(0, -0.25, 0),
+      centerOfMass: new Vector3(0, -0.38, 0),
       inertia: new Vector3(1700 / 1200, 2100 / 1200, 760 / 1200),
     });
     a.body.body.setMotionType(PhysicsMotionType.ANIMATED);
@@ -486,6 +490,17 @@ export class Traffic {
           };
           this.sample(a);
           if (
+            spawnClearance(
+              a.point,
+              player,
+              this.agents.map((agent) =>
+                trafficClearancePoint(
+                  agent.point,
+                  !!agent.dynamic,
+                  agent.visual?.root.position,
+                ),
+              ),
+            ) &&
             this.agents.every(
               (b) =>
                 distance2(b.point, a.point) > 15 &&

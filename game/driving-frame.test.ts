@@ -11,7 +11,20 @@ import {
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import { readFile } from 'node:fs/promises';
-import { advanceDrivingPhysics, ChasePosition } from './driving-frame';
+import {
+  advanceDrivingPhysics,
+  ChasePosition,
+  DRIVING_PHYSICS_STEP_SECONDS,
+  DRIVING_PHYSICS_SUBSTEP_MS,
+} from './driving-frame';
+
+it('использует один и тот же шаг для игровой логики и физических substep', () => {
+  // Arrange / Act / Assert
+  expect(DRIVING_PHYSICS_STEP_SECONDS).toBe(1 / 60);
+  expect(DRIVING_PHYSICS_SUBSTEP_MS).toBe(
+    DRIVING_PHYSICS_STEP_SECONDS * 1000,
+  );
+});
 
 it.each([8, 24, 60, 120])(
   'камера сохраняет дистанцию при 180 км/ч и %s FPS',
@@ -124,7 +137,7 @@ it.each([8, 24, 60, 120, 'неровном'])(
       expect(mesh.position.z).toBe(before);
       advanceDrivingPhysics(scene, 5000, true);
       expect(mesh.position.z - before).toBeLessThanOrEqual(
-        50 * (0.25 + 1 / 60) + 0.01,
+        50 * (0.1 + 1 / 60) + 0.01,
       );
     } finally {
       body.dispose();

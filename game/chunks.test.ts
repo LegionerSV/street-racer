@@ -747,6 +747,30 @@ describe('Подготовка кварталов', () => {
     expect(installed).toEqual([1, 2]);
     expect(queue.size).toBe(1);
   });
+  it('разбивает установку одного тяжёлого квартала на несколько кадров', () => {
+    // Arrange
+    const queue = new ChunkInstallQueue<number>(3),
+      steps: number[] = [];
+    queue.enqueue('heavy', 4);
+    const times = [0, 2, 4, 4, 6, 8, 8],
+      now = () => times.shift() ?? 8;
+    const install = function* (count: number) {
+      for (let i = 0; i < count; i++) {
+        steps.push(i);
+        if (i < count - 1) yield;
+      }
+    };
+
+    // Act
+    const first = queue.drainSteps(install, now);
+    const second = queue.drainSteps(install, now);
+
+    // Assert
+    expect(first).toEqual({ completed: 0, steps: 2, installMs: 4 });
+    expect(second).toEqual({ completed: 1, steps: 2, installMs: 4 });
+    expect(steps).toEqual([0, 1, 2, 3]);
+    expect(queue.size).toBe(0);
+  });
   it('подготавливает квартал под машиной и не выходит за пределы мира', () => {
     // Arrange / Act
     const result = desiredChunks({ x: 2490, y: 0, z: 2490 }, 0, 'high');

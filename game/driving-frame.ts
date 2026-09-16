@@ -1,5 +1,9 @@
 import { Vector3, type Scene } from '@babylonjs/core';
 
+export const DRIVING_PHYSICS_STEP_SECONDS = 1 / 60;
+export const DRIVING_PHYSICS_SUBSTEP_MS =
+  DRIVING_PHYSICS_STEP_SECONDS * 1000;
+
 // Сначала фиксированные шаги всей симуляции, затем камера и отрисовка.
 // 250 мс позволяют пережить просадку до 4 FPS без замедления времени;
 // после долгого зависания не пытаемся проиграть секунды физики за один кадр.
@@ -9,12 +13,17 @@ export function advanceDrivingPhysics(
   active: boolean,
 ) {
   if (active)
-    scene._advancePhysicsEngineStep(Math.max(0, Math.min(250, elapsedMs)));
+    scene._advancePhysicsEngineStep(
+      Math.max(0, Math.min(elapsedMs > 500 ? 100 : 250, elapsedMs)),
+    );
   scene.physicsEnabled = false;
 }
 
 export class ChasePosition {
   private previous: Vector3 | null = null;
+  reset() {
+    this.previous = null;
+  }
   update(
     player: Vector3,
     desired: Vector3,
