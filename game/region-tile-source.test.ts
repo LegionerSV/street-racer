@@ -112,6 +112,88 @@ it.each([
   },
 );
 
+it('предпочитает свежий S3 overlay ранее сохранённому базовому тайлу', async () => {
+  // Arrange
+  const coreBounds = sourceTileBounds(tileId),
+    makeArtifact = (name: string) => ({
+      schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+      tileBuildVersion: TILE_BUILD_VERSION,
+      ...tileId,
+      coreBounds,
+      bufferedBounds: coreBounds,
+      generatedAt: '2026-09-16T00:00:00.000Z',
+      osmTimestamp: '2026-09-16T00:00:00.000Z',
+      drivingSide: 'right' as const,
+      elements: [
+        {
+          type: 'node' as const,
+          id: 1,
+          lat: 55.75,
+          lon: 37.61,
+          tags: { name },
+        },
+      ],
+      elevation: {
+        width: TERRAIN_GRID_WIDTH,
+        size: TERRAIN_GRID_SIZE,
+        sampling: 'ground-minimum-v1' as const,
+        values: new Float32Array(TERRAIN_GRID_WIDTH ** 2),
+      },
+    }),
+    cachedEncoded = encodeTileArtifact(makeArtifact('base')),
+    overlayEncoded = encodeTileArtifact(makeArtifact('overlay')),
+    overlayChecksum = JSON.parse(overlayEncoded).checksum,
+    catalog = {
+      schemaVersion: 1,
+      generatedAt: '2026-09-16T01:00:00.000Z',
+      activeDatasets: ['moscow-overlay'],
+      datasets: [
+        {
+          datasetId: 'moscow-overlay',
+          schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+          tileBuildVersion: TILE_BUILD_VERSION,
+          path: `maps/v1/${TILE_BUILD_VERSION}/moscow-overlay`,
+          tiles: {
+            '15/19808/10243': {
+              bytes: overlayEncoded.length,
+              checksum: overlayChecksum,
+            },
+          },
+        },
+      ],
+    },
+    request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(catalog)))
+      .mockResolvedValueOnce(new Response(overlayEncoded)),
+    put = vi.fn(async () => {}),
+    source = createRegionTileSource({
+      elevationSize: TERRAIN_GRID_SIZE,
+      elevationWidth: TERRAIN_GRID_WIDTH,
+      tileMargin: 300,
+      tileBaseUrl: 'https://maps.example',
+      tileFetch: request,
+      get: async <T>(key: string): Promise<T | undefined> =>
+        (key.startsWith('source-tile:')
+          ? { serialized: cachedEncoded, savedAt: Date.now() }
+          : undefined) as T | undefined,
+      put,
+      mapCell: vi.fn(),
+      loadElevation: vi.fn(),
+      drivingSide: vi.fn(),
+    });
+
+  // Act
+  const result = await source.load(tileId, new AbortController().signal);
+
+  // Assert
+  expect(result).toMatchObject({ kind: 'hit', source: 's3' });
+  if (result.kind === 'hit')
+    expect(result.tile.elements[0]?.tags?.name).toBe('overlay');
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(put).toHaveBeenCalledTimes(1);
+});
+
 it('определяет сторону движения по центру глобального тайла, а не сессии', async () => {
   // Arrange
   const drivingSide = vi.fn(async () => ({

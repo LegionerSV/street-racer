@@ -58,7 +58,7 @@ export function mapCellQuery(b: MapBox) {
   const bb = [b.south, b.west, b.north, b.east]
     .map((n) => n.toFixed(7))
     .join(',');
-  return `(way["highway"~"^(${[...roadTypes].join('|')})$"](${bb});node["highway"="traffic_signals"](${bb});relation["type"="restriction"](${bb});way["building"](${bb});way["building:part"](${bb});relation["building"](${bb});nwr["natural"~"^(water|wood|tree)$"](${bb});nwr["waterway"="riverbank"](${bb});nwr["landuse"~"^(forest|grass|meadow|reservoir)$"](${bb});nwr["leisure"="park"](${bb}););(._;>;);out body;`;
+  return `(way["highway"~"^(${[...roadTypes].join('|')})$"](${bb});node["highway"="traffic_signals"](${bb});relation["type"="restriction"](${bb});way["building"](${bb});way["building:part"](${bb});relation["building"](${bb});relation["building:part"](${bb});nwr["natural"~"^(water|wood|tree)$"](${bb});nwr["waterway"="riverbank"](${bb});nwr["landuse"~"^(forest|grass|meadow|reservoir)$"](${bb});nwr["leisure"="park"](${bb});nwr["place"="square"](${bb});nwr["area:highway"](${bb});nwr["highway"="pedestrian"]["area"="yes"](${bb});nwr["historic"="citywalls"](${bb});nwr["barrier"~"^(city_wall|wall)$"](${bb}););(._;>;);out body;`;
 }
 class MapRequestError extends Error {
   constructor(
@@ -99,7 +99,7 @@ export class MapSource {
     })();
   }
   private key(query: string) {
-    return `osm:2:${query}`;
+    return `osm:3:${query}`;
   }
   private async cached(query: string, stage: string) {
     const end = this.log?.start(`${stage} / кэш`),
@@ -432,8 +432,7 @@ export class MapSource {
             depth + 1,
           );
           savedAt = Math.min(savedAt, snapshot.savedAt);
-          for (const e of snapshot.elements)
-            merged.set(`${e.type}/${e.id}`, e);
+          for (const e of snapshot.elements) merged.set(`${e.type}/${e.id}`, e);
         }
         const elements = [...merged.values()];
         await this.save(query, elements, savedAt);

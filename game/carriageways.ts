@@ -1,4 +1,10 @@
-import { distance2, mixPoint, pathLengths, sampleRoadElevation, smoother } from './geo';
+import {
+  distance2,
+  mixPoint,
+  pathLengths,
+  sampleRoadElevation,
+  smoother,
+} from './geo';
 import { boundsOf, SpatialGrid } from './geometry';
 import { MinHeap } from './min-heap';
 import type { Edge, ElevationGrid, Point, RoadNode } from './types';
@@ -13,6 +19,110 @@ export type CarriagewayJoin = {
   owner: boolean;
 };
 type Segment = { a: Point; b: Point; edge: Edge };
+
+export function alignGroundIntersections(
+  edges: Edge[],
+  preserved: ReadonlySet<string> = new Set(),
+) {
+  type Part = Segment & { start: number; length: number };
+  const spatial = new SpatialGrid<Part>(32),
+    parts: Part[] = [],
+    stations = new Map<Edge, number[]>(),
+    seen = new Set<string>();
+  for (const edge of edges) {
+    if (edge.bridge || edge.tunnel || edge.tunnelApproach || edge.passage)
+      continue;
+    const physical = `${edge.way}/${Math.min(edge.from, edge.to)}/${Math.max(edge.from, edge.to)}`;
+    if (seen.has(physical)) continue;
+    seen.add(physical);
+    const lengths = [0];
+    for (let i = 1; i < edge.points.length; i++)
+      lengths.push(
+        lengths[i - 1] + distance2(edge.points[i - 1], edge.points[i]),
+      );
+    stations.set(edge, lengths);
+    for (let i = 1; i < edge.points.length; i++) {
+      const length = distance2(edge.points[i - 1], edge.points[i]);
+      if (!length) continue;
+      parts.push({
+        a: edge.points[i - 1],
+        b: edge.points[i],
+        edge,
+        start: lengths[i - 1],
+        length,
+      });
+    }
+  }
+  const anchors = new Map<Edge, { station: number; delta: number }[]>(),
+    pairs = new Set<string>();
+  const add = (edge: Edge, station: number, delta: number) => {
+    const list = anchors.get(edge) ?? [];
+    list.push({ station, delta });
+    anchors.set(edge, list);
+  };
+  for (const part of parts) {
+    for (const other of spatial.query(boundsOf([part.a, part.b], 0.2))) {
+      if (
+        other.edge.way === part.edge.way ||
+        other.edge.layer !== part.edge.layer
+      )
+        continue;
+      const pair = [
+        part.edge.stableId,
+        other.edge.stableId,
+        String(part.start),
+        String(other.start),
+      ]
+        .sort()
+        .join('|');
+      if (pairs.has(pair)) continue;
+      pairs.add(pair);
+      const dx = part.b.x - part.a.x,
+        dz = part.b.z - part.a.z,
+        ex = other.b.x - other.a.x,
+        ez = other.b.z - other.a.z,
+        den = dx * ez - dz * ex;
+      if (Math.abs(den) < 1e-6) continue;
+      const t =
+          ((other.a.x - part.a.x) * ez - (other.a.z - part.a.z) * ex) / den,
+        u = ((other.a.x - part.a.x) * dz - (other.a.z - part.a.z) * dx) / den;
+      if (t < -0.001 || t > 1.001 || u < -0.001 || u > 1.001) continue;
+      const y = part.a.y + (part.b.y - part.a.y) * t,
+        otherY = other.a.y + (other.b.y - other.a.y) * u,
+        difference = otherY - y;
+      if (Math.abs(difference) <= 0.15) continue;
+      const partFixed = preserved.has(part.edge.stableId),
+        otherFixed = preserved.has(other.edge.stableId);
+      if (partFixed && otherFixed) continue;
+      if (partFixed)
+        add(other.edge, other.start + other.length * u, -difference);
+      else if (otherFixed)
+        add(part.edge, part.start + part.length * t, difference);
+      else {
+        add(part.edge, part.start + part.length * t, difference / 2);
+        add(other.edge, other.start + other.length * u, -difference / 2);
+      }
+    }
+    spatial.add(part, boundsOf([part.a, part.b], 0.2));
+  }
+  for (const [edge, values] of anchors) {
+    const lengths = stations.get(edge)!;
+    edge.points = edge.points.map((point, index) => {
+      let sum = 0,
+        weight = 0;
+      for (const anchor of values) {
+        const w = smoother(
+          1 - Math.min(1, Math.abs(lengths[index] - anchor.station) / 22),
+        );
+        sum += anchor.delta * w;
+        weight += w;
+      }
+      return weight ? { ...point, y: point.y + sum / weight } : point;
+    });
+    edge.length = pathLengths(edge.points).at(-1)!;
+  }
+  return anchors.size > 0;
+}
 // Для каждого источника расстояния независимы: разные радиусы перехода
 // не позволяют отбрасывать источник, проигравший лишь в промежуточном узле.
 export function carriagewayTransitions(
@@ -218,7 +328,12 @@ export function alignCarriagewayElevations(
       }
   }
   if (!corrections.size) return;
-  if (![...corrections.values()].some(values => values.some(value => value !== undefined && Math.abs(value) > 1e-6))) return;
+  if (
+    ![...corrections.values()].some((values) =>
+      values.some((value) => value !== undefined && Math.abs(value) > 1e-6),
+    )
+  )
+    return;
   const shared = new Map(
     [...nodeCorrections].map(([id, values]) => [
       id,
@@ -228,8 +343,14 @@ export function alignCarriagewayElevations(
   );
   // Подгрузка подстраивает только новое полотно; открытая дорога и сооружения
   // остаются неподвижными, включая общие с ними узлы.
-  const fixed = (edge: Edge) => preserved && (preserved.has(edge.stableId) || edge.bridge || edge.tunnel || edge.tunnelApproach);
-  for (const edge of edges) if (fixed(edge)) for (const id of [edge.from, edge.to]) shared.set(id, 0);
+  const fixed = (edge: Edge) =>
+    preserved &&
+    (preserved.has(edge.stableId) ||
+      edge.bridge ||
+      edge.tunnel ||
+      edge.tunnelApproach);
+  for (const edge of edges)
+    if (fixed(edge)) for (const id of [edge.from, edge.to]) shared.set(id, 0);
   const transitions = carriagewayTransitions(edges, shared);
   for (const edge of edges) {
     if (fixed(edge)) continue;

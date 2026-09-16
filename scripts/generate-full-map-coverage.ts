@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseSourceTileKey, type SourceTileId } from '../game/source-tiles.ts';
 import {
   generateMapTiles,
   type GeneratorOptions,
@@ -16,6 +17,12 @@ import {
 function argumentValue(arguments_: string[], name: string) {
   const index = arguments_.indexOf(name);
   return index < 0 ? undefined : arguments_[index + 1];
+}
+
+function allArgumentValues(arguments_: string[], name: string) {
+  return arguments_.flatMap((value, index) =>
+    value === name && arguments_[index + 1] ? [arguments_[index + 1]] : [],
+  );
 }
 
 function required(arguments_: string[], name: string) {
@@ -38,10 +45,12 @@ export async function verifyFullCoverageInputs(
   if (!region) throw new Error(`Неизвестный регион полного покрытия: ${name}.`);
   const expectedPbfChecksum = region.pbf.checksum.slice('md5:'.length),
     [boundaryChecksum, pbfChecksum] = await Promise.all([
-      fileChecksum(options.boundary!, 'sha256'),
+      options.boundary
+        ? fileChecksum(options.boundary, 'sha256')
+        : Promise.resolve(undefined),
       fileChecksum(options.pbf!, 'md5'),
     ]);
-  if (boundaryChecksum !== region.boundary.sha256)
+  if (boundaryChecksum && boundaryChecksum !== region.boundary.sha256)
     throw new Error(
       `SHA-256 границы ${name} не совпадает с зафиксированной конфигурацией.`,
     );
@@ -85,26 +94,62 @@ export function fullCoverageGeneratorOptions(
   };
 }
 
+export function overlayCoverageGeneratorOptions(
+  name: FullCoverageName,
+  paths: {
+    dataRoot: string;
+    cacheRoot: string;
+    stagingRoot: string;
+    osmiumPath?: string;
+  },
+  overlayId: string,
+  tiles: SourceTileId[],
+  flags: { dryRun?: boolean; downloadDem?: boolean } = {},
+): GeneratorOptions {
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(overlayId))
+    throw new Error(
+      'Некорректный идентификатор overlay: используйте буквы, цифры, точку, дефис или подчёркивание.',
+    );
+  if (!tiles.length)
+    throw new Error('Для overlay укажите хотя бы один тайл через --tile.');
+  return {
+    ...fullCoverageGeneratorOptions(name, paths, flags),
+    staging: resolve(paths.stagingRoot, overlayId),
+    boundary: undefined,
+    tiles,
+  };
+}
+
 async function main() {
   const arguments_ = process.argv.slice(2),
     name = argumentValue(arguments_, '--region') as FullCoverageName,
-    options = fullCoverageGeneratorOptions(
-      name,
-      {
-        dataRoot: required(arguments_, '--data-root'),
-        cacheRoot: required(arguments_, '--cache-root'),
-        stagingRoot: required(arguments_, '--staging-root'),
-        osmiumPath: argumentValue(arguments_, '--osmium'),
-      },
-      {
-        dryRun: arguments_.includes('--dry-run'),
-        downloadDem: arguments_.includes('--download-dem'),
-      },
-    );
+    paths = {
+      dataRoot: required(arguments_, '--data-root'),
+      cacheRoot: required(arguments_, '--cache-root'),
+      stagingRoot: required(arguments_, '--staging-root'),
+      osmiumPath: argumentValue(arguments_, '--osmium'),
+    },
+    flags = {
+      dryRun: arguments_.includes('--dry-run'),
+      downloadDem: arguments_.includes('--download-dem'),
+    },
+    tileValues = allArgumentValues(arguments_, '--tile'),
+    overlayId = argumentValue(arguments_, '--overlay-id');
+  if (tileValues.length && !overlayId)
+    throw new Error('Для выборочной генерации укажите --overlay-id <id>.');
+  const options = overlayId
+    ? overlayCoverageGeneratorOptions(
+        name,
+        paths,
+        overlayId,
+        tileValues.map(parseSourceTileKey),
+        flags,
+      )
+    : fullCoverageGeneratorOptions(name, paths, flags);
   await verifyFullCoverageInputs(name, options);
   const report = await generateMapTiles(options, (event) =>
-      console.log(JSON.stringify(event)),
-    );
+    console.log(JSON.stringify(event)),
+  );
   console.log(JSON.stringify({ kind: 'report', ...report }, null, 2));
   if (report.failed.length) process.exitCode = 1;
 }

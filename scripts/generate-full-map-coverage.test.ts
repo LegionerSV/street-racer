@@ -6,6 +6,7 @@ import { afterEach, expect, it } from 'vitest';
 import { MAP_FULL_COVERAGE_CONFIG } from './map-full-coverage-config';
 import {
   fullCoverageGeneratorOptions,
+  overlayCoverageGeneratorOptions,
   verifyFullCoverageInputs,
 } from './generate-full-map-coverage';
 
@@ -13,9 +14,9 @@ const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories.splice(0).map((path) =>
-      rm(path, { recursive: true, force: true }),
-    ),
+    temporaryDirectories
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true })),
   );
 });
 
@@ -44,6 +45,52 @@ it('строит параметры генератора строго из за�
     maxTileBytes: 4_194_304,
     downloadDem: true,
   });
+});
+
+it('строит отдельный staging только для выбранных тайлов overlay', () => {
+  // Arrange
+  const tiles = [
+    { z: 15, x: 19807, y: 10243 },
+    { z: 15, x: 19808, y: 10243 },
+  ];
+
+  // Act
+  const options = overlayCoverageGeneratorOptions(
+    'moscow',
+    {
+      dataRoot: 'work/map-data',
+      cacheRoot: 'work/map-cache',
+      stagingRoot: 'work/map-overlays',
+      osmiumPath: 'osmium',
+    },
+    'moscow-kremlin-20260916',
+    tiles,
+  );
+
+  // Assert
+  expect(options.staging).toMatch(/map-overlays[\\/]moscow-kremlin-20260916$/);
+  expect(options.tiles).toEqual(tiles);
+  expect(options.boundary).toBeUndefined();
+  expect(options.pbf).toMatch(/moscow-with-oblast-2026-09-11\.osm\.pbf$/);
+});
+
+it('отклоняет overlay без тайлов и небезопасный идентификатор', () => {
+  // Arrange
+  const paths = {
+    dataRoot: 'work/map-data',
+    cacheRoot: 'work/map-cache',
+    stagingRoot: 'work/map-overlays',
+  };
+
+  // Act & Assert
+  expect(() =>
+    overlayCoverageGeneratorOptions('moscow', paths, 'empty', []),
+  ).toThrow('хотя бы один тайл');
+  expect(() =>
+    overlayCoverageGeneratorOptions('moscow', paths, '../unsafe', [
+      { z: 15, x: 19807, y: 10243 },
+    ]),
+  ).toThrow('идентификатор overlay');
 });
 
 it('проверяет содержимое boundary и PBF по зафиксированным checksum', async () => {

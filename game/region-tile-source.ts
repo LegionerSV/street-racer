@@ -87,7 +87,9 @@ export function createRegionTileSource(
       ),
     );
   const source = new CompositeTileSource(
-    [cache, remote, fallback],
+    // Каталог S3 проверяется первым: новый overlay сразу перекрывает старую
+    // запись IndexedDB, а кэш остаётся offline-fallback и приёмником save.
+    [remote, cache, fallback],
     (id) => `${id.z}/${id.x}/${id.y}`,
     options.log,
     options.onSourceResult,

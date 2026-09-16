@@ -10,6 +10,9 @@ import {
   type TileArtifactV1Input,
 } from './tile-artifact';
 
+// Версия локального кэша меняется независимо от совместимого формата S3.
+export const SOURCE_TILE_CACHE_VERSION = 2;
+
 export type TileLoadFailureKind =
   | 'missing'
   | 'temporary-failure'
@@ -153,7 +156,8 @@ export class CompositeTileSource<
     signal: AbortSignal,
   ): Promise<TileLoadResult<TTile>> {
     let last: TileLoadResult<TTile> | undefined;
-    for (const [index, source] of this.sources.entries()) {
+    const writableSource = this.sources.find((source) => source.save);
+    for (const source of this.sources) {
       if (signal.aborted) return aborted(source.name, signal);
       const end = this.log?.start('Источник source-тайла', {
         tile: key,
@@ -181,19 +185,14 @@ export class CompositeTileSource<
       );
       if (result.kind === 'aborted') return result;
       if (result.kind !== 'hit') continue;
-      if (index > 0 && this.sources[0].save) {
+      if (source !== writableSource && writableSource?.save) {
         if (signal.aborted) return aborted(source.name, signal);
         const saveEnd = this.log?.start('Сохранение source-тайла', {
           tile: key,
-          source: this.sources[0].name,
+          source: writableSource.name,
         });
         try {
-          await this.sources[0].save(
-            tileId,
-            result.tile,
-            signal,
-            result.source,
-          );
+          await writableSource.save(tileId, result.tile, signal, result.source);
           saveEnd?.('success');
         } catch (error) {
           if (signal.aborted) return aborted(source.name, signal, error);
@@ -233,7 +232,7 @@ export class IndexedDbTileSource implements TileSource {
   ) {}
 
   private key(tileId: SourceTileId) {
-    return `source-tile:1:${sourceTileKey(tileId)}`;
+    return `source-tile:${SOURCE_TILE_CACHE_VERSION}:${sourceTileKey(tileId)}`;
   }
 
   async load(

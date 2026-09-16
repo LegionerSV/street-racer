@@ -1,8 +1,17 @@
 #!/usr/bin/env node
 
+import { execFile } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
-import { lstat, readFile, readdir } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import {
+  lstat,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brotliDecompress } from 'node:zlib';
 import { promisify } from 'node:util';
@@ -14,6 +23,7 @@ import {
 import { parseSourceTileKey } from '../game/source-tiles.ts';
 
 const decompress = promisify(brotliDecompress),
+  executeFile = promisify(execFile),
   TILE_CACHE_CONTROL = 'public, max-age=31536000, immutable',
   CATALOG_CACHE_CONTROL = 'no-cache, max-age=0',
   MANIFEST_FILE = 'staging-manifest-v1.json';
@@ -45,7 +55,7 @@ type ManifestTile = { path: string; bytes: number; checksum: string };
 
 type StagingManifest = {
   schemaVersion: 1;
-  tileSchemaVersion: 1;
+  tileSchemaVersion: typeof TILE_ARTIFACT_SCHEMA_VERSION;
   tileBuildVersion: string;
   generatedAt: string;
   complete: boolean;
@@ -110,8 +120,21 @@ type S3Options = {
   retryDelayMs?: number;
 };
 
+export type YcCliRunner = (
+  arguments_: string[],
+) => Promise<{ stdout: string; stderr: string }>;
+
+type YcCliOptions = {
+  bucket: string;
+  runner?: YcCliRunner;
+};
+
 class S3HttpError extends Error {
-  constructor(readonly status: number, method: string, key: string) {
+  constructor(
+    readonly status: number,
+    method: string,
+    key: string,
+  ) {
     super(`S3 вернул HTTP ${status} для ${method} ${key}.`);
   }
 }
@@ -433,9 +456,7 @@ export async function publishMapTiles(
   const uploadWorker = async () => {
     while (nextTile < tiles.length) {
       const { descriptor } = tiles[nextTile++],
-        body = await readFile(
-          resolve(staging, ...descriptor.path.split('/')),
-        ),
+        body = await readFile(resolve(staging, ...descriptor.path.split('/'))),
         key = objectKey(prefix, `${datasetPath}/${descriptor.path}`),
         existing = await options.store.head(key);
       if (existing) {
@@ -696,15 +717,152 @@ function storedObjectMatches(actual: StoredObject, expected: StoredObject) {
     )
   )
     return false;
-  const expectedEtag = createHash('md5')
-    .update(expected.body)
-    .digest('hex');
+  const expectedEtag = createHash('md5').update(expected.body).digest('hex');
   if (actual.etag?.replaceAll('"', '').toLowerCase() === expectedEtag)
     return true;
   if (actual.body.length !== expected.body.length) return false;
   for (let index = 0; index < actual.body.length; index++)
     if (actual.body[index] !== expected.body[index]) return false;
   return true;
+}
+
+function parseYcHeaders(value: string): ObjectHeaders {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error('YC CLI вернул неверный JSON метаданных объекта.', {
+      cause: error,
+    });
+  }
+  if (
+    !isObject(parsed) ||
+    !Number.isFinite(Number(parsed.content_length)) ||
+    typeof parsed.content_type !== 'string'
+  )
+    throw new Error('YC CLI вернул неполные метаданные объекта.');
+  return {
+    contentLength: Number(parsed.content_length),
+    contentType: parsed.content_type,
+    ...(typeof parsed.content_encoding === 'string'
+      ? { contentEncoding: parsed.content_encoding }
+      : {}),
+    cacheControl:
+      typeof parsed.cache_control === 'string' ? parsed.cache_control : '',
+    ...(isObject(parsed.metadata)
+      ? {
+          metadata: Object.fromEntries(
+            Object.entries(parsed.metadata).filter(
+              (entry): entry is [string, string] =>
+                typeof entry[1] === 'string',
+            ),
+          ),
+        }
+      : {}),
+    ...(typeof parsed.etag === 'string' ? { etag: parsed.etag } : {}),
+  };
+}
+
+function ycObjectMissing(error: unknown) {
+  const value = isObject(error) ? error : {},
+    details = `${error instanceof Error ? error.message : String(error)} ${typeof value.stderr === 'string' ? value.stderr : ''}`;
+  return /StatusCode:\s*404|\bNotFound\b|\bNoSuchKey\b/i.test(details);
+}
+
+export function createYcCliObjectStore(options: YcCliOptions): ObjectStore {
+  if (!options.bucket.trim()) throw new Error('S3 bucket должен быть указан.');
+  const runner: YcCliRunner =
+      options.runner ??
+      (async (arguments_) => {
+        const result = await executeFile('yc', arguments_, {
+          encoding: 'utf8',
+          windowsHide: true,
+          maxBuffer: 4 * 1024 * 1024,
+        });
+        return {
+          stdout: String(result.stdout),
+          stderr: String(result.stderr),
+        };
+      }),
+    command = (operation: string, key: string, extra: string[] = []) => [
+      'storage',
+      's3api',
+      operation,
+      '--bucket',
+      options.bucket,
+      '--key',
+      key,
+      '--format',
+      'json',
+      ...extra,
+    ],
+    head = async (key: string) => {
+      try {
+        return parseYcHeaders(
+          (await runner(command('head-object', key))).stdout,
+        );
+      } catch (error) {
+        if (ycObjectMissing(error)) return undefined;
+        throw error;
+      }
+    };
+  return {
+    head,
+    get: async (key) => {
+      const headers = await head(key);
+      if (!headers) return undefined;
+      const directory = await mkdtemp(join(tmpdir(), 'street-racer-yc-get-'));
+      try {
+        const target = join(directory, 'object');
+        await runner(command('get-object', key, [target]));
+        return { ...headers, body: await readFile(target) };
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    put: async (key, object, conditions) => {
+      const before = await head(key);
+      if (conditions?.ifNoneMatch && before)
+        throw new Error(`Объект ${key} уже существует.`);
+      if (conditions?.ifMatch && before?.etag !== conditions.ifMatch)
+        throw new Error(`ETag объекта ${key} изменился перед публикацией.`);
+      const directory = await mkdtemp(join(tmpdir(), 'street-racer-yc-put-'));
+      try {
+        const target = join(directory, 'object'),
+          metadata = Object.entries(object.metadata ?? {})
+            .map(([name, value]) => `${name}=${value}`)
+            .join(','),
+          arguments_ = [
+            '--body',
+            target,
+            '--content-type',
+            object.contentType,
+            '--cache-control',
+            object.cacheControl,
+            '--content-md5',
+            createHash('md5').update(object.body).digest('base64'),
+            ...(object.contentEncoding
+              ? ['--content-encoding', object.contentEncoding]
+              : []),
+            ...(metadata ? ['--metadata', metadata] : []),
+          ];
+        if ([key, metadata].some((value) => /[\r\n]/.test(value)))
+          throw new Error(
+            'Ключ и metadata объекта не должны содержать переводы строк.',
+          );
+        await writeFile(target, object.body);
+        await runner(command('put-object', key, arguments_));
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+      const after = await head(key);
+      if (
+        !after ||
+        !storedObjectMatches({ ...after, body: new Uint8Array() }, object)
+      )
+        throw new Error(`YC CLI не подтвердил запись объекта ${key}.`);
+    },
+  };
 }
 
 export function createS3ObjectStore(options: S3Options): ObjectStore {
@@ -725,95 +883,95 @@ export function createS3ObjectStore(options: S3Options): ObjectStore {
     throw new Error('Задержка повтора S3 не может быть отрицательной.');
 
   const requestOnce = async (
-    method: 'GET' | 'HEAD' | 'PUT',
-    key: string,
-    object?: StoredObject,
-    conditions?: PutConditions,
-  ) => {
-    const url = new URL(endpoint),
-      encodedPath = [options.bucket, ...key.split('/')]
-        .map(sigV4Encode)
-        .join('/');
-    url.pathname = `/${encodedPath}`;
-    const body = object?.body,
-      payloadHash = hash(body ?? new Uint8Array()),
-      moment = now(),
-      amzDate = moment.toISOString().replace(/[:-]|\.\d{3}/g, ''),
-      date = amzDate.slice(0, 8),
-      headers = new Headers({
-        host: url.host,
-        'x-amz-content-sha256': payloadHash,
-        'x-amz-date': amzDate,
-      });
-    if (options.sessionToken)
-      headers.set('x-amz-security-token', options.sessionToken);
-    if (conditions?.ifMatch) headers.set('if-match', conditions.ifMatch);
-    if (conditions?.ifNoneMatch)
-      headers.set('if-none-match', conditions.ifNoneMatch);
-    if (object) {
-      headers.set('content-type', object.contentType);
-      headers.set('cache-control', object.cacheControl);
-      headers.set(
-        'content-md5',
-        createHash('md5').update(object.body).digest('base64'),
-      );
-      if (object.contentEncoding)
-        headers.set('content-encoding', object.contentEncoding);
-      for (const [name, value] of Object.entries(object.metadata ?? {}))
-        headers.set(`x-amz-meta-${name}`, value);
-    }
-    const canonicalEntries = [...headers.entries()]
-        .map(
-          ([name, value]) =>
-            [name.toLowerCase(), value.trim().replace(/\s+/g, ' ')] as const,
-        )
-        .sort(([left], [right]) => left.localeCompare(right)),
-      signedHeaders = canonicalEntries.map(([name]) => name).join(';'),
-      canonicalHeaders = `${canonicalEntries.map(([name, value]) => `${name}:${value}`).join('\n')}\n`,
-      canonicalRequest = [
-        method,
-        url.pathname,
-        '',
-        canonicalHeaders,
-        signedHeaders,
-        payloadHash,
-      ].join('\n'),
-      scope = `${date}/${options.region}/s3/aws4_request`,
-      stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${hash(canonicalRequest)}`,
-      signingKey = hmac(
-        hmac(
-          hmac(hmac(`AWS4${options.secretKey}`, date), options.region),
-          's3',
+      method: 'GET' | 'HEAD' | 'PUT',
+      key: string,
+      object?: StoredObject,
+      conditions?: PutConditions,
+    ) => {
+      const url = new URL(endpoint),
+        encodedPath = [options.bucket, ...key.split('/')]
+          .map(sigV4Encode)
+          .join('/');
+      url.pathname = `/${encodedPath}`;
+      const body = object?.body,
+        payloadHash = hash(body ?? new Uint8Array()),
+        moment = now(),
+        amzDate = moment.toISOString().replace(/[:-]|\.\d{3}/g, ''),
+        date = amzDate.slice(0, 8),
+        headers = new Headers({
+          host: url.host,
+          'x-amz-content-sha256': payloadHash,
+          'x-amz-date': amzDate,
+        });
+      if (options.sessionToken)
+        headers.set('x-amz-security-token', options.sessionToken);
+      if (conditions?.ifMatch) headers.set('if-match', conditions.ifMatch);
+      if (conditions?.ifNoneMatch)
+        headers.set('if-none-match', conditions.ifNoneMatch);
+      if (object) {
+        headers.set('content-type', object.contentType);
+        headers.set('cache-control', object.cacheControl);
+        headers.set(
+          'content-md5',
+          createHash('md5').update(object.body).digest('base64'),
+        );
+        if (object.contentEncoding)
+          headers.set('content-encoding', object.contentEncoding);
+        for (const [name, value] of Object.entries(object.metadata ?? {}))
+          headers.set(`x-amz-meta-${name}`, value);
+      }
+      const canonicalEntries = [...headers.entries()]
+          .map(
+            ([name, value]) =>
+              [name.toLowerCase(), value.trim().replace(/\s+/g, ' ')] as const,
+          )
+          .sort(([left], [right]) => left.localeCompare(right)),
+        signedHeaders = canonicalEntries.map(([name]) => name).join(';'),
+        canonicalHeaders = `${canonicalEntries.map(([name, value]) => `${name}:${value}`).join('\n')}\n`,
+        canonicalRequest = [
+          method,
+          url.pathname,
+          '',
+          canonicalHeaders,
+          signedHeaders,
+          payloadHash,
+        ].join('\n'),
+        scope = `${date}/${options.region}/s3/aws4_request`,
+        stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${hash(canonicalRequest)}`,
+        signingKey = hmac(
+          hmac(
+            hmac(hmac(`AWS4${options.secretKey}`, date), options.region),
+            's3',
+          ),
+          'aws4_request',
         ),
-        'aws4_request',
-      ),
-      signature = createHmac('sha256', signingKey)
-        .update(stringToSign)
-        .digest('hex');
-    headers.set(
-      'authorization',
-      `AWS4-HMAC-SHA256 Credential=${options.accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
-    );
-    let response: Response;
-    try {
-      response = await fetcher(url, {
-        method,
-        headers,
-        ...(body ? { body: Buffer.from(body) } : {}),
-      });
-    } catch (error) {
-      throw new S3NetworkError(`Сетевая ошибка S3 для ${method} ${key}.`, {
-        cause: error,
-      });
-    }
-    if (response.status === 404 && method !== 'PUT') return undefined;
-    if (!response.ok) throw new S3HttpError(response.status, method, key);
-    const responseBody =
-      method === 'GET'
-        ? new Uint8Array(await response.arrayBuffer())
-        : new Uint8Array();
-    return responseHeaders(response, responseBody);
-  },
+        signature = createHmac('sha256', signingKey)
+          .update(stringToSign)
+          .digest('hex');
+      headers.set(
+        'authorization',
+        `AWS4-HMAC-SHA256 Credential=${options.accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      );
+      let response: Response;
+      try {
+        response = await fetcher(url, {
+          method,
+          headers,
+          ...(body ? { body: Buffer.from(body) } : {}),
+        });
+      } catch (error) {
+        throw new S3NetworkError(`Сетевая ошибка S3 для ${method} ${key}.`, {
+          cause: error,
+        });
+      }
+      if (response.status === 404 && method !== 'PUT') return undefined;
+      if (!response.ok) throw new S3HttpError(response.status, method, key);
+      const responseBody =
+        method === 'GET'
+          ? new Uint8Array(await response.arrayBuffer())
+          : new Uint8Array();
+      return responseHeaders(response, responseBody);
+    },
     request = async (
       method: 'GET' | 'HEAD' | 'PUT',
       key: string,
@@ -834,7 +992,8 @@ export function createS3ObjectStore(options: S3Options): ObjectStore {
             )
               try {
                 const written = await requestOnce('GET', key);
-                if (written && storedObjectMatches(written, object)) return written;
+                if (written && storedObjectMatches(written, object))
+                  return written;
               } catch {
                 // Сверка best-effort: исходная ошибка определяет дальнейший retry.
               }
@@ -880,14 +1039,10 @@ async function main() {
         argumentValue(arguments_, '--dataset-id') ?? process.env.MAP_DATASET_ID,
         '--dataset-id или MAP_DATASET_ID',
       ),
-      endpoint = required(
+      endpointValue =
         argumentValue(arguments_, '--endpoint') ?? process.env.S3_ENDPOINT,
-        '--endpoint или S3_ENDPOINT',
-      ),
-      bucket = required(
+      bucketValue =
         argumentValue(arguments_, '--bucket') ?? process.env.S3_BUCKET,
-        '--bucket или S3_BUCKET',
-      ),
       prefix =
         argumentValue(arguments_, '--prefix') ?? process.env.S3_PREFIX ?? '',
       dryRun = arguments_.includes('--dry-run');
@@ -896,8 +1051,8 @@ async function main() {
         await emitPublishCommands({
           staging,
           datasetId,
-          endpoint,
-          bucket,
+          endpoint: required(endpointValue, '--endpoint или S3_ENDPOINT'),
+          bucket: required(bucketValue, '--bucket или S3_BUCKET'),
           prefix,
           sampleSize: Number(argumentValue(arguments_, '--sample-size') ?? 3),
           currentCatalog: argumentValue(arguments_, '--current-catalog'),
@@ -918,30 +1073,34 @@ async function main() {
             get: async () => undefined,
             put: async () => {},
           } satisfies ObjectStore)
-        : createS3ObjectStore({
-            endpoint,
-            bucket,
-            region:
-              argumentValue(arguments_, '--region') ??
-              process.env.AWS_REGION ??
-              'ru-central1',
-            accessKey: required(
-              argumentValue(arguments_, '--access-key') ??
-                process.env.AWS_ACCESS_KEY_ID,
-              '--access-key или AWS_ACCESS_KEY_ID',
-            ),
-            secretKey: required(
-              argumentValue(arguments_, '--secret-key') ??
-                process.env.AWS_SECRET_ACCESS_KEY,
-              '--secret-key или AWS_SECRET_ACCESS_KEY',
-            ),
-            sessionToken:
-              argumentValue(arguments_, '--session-token') ??
-              process.env.AWS_SESSION_TOKEN,
-            allowInsecureLocal: arguments_.includes(
-              '--allow-insecure-local-endpoint',
-            ),
-          }),
+        : arguments_.includes('--yc-cli')
+          ? createYcCliObjectStore({
+              bucket: required(bucketValue, '--bucket или S3_BUCKET'),
+            })
+          : createS3ObjectStore({
+              endpoint: required(endpointValue, '--endpoint или S3_ENDPOINT'),
+              bucket: required(bucketValue, '--bucket или S3_BUCKET'),
+              region:
+                argumentValue(arguments_, '--region') ??
+                process.env.AWS_REGION ??
+                'ru-central1',
+              accessKey: required(
+                argumentValue(arguments_, '--access-key') ??
+                  process.env.AWS_ACCESS_KEY_ID,
+                '--access-key или AWS_ACCESS_KEY_ID',
+              ),
+              secretKey: required(
+                argumentValue(arguments_, '--secret-key') ??
+                  process.env.AWS_SECRET_ACCESS_KEY,
+                '--secret-key или AWS_SECRET_ACCESS_KEY',
+              ),
+              sessionToken:
+                argumentValue(arguments_, '--session-token') ??
+                process.env.AWS_SESSION_TOKEN,
+              allowInsecureLocal: arguments_.includes(
+                '--allow-insecure-local-endpoint',
+              ),
+            }),
       report = await publishMapTiles({
         staging,
         datasetId,

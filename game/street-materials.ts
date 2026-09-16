@@ -25,24 +25,52 @@ function texture(scene: Scene, name: string, pixels: Uint8Array, size: number) {
   return t;
 }
 export function streetMaterials(scene: Scene) {
-  const facades = ['brick', 'stone', 'modern', 'wood'].map((style) => {
-    const size = 128;
-    const { diffuse, emission, normal } = facadeSurface(style as 'brick' | 'stone' | 'modern' | 'wood', size);
-    const mat = new StandardMaterial('facade-' + style, scene);
-    mat.diffuseTexture = texture(scene, style + '-windows', diffuse, size);
-    mat.emissiveTexture = texture(scene, style + '-night', emission, size);
-    mat.bumpTexture = texture(scene, style + '-relief', normal, size);
-    mat.bumpTexture.level = .75;
-    mat.bumpTexture.gammaSpace = false;
-    for (const t of [mat.diffuseTexture, mat.emissiveTexture] as RawTexture[])
-      t.uScale = t.vScale = 0.5;
-    (mat.bumpTexture as RawTexture).uScale = (mat.bumpTexture as RawTexture).vScale = 0.5;
-    mat.backFaceCulling = false;
-    mat.twoSidedLighting = true;
-    mat.maxSimultaneousLights = 8;
-    mat.specularColor = new Color3(0.08, 0.09, 0.1);
-    return mat;
-  });
+  const makeFacades = (windows: boolean) =>
+      ['brick', 'stone', 'modern', 'wood'].map((style) => {
+        const size = 128;
+        const { diffuse, emission, normal } = facadeSurface(
+          style as 'brick' | 'stone' | 'modern' | 'wood',
+          size,
+          windows,
+        );
+        const suffix = windows ? 'windows' : 'solid',
+          mat = new StandardMaterial(`facade-${style}-${suffix}`, scene);
+        mat.diffuseTexture = texture(
+          scene,
+          `${style}-${suffix}`,
+          diffuse,
+          size,
+        );
+        mat.emissiveTexture = texture(
+          scene,
+          `${style}-${suffix}-night`,
+          emission,
+          size,
+        );
+        mat.bumpTexture = texture(
+          scene,
+          `${style}-${suffix}-relief`,
+          normal,
+          size,
+        );
+        mat.bumpTexture.level = 0.75;
+        mat.bumpTexture.gammaSpace = false;
+        for (const t of [
+          mat.diffuseTexture,
+          mat.emissiveTexture,
+        ] as RawTexture[])
+          t.uScale = t.vScale = 0.5;
+        (mat.bumpTexture as RawTexture).uScale = (
+          mat.bumpTexture as RawTexture
+        ).vScale = 0.5;
+        mat.backFaceCulling = false;
+        mat.twoSidedLighting = true;
+        mat.maxSimultaneousLights = 8;
+        mat.specularColor = new Color3(0.08, 0.09, 0.1);
+        return mat;
+      }),
+    facades = makeFacades(true),
+    bareFacades = makeFacades(false);
   const size = 128,
     pixels = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++)
@@ -59,5 +87,5 @@ export function streetMaterials(scene: Scene) {
   sidewalks.twoSidedLighting = true;
   sidewalks.maxSimultaneousLights = 8;
   sidewalks.specularColor.setAll(0.06);
-  return { facades, sidewalks };
+  return { facades, bareFacades, sidewalks };
 }

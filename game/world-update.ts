@@ -4,14 +4,17 @@ import { coverageBounds } from './stream-coverage';
 import { createRaceLocations, invalidateRaceRoutes } from './network';
 import { edgeById, edgeStableId, updateRoadMetrics } from './road-graph';
 import { distance, distance2, sampleElevation, smoother } from './geo';
-import { alignCarriagewayElevations } from './carriageways';
+import {
+  alignCarriagewayElevations,
+  alignGroundIntersections,
+} from './carriageways';
 import { validateClearance } from './clearance';
 export const edgeKey = edgeStableId;
 // Уже построенную поверхность не меняем под автомобилями из-за нового
 // соседнего перекрёстка. Доступность дороги берём из новой карты покрытия.
 export function reconcileWorld(previous: World, next: World): World {
   // Инкрементальное слияние переиспользует узлы; подготовка не меняет активный мир.
-  next.nodes = next.nodes.map(node => ({ ...node }));
+  next.nodes = next.nodes.map((node) => ({ ...node }));
   const old = new Map(previous.edges.map((e) => [edgeKey(e), e]));
   const preserved = new Set<string>();
   for (const edge of next.edges) {
@@ -69,10 +72,24 @@ export function reconcileWorld(previous: World, next: World): World {
       .slice(1)
       .reduce((sum, point, i) => sum + distance(edge.points[i], point), 0);
   }
-  if (alignCarriagewayElevations(next.edges, new Map(next.nodes.map(node => [node.id, node])), next.elevation, next.drivingSide, preserved)) {
-    for (const edge of next.edges) if (!preserved.has(edgeKey(edge))) updateRoadMetrics(edge);
-    next.warnings = [...new Set([...next.warnings, ...validateClearance(next.edges)])].slice(0, 10);
+  if (
+    alignCarriagewayElevations(
+      next.edges,
+      new Map(next.nodes.map((node) => [node.id, node])),
+      next.elevation,
+      next.drivingSide,
+      preserved,
+    )
+  ) {
+    for (const edge of next.edges)
+      if (!preserved.has(edgeKey(edge))) updateRoadMetrics(edge);
+    next.warnings = [
+      ...new Set([...next.warnings, ...validateClearance(next.edges)]),
+    ].slice(0, 10);
   }
+  if (alignGroundIntersections(next.edges, preserved))
+    for (const edge of next.edges)
+      if (!preserved.has(edgeKey(edge))) updateRoadMetrics(edge);
   for (const node of next.nodes) {
     const y = anchorHeight(node.id);
     if (y !== undefined) node.y = y;
@@ -205,13 +222,15 @@ export function changedChunks(
   };
   return [...installed].filter((key) => {
     const [x, z] = key.split(',').map(Number);
-    return dirty.some((b) =>
-      overlaps(b, {
-        minX: x * 250,
-        maxX: (x + 1) * 250,
-        minZ: z * 250,
-        maxZ: (z + 1) * 250,
-      }),
-    ) || terrainChangedIn(x, z);
+    return (
+      dirty.some((b) =>
+        overlaps(b, {
+          minX: x * 250,
+          maxX: (x + 1) * 250,
+          minZ: z * 250,
+          maxZ: (z + 1) * 250,
+        }),
+      ) || terrainChangedIn(x, z)
+    );
   });
 }

@@ -3,6 +3,7 @@ import {
   CompositeTileSource,
   IndexedDbTileSource,
   OverpassTileSource,
+  SOURCE_TILE_CACHE_VERSION,
   S3TileSource,
   StaticTileSource,
   type TileLoadResult,
@@ -61,6 +62,45 @@ describe('CompositeTileSource', () => {
     expect(cached.load).toHaveBeenCalledTimes(1);
     expect(remote.load).not.toHaveBeenCalled();
     expect(fallback.load).not.toHaveBeenCalled();
+  });
+
+  it('сохраняет приоритетный remote hit в кэш, даже если кэш стоит после него', async () => {
+    // Arrange
+    const remote = source('s3', async () => ({
+        kind: 'hit',
+        source: 's3',
+        tile: { value: 'overlay' },
+      })),
+      save = vi.fn(async () => {}),
+      cached = source(
+        'indexeddb',
+        async () => ({
+          kind: 'hit',
+          source: 'indexeddb',
+          tile: { value: 'old-base' },
+        }),
+        save,
+      );
+
+    // Act
+    const result = await new CompositeTileSource([remote, cached]).load(
+      '15/1/2',
+      new AbortController().signal,
+    );
+
+    // Assert
+    expect(result).toMatchObject({
+      kind: 'hit',
+      source: 's3',
+      tile: { value: 'overlay' },
+    });
+    expect(cached.load).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledWith(
+      '15/1/2',
+      { value: 'overlay' },
+      expect.any(AbortSignal),
+      's3',
+    );
   });
 
   it.each(['missing', 'corrupt', 'incompatible'] as const)(
@@ -380,6 +420,11 @@ function artifact(): TileArtifactV1Input {
 }
 
 describe('источники TileArtifactV1', () => {
+  it('инвалидирует локальный кэш без смены совместимого S3-формата', () => {
+    // Arrange / Act / Assert
+    expect(TILE_ARTIFACT_SCHEMA_VERSION).toBe(1);
+    expect(SOURCE_TILE_CACHE_VERSION).toBe(2);
+  });
   function catalog(
     tileChecksum = JSON.parse(encodeTileArtifact(artifact())).checksum,
   ) {
@@ -403,6 +448,68 @@ describe('источники TileArtifactV1', () => {
       ],
     };
   }
+
+  it('читает изменённый тайл из overlay, а остальные — из базового dataset', async () => {
+    // Arrange
+    const overlayArtifact = artifact(),
+      baseTileId = { ...artifactId, x: artifactId.x + 1 },
+      baseArtifact = {
+        ...artifact(),
+        ...baseTileId,
+        coreBounds: sourceTileBounds(baseTileId),
+        bufferedBounds: sourceTileBounds(baseTileId),
+      },
+      overlayEncoded = encodeTileArtifact(overlayArtifact),
+      baseEncoded = encodeTileArtifact(baseArtifact),
+      overlayChecksum = JSON.parse(overlayEncoded).checksum,
+      baseChecksum = JSON.parse(baseEncoded).checksum,
+      overlayCatalog = {
+        schemaVersion: 1,
+        generatedAt: '2026-09-16T12:00:00.000Z',
+        activeDatasets: ['moscow-overlay', 'moscow-base'],
+        datasets: [
+          {
+            datasetId: 'moscow-overlay',
+            schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+            tileBuildVersion: TILE_BUILD_VERSION,
+            path: `maps/v1/${TILE_BUILD_VERSION}/moscow-overlay`,
+            tiles: {
+              '15/19808/10243': { bytes: 1, checksum: overlayChecksum },
+            },
+          },
+          {
+            datasetId: 'moscow-base',
+            schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+            tileBuildVersion: TILE_BUILD_VERSION,
+            path: `maps/v1/${TILE_BUILD_VERSION}/moscow-base`,
+            tiles: {
+              '15/19809/10243': { bytes: 1, checksum: baseChecksum },
+            },
+          },
+        ],
+      },
+      request = vi.fn(async (url: string) => {
+        if (url.endsWith('catalog-v1.json'))
+          return new Response(JSON.stringify(overlayCatalog));
+        if (url.includes('/moscow-overlay/'))
+          return new Response(overlayEncoded);
+        return new Response(baseEncoded);
+      }),
+      source = new S3TileSource({
+        baseUrl: 'https://maps.example',
+        fetch: request,
+      });
+
+    // Act
+    const overlay = await source.load(artifactId, new AbortController().signal),
+      base = await source.load(baseTileId, new AbortController().signal);
+
+    // Assert
+    expect(overlay.kind).toBe('hit');
+    expect(base.kind).toBe('hit');
+    expect(request.mock.calls[1]?.[0]).toContain('/moscow-overlay/');
+    expect(request.mock.calls[2]?.[0]).toContain('/moscow-base/');
+  });
 
   it('не выполняет S3-запросы без базового URL', async () => {
     // Arrange
@@ -673,11 +780,13 @@ describe('источники TileArtifactV1', () => {
 
     // Assert
     expect(result.kind).toBe(kind);
-    expect(store.get).toHaveBeenCalledWith('source-tile:1:15/19808/10243');
+    expect(store.get).toHaveBeenCalledWith('source-tile:2:15/19808/10243');
   });
 
   it('fallback создаёт валидный артефакт, сохраняет его и повторно читает из IndexedDB', async () => {
     // Arrange
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-10T12:00:00Z'));
     const data = new Map<string, { serialized: string; savedAt: number }>(),
       store = {
         get: vi.fn(async (key: string) => data.get(key)),

@@ -6,8 +6,8 @@ import { SpatialGrid } from './geometry';
 import {
   routeHasCoverage,
   routeHasDrivingCoverage,
+  routeCoverageTileKeys,
   sourceTileLocalBounds,
-  needsRaceRecovery,
   sourceTileKeysForLocalBounds,
 } from './stream-coverage';
 import { tileReady } from './region-stream';
@@ -76,7 +76,7 @@ it('не предлагает гонку у неготовой границы, �
   ).toBe(true);
 });
 
-it('при выезде гонщика к неготовой границе требует возврат, а ожидание коллизий не сбрасывает гонку', () => {
+it('считает коллизии внутри загруженного маршрута готовыми во всех направлениях', () => {
   // Arrange
   const center = { lat: 0, lon: 0 },
     loaded = new Set(
@@ -86,24 +86,8 @@ it('при выезде гонщика к неготовой границе тр
         maxX: 800,
         maxZ: 800,
       }),
-    ),
-    outside = point(500, 1200),
-    inside = point(500, 500);
+    );
   // Act / Assert
-  expect(
-    needsRaceRecovery(true, loaded, criticalChunks(outside, 0, true), center),
-  ).toBe(true);
-  expect(
-    needsRaceRecovery(true, loaded, criticalChunks(inside, 0, true), center),
-  ).toBe(false);
-  expect(
-    needsRaceRecovery(
-      false,
-      loaded,
-      criticalChunks(outside, Math.PI / 2, true),
-      center,
-    ),
-  ).toBe(false);
   const safeRoute = [point(200, 200), point(800, 800)];
   expect(routeHasCoverage(safeRoute, [...loaded], center)).toBe(true);
   for (const p of safeRoute)
@@ -113,6 +97,19 @@ it('при выезде гонщика к неготовой границе тр
           tileReady(loaded, k, center),
         ),
       ).toBe(true);
+});
+
+it('вычисляет source-тайлы всего маршрута для защиты во время стриминга', () => {
+  // Arrange
+  const center = { lat: 59.85, lon: 30.35 },
+    route = [point(-1200, -900), point(0, 0), point(1400, 1100)];
+
+  // Act
+  const keys = routeCoverageTileKeys(route, center, 140);
+
+  // Assert
+  expect(keys.length).toBeGreaterThan(4);
+  expect(routeHasCoverage(route, keys, center, 140)).toBe(true);
 });
 
 it('не считает трассу безопасной, если у её края не хватает полного квартала для коллизий', () => {

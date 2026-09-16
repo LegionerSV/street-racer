@@ -6,7 +6,7 @@ import { tileReady } from './region-stream';
 import { sourceTileKeysForLocalBounds } from './stream-coverage';
 import type { Point, Route } from './types';
 
-it('возвращает гонщика к контрольной точке и снимает ожидание отсутствующей карты', () => {
+it('ждёт потоковую карту без возврата гонщика к контрольной точке', () => {
   // Arrange — используем игровой переход без запуска рендера и физического движка.
   const route: Route = {
     id: 'test',
@@ -58,27 +58,47 @@ it('возвращает гонщика к контрольной точке и 
   expect(
     before.some((k) => !tileReady(game.mapCoverage, k, game.world.center)),
   ).toBe(true);
-  expect(
-    after.every((k) => tileReady(game.mapCoverage, k, game.world.center)),
-  ).toBe(true);
-  expect(game.player.position).toEqual({ x: 500, y: 0.88, z: 500 });
+  expect(after).toEqual(before);
+  expect(game.player.position).toEqual({ x: 500, y: 0, z: 1200 });
   expect(game.race).toMatchObject({
     phase: 'running',
     elapsed: 12,
     lap: 2,
     checkpoint: 1,
   });
-  expect(game.message).toBe(
-    'Впереди район ещё не загружен. Автомобиль возвращён на трассу.',
-  );
+  expect(game.message).toBeUndefined();
 });
 it('не возвращает гонщика, когда под машиной есть карта, а незагружен только квартал по направлению взгляда', () => {
   // Arrange
   const center = { lat: 0, lon: 0 };
   const position = { x: 500, y: 0, z: 500 };
-  const loaded = new Set(sourceTileKeysForLocalBounds(center, { minX: 200, minZ: 200, maxX: 800, maxZ: 800 }));
+  const loaded = new Set(
+    sourceTileKeysForLocalBounds(center, {
+      minX: 200,
+      minZ: 200,
+      maxX: 800,
+      maxZ: 800,
+    }),
+  );
   const game = Object.create(Game.prototype);
-  Object.assign(game, { race: makeRace({ id:'test', kind:'sprint', title:'Заезд', edges:['test-edge'], points:[position,{x:550,y:0,z:500}], cumulative:[0,50], length:50, laps:1 }), mapCoverage:loaded, world:{center}, player:{position,heading:0,teleport:vi.fn()}, clearControls:vi.fn(),refreshWanted:vi.fn(),camera:{position:{setAll:vi.fn()}} });
+  Object.assign(game, {
+    race: makeRace({
+      id: 'test',
+      kind: 'sprint',
+      title: 'Заезд',
+      edges: ['test-edge'],
+      points: [position, { x: 550, y: 0, z: 500 }],
+      cumulative: [0, 50],
+      length: 50,
+      laps: 1,
+    }),
+    mapCoverage: loaded,
+    world: { center },
+    player: { position, heading: 0, teleport: vi.fn() },
+    clearControls: vi.fn(),
+    refreshWanted: vi.fn(),
+    camera: { position: { setAll: vi.fn() } },
+  });
   const critical = criticalChunks(position, 0, true, 0);
   // Act
   game.recoverAtMapBoundary(critical);

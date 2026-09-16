@@ -47,11 +47,18 @@ function isRoad(element: OSMElement) {
 
 function isCourtyardRoad(element: OSMElement) {
   const tags = element.tags ?? {};
-  return tags.highway === 'service' &&
-    !tags.bridge && (!tags.tunnel || tags.tunnel === 'building_passage') &&
-    !tags.name && !tags['name:ru'] && !tags.ref &&
-    (tags.service === 'driveway' || tags.service === 'parking_aisle' ||
-      !tags.service || tags.service === 'alley');
+  return (
+    tags.highway === 'service' &&
+    !tags.bridge &&
+    (!tags.tunnel || tags.tunnel === 'building_passage') &&
+    !tags.name &&
+    !tags['name:ru'] &&
+    !tags.ref &&
+    (tags.service === 'driveway' ||
+      tags.service === 'parking_aisle' ||
+      !tags.service ||
+      tags.service === 'alley')
+  );
 }
 
 function isArea(element: OSMElement) {
@@ -60,7 +67,10 @@ function isArea(element: OSMElement) {
     ['water', 'wood'].includes(tags.natural) ||
     tags.waterway === 'riverbank' ||
     ['forest', 'grass', 'meadow', 'reservoir'].includes(tags.landuse) ||
-    tags.leisure === 'park'
+    tags.leisure === 'park' ||
+    tags.place === 'square' ||
+    tags['area:highway'] === 'pedestrian' ||
+    (tags.highway === 'pedestrian' && tags.area === 'yes')
   );
 }
 
@@ -188,7 +198,10 @@ export function reduceMapElements(
       pointCache.set(id, value);
       return value;
     },
-    roads = elements.filter(element => isRoad(element) && (!closeCourtyards || !isCourtyardRoad(element))),
+    roads = elements.filter(
+      (element) =>
+        isRoad(element) && (!closeCourtyards || !isCourtyardRoad(element)),
+    ),
     streets = roads.filter((road) => road.tags?.highway !== 'service');
 
   // В клетке только с внутриквартальными дорогами используем их как ориентир.
@@ -252,15 +265,22 @@ export function reduceMapElements(
     const tags = element.tags ?? {};
     if (
       (isRoad(element) && (!closeCourtyards || !isCourtyardRoad(element))) ||
-      (element.type === 'relation' && tags.type === 'restriction' &&
-        (!closeCourtyards || !(element.members ?? []).some(member =>
-          member.type === 'way' && isCourtyardRoad(byKey.get(`way/${member.ref}`) ?? element))))
+      (element.type === 'relation' &&
+        tags.type === 'restriction' &&
+        (!closeCourtyards ||
+          !(element.members ?? []).some(
+            (member) =>
+              member.type === 'way' &&
+              isCourtyardRoad(byKey.get(`way/${member.ref}`) ?? element),
+          )))
     ) {
       retain(element);
     } else if (
       (tags.building && tags.building !== 'no') ||
       isBuildingPart(tags) ||
-      tags.type === 'building'
+      tags.type === 'building' ||
+      tags.historic === 'citywalls' ||
+      ['city_wall', 'wall'].includes(tags.barrier)
     ) {
       if (
         tags.building === 'wall' ||

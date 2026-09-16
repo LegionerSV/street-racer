@@ -1,6 +1,11 @@
 import { roofForm } from './roof-forms';
 import earcut from 'earcut';
-import { footprintPrism, roadPrism, subtractPrisms, type Prism } from './geometry';
+import {
+  footprintPrism,
+  roadPrism,
+  subtractPrisms,
+  type Prism,
+} from './geometry';
 import { distance2, mixPoint } from './geo';
 import type { Building, MeshData, Point } from './types';
 type Colour = [number, number, number];
@@ -106,8 +111,11 @@ const named: Record<string, string> = {
   lightyellow: '#ffffe0',
 };
 export function facadeStyle(b: Building) {
-  if (['wood', 'timber', 'logs'].includes(b.material || '') ||
-    (!b.material && b.appearance === 'cottage' && b.colour < .72)) return 3;
+  if (
+    ['wood', 'timber', 'logs'].includes(b.material || '') ||
+    (!b.material && b.appearance === 'cottage' && b.colour < 0.72)
+  )
+    return 3;
   return b.material === 'brick'
     ? 0
     : ['glass', 'metal', 'steel'].includes(b.material || '') ||
@@ -117,18 +125,24 @@ export function facadeStyle(b: Building) {
 }
 export function hasFacadeWindows(b: Building) {
   const tags = b.osmTags || {};
-  return tags.window !== 'no' &&
+  return (
+    b.windowPolicy !== 'forbid' &&
+    tags.window !== 'no' &&
     !['triumphal_arch', 'wall', 'fortification'].includes(b.kind || '') &&
     !['citywalls', 'city_wall'].includes(tags.historic || '') &&
     !['city_wall', 'wall'].includes(tags.barrier || '') &&
-    tags['building:part'] !== 'wall';
+    tags['building:part'] !== 'wall'
+  );
 }
 
 function triumphalOpening(b: Building, foundationFloor?: number) {
   const ring = b.footprint;
-  let longest = 0, ux = 1, uz = 0;
+  let longest = 0,
+    ux = 1,
+    uz = 0;
   for (let i = 0; i < ring.length; i++) {
-    const a = ring[i], q = ring[(i + 1) % ring.length],
+    const a = ring[i],
+      q = ring[(i + 1) % ring.length],
       length = distance2(a, q);
     if (length > longest) {
       longest = length;
@@ -136,27 +150,55 @@ function triumphalOpening(b: Building, foundationFloor?: number) {
       uz = (q.z - a.z) / length;
     }
   }
-  const center = ring.reduce((p, q) => ({ x: p.x + q.x / ring.length, z: p.z + q.z / ring.length }), { x: 0, z: 0 });
-  const vx = -uz, vz = ux;
-  const depth = Math.max(...ring.map(p => Math.abs((p.x - center.x) * vx + (p.z - center.z) * vz)));
-  const floor = (foundationFloor ?? Math.min(...ring.map(p => p.y))) - .3;
-  const width = Math.min(14, longest * .42), rise = Math.min(14, b.height * .58);
+  const center = ring.reduce(
+    (p, q) => ({ x: p.x + q.x / ring.length, z: p.z + q.z / ring.length }),
+    { x: 0, z: 0 },
+  );
+  const vx = -uz,
+    vz = ux;
+  const depth = Math.max(
+    ...ring.map((p) => Math.abs((p.x - center.x) * vx + (p.z - center.z) * vz)),
+  );
+  const floor = (foundationFloor ?? Math.min(...ring.map((p) => p.y))) - 0.3;
+  const width = Math.min(14, longest * 0.42),
+    rise = Math.min(14, b.height * 0.58);
   const point = (side: number, end: number, y: number): Point => ({
-    x: center.x + ux * side * width / 2 + vx * end * depth,
+    x: center.x + (ux * side * width) / 2 + vx * end * depth,
     y,
-    z: center.z + uz * side * width / 2 + vz * end * depth,
+    z: center.z + (uz * side * width) / 2 + vz * end * depth,
   });
   const mask = roadPrism(
-    { x: center.x - vx * (depth + 2), y: floor, z: center.z - vz * (depth + 2) },
-    { x: center.x + vx * (depth + 2), y: floor, z: center.z + vz * (depth + 2) },
+    {
+      x: center.x - vx * (depth + 2),
+      y: floor,
+      z: center.z - vz * (depth + 2),
+    },
+    {
+      x: center.x + vx * (depth + 2),
+      y: floor,
+      z: center.z + vz * (depth + 2),
+    },
     width,
     10000,
     rise,
   );
-  return { mask, interior: [
-    ...[-1, 1].map(side => [point(side, -1, floor), point(side, 1, floor), point(side, 1, floor + rise), point(side, -1, floor + rise)]),
-    [point(-1, -1, floor + rise), point(1, -1, floor + rise), point(1, 1, floor + rise), point(-1, 1, floor + rise)],
-  ] };
+  return {
+    mask,
+    interior: [
+      ...[-1, 1].map((side) => [
+        point(side, -1, floor),
+        point(side, 1, floor),
+        point(side, 1, floor + rise),
+        point(side, -1, floor + rise),
+      ]),
+      [
+        point(-1, -1, floor + rise),
+        point(1, -1, floor + rise),
+        point(1, 1, floor + rise),
+        point(-1, 1, floor + rise),
+      ],
+    ],
+  };
 }
 function parsedColour(value?: string): Colour | undefined {
   let hex = named[value?.toLowerCase() || ''] || value || '';
@@ -194,9 +236,9 @@ function colour(b: Building): Colour {
       [0.46, 0.56, 0.6],
     ],
     [
-      [0.73, 0.51, 0.34],
-      [0.78, 0.64, 0.43],
-      [0.54, 0.39, 0.29],
+      [0.48, 0.35, 0.25],
+      [0.56, 0.44, 0.31],
+      [0.39, 0.3, 0.24],
     ],
   ];
   return palettes[facadeStyle(b)][Math.min(2, Math.floor(b.colour * 3))];
@@ -232,22 +274,52 @@ function clip(points: Point[], plane: (p: Point) => number) {
   return output;
 }
 
-export function appendBuildingSilhouette(b: Building, mesh: MeshData, foundationFloor?: number) {
+export function appendBuildingSilhouette(
+  b: Building,
+  mesh: MeshData,
+  foundationFloor?: number,
+) {
   const rings = [b.footprint, ...(b.holes || [])],
-    flat = rings.flat(), holes: number[] = [];
+    flat = rings.flat(),
+    holes: number[] = [];
   let count = b.footprint.length;
-  for (const ring of rings.slice(1)) { holes.push(count); count += ring.length; }
-  const floor = (foundationFloor ?? Math.min(...flat.map(p => p.y))) + (b.supportMinHeight ?? b.minHeight ?? 0) - .3,
-    top = Math.max(...flat.map(p => p.y)) + b.height,
-    wallColour = colour(b),
-    roofColour = parsedColour(b.roofColour) || wallColour.map(v => v * .48) as Colour;
-  for (const ring of rings) for (let i = 0; i < ring.length; i++) {
-    const a = ring[i], next = ring[(i + 1) % ring.length];
-    emitPolygon(mesh, [{...a,y:floor},{...next,y:floor},{...next,y:top},{...a,y:top}], wallColour);
+  for (const ring of rings.slice(1)) {
+    holes.push(count);
+    count += ring.length;
   }
-  const indices = earcut(flat.flatMap(p => [p.x,p.z]), holes);
+  const floor =
+      (foundationFloor ?? Math.min(...flat.map((p) => p.y))) +
+      (b.supportMinHeight ?? b.minHeight ?? 0) -
+      0.3,
+    top = Math.max(...flat.map((p) => p.y)) + b.height,
+    wallColour = colour(b),
+    roofColour =
+      parsedColour(b.roofColour) || (wallColour.map((v) => v * 0.48) as Colour);
+  for (const ring of rings)
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i],
+        next = ring[(i + 1) % ring.length];
+      emitPolygon(
+        mesh,
+        [
+          { ...a, y: floor },
+          { ...next, y: floor },
+          { ...next, y: top },
+          { ...a, y: top },
+        ],
+        wallColour,
+      );
+    }
+  const indices = earcut(
+    flat.flatMap((p) => [p.x, p.z]),
+    holes,
+  );
   for (let i = 0; i < indices.length; i += 3)
-    emitPolygon(mesh, indices.slice(i,i+3).map(index => ({...flat[index],y:top})), roofColour);
+    emitPolygon(
+      mesh,
+      indices.slice(i, i + 3).map((index) => ({ ...flat[index], y: top })),
+      roofColour,
+    );
 }
 export function appendBuilding(
   b: Building,
@@ -257,6 +329,7 @@ export function appendBuilding(
   openings: Prism[] = [],
   foundationFloor?: number,
   detailedEdge?: (ring: Point[], index: number) => boolean,
+  bareFacades: MeshData[] = [],
 ) {
   if (b.envelopeHeight !== undefined)
     b = { ...b, height: b.envelopeHeight, roof: 'flat', roofHeight: 0 };
@@ -271,9 +344,13 @@ export function appendBuilding(
     )
       return;
   }
-  const detailed =
-    lod === 0 && !(b.part && b.group) && hasFacadeWindows(b);
-  const gateOpening = b.kind === 'triumphal_arch' ? triumphalOpening(b, foundationFloor) : undefined;
+  const windowed = hasFacadeWindows(b),
+    detailed = lod === 0 && !(b.part && b.group) && windowed;
+  const bareDetailed = lod === 0 && !windowed;
+  const gateOpening =
+    b.kind === 'triumphal_arch'
+      ? triumphalOpening(b, foundationFloor)
+      : undefined;
   const masks = gateOpening ? [...openings, gateOpening.mask] : openings;
   const polygon = (
     mesh: MeshData,
@@ -348,6 +425,7 @@ export function appendBuilding(
   const roofY = (p: Point) => Math.min(...planes.map((plane) => plane(p)));
   for (const side of gateOpening?.interior || []) emitPolygon(shell, side, c);
   const style = facadeStyle(b),
+    technicalHeight = b.technicalHeight || 0,
     floorHeight = Math.max(
       2.5,
       (eaves - floor) /
@@ -355,12 +433,18 @@ export function appendBuilding(
     );
   for (const ring of rings)
     for (let i = 0; i < ring.length; i++) {
-      const edgeDetailed = detailed && (!detailedEdge || detailedEdge(ring, i));
+      const allowed = !detailedEdge || detailedEdge(ring, i),
+        edgeDetailed = detailed && allowed,
+        edgeBare = bareDetailed && allowed;
       const a = ring[i],
         b = ring[(i + 1) % ring.length],
         length = distance2(a, b),
         cuts = [0, 1];
-      const facade = edgeDetailed ? facades[style] : shell;
+      const facade = edgeDetailed
+        ? facades[style]
+        : edgeBare
+          ? bareFacades[style] || shell
+          : shell;
       for (let j = 0; j < planes.length; j++)
         for (let k = j + 1; k < planes.length; k++) {
           const da = planes[j](a) - planes[k](a),
@@ -373,28 +457,62 @@ export function appendBuilding(
           end = mixPoint(a, b, cuts[j]),
           ya = roofY(start),
           yb = roofY(end);
-        polygon(
-          facade,
-          [
-            { ...start, y: floor },
-            { ...end, y: floor },
-            { ...end, y: yb },
-            { ...start, y: ya },
-          ],
-          c,
-          edgeDetailed
+        const uv = (
+          textured: boolean,
+          low: number,
+          highA: number,
+          highB: number,
+        ) =>
+          textured
             ? [
                 (cuts[j - 1] * length) / 3.6,
-                0,
+                (low - floor) / floorHeight,
                 (cuts[j] * length) / 3.6,
-                0,
+                (low - floor) / floorHeight,
                 (cuts[j] * length) / 3.6,
-                (yb - floor) / floorHeight,
+                (highB - floor) / floorHeight,
                 (cuts[j - 1] * length) / 3.6,
-                (ya - floor) / floorHeight,
+                (highA - floor) / floorHeight,
               ]
-            : undefined,
-        );
+            : undefined;
+        const technical = technicalHeight,
+          technicalA = Math.max(floor, ya - technical),
+          technicalB = Math.max(floor, yb - technical);
+        if (edgeDetailed && technical > 0) {
+          polygon(
+            facade,
+            [
+              { ...start, y: floor },
+              { ...end, y: floor },
+              { ...end, y: technicalB },
+              { ...start, y: technicalA },
+            ],
+            c,
+            uv(true, floor, technicalA, technicalB),
+          );
+          polygon(
+            bareFacades[style] || shell,
+            [
+              { ...start, y: technicalA },
+              { ...end, y: technicalB },
+              { ...end, y: yb },
+              { ...start, y: ya },
+            ],
+            c,
+            uv(!!bareFacades[style], technicalA, ya, yb),
+          );
+        } else
+          polygon(
+            facade,
+            [
+              { ...start, y: floor },
+              { ...end, y: floor },
+              { ...end, y: yb },
+              { ...start, y: ya },
+            ],
+            c,
+            uv(edgeDetailed || edgeBare, floor, ya, yb),
+          );
       }
       if (edgeDetailed) {
         const area = ring.reduce(

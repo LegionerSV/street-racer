@@ -15,6 +15,7 @@
     "format": "oxfmt",
     "generate:map-tiles": "node --experimental-transform-types scripts/generate-map-tiles.ts",
     "generate:map-full": "node --experimental-transform-types scripts/generate-full-map-coverage.ts",
+    "generate:map-overlay": "node --experimental-transform-types scripts/generate-full-map-coverage.ts",
     "verify:map-pilot": "node --experimental-transform-types scripts/verify-map-pilot.ts",
     "publish:map-tiles": "node --experimental-transform-types scripts/publish-map-tiles.ts",
     "test": "vitest run",

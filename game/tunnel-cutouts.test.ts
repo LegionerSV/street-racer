@@ -43,19 +43,25 @@ function portalRegion(): RegionData {
         type: 'way',
         id: 10,
         nodes: [1, 2],
-        tags: { highway: 'primary', oneway: 'yes' },
+        tags: { highway: 'primary', oneway: 'yes', lanes: '4' },
       },
       {
         type: 'way',
         id: 11,
         nodes: [2, 3],
-        tags: { highway: 'primary', oneway: 'yes', tunnel: 'yes', layer: '-1' },
+        tags: {
+          highway: 'primary',
+          oneway: 'yes',
+          lanes: '4',
+          tunnel: 'yes',
+          layer: '-1',
+        },
       },
       {
         type: 'way',
         id: 12,
         nodes: [3, 4],
-        tags: { highway: 'primary', oneway: 'yes' },
+        tags: { highway: 'primary', oneway: 'yes', lanes: '4' },
       },
       {
         type: 'way',

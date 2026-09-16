@@ -85,16 +85,21 @@ it('держит osmium-фильтры эквивалентными катего
   expect(filters).toContain('living_street');
   expect(filters).toContain('n/highway=traffic_signals');
   expect(filters).toContain('r/type=restriction');
-  for (const category of [
-    'building',
-    'building:part',
-    'natural=water,wood,tree',
-    'waterway=riverbank',
-    'landuse=forest,grass,meadow,reservoir',
-    'leisure=park',
+  for (const [filter, overpass] of [
+    ['building', '["building"]'],
+    ['building:part', '["building:part"]'],
+    ['r/building:part', 'relation["building:part"]'],
+    ['natural=water,wood,tree', '["natural"'],
+    ['waterway=riverbank', '["waterway"="riverbank"]'],
+    ['landuse=forest,grass,meadow,reservoir', '["landuse"'],
+    ['leisure=park', '["leisure"="park"]'],
+    ['place=square', '["place"="square"]'],
+    ['area:highway', '["area:highway"]'],
+    ['historic=citywalls', '["historic"="citywalls"]'],
+    ['barrier=city_wall,wall', '["barrier"'],
   ]) {
-    expect(filters).toContain(category);
-    expect(query).toContain(category.split('=')[0]);
+    expect(filters).toContain(filter);
+    expect(query).toContain(overpass);
   }
 });
 

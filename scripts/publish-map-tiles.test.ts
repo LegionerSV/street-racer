@@ -16,6 +16,7 @@ import { sourceTileBounds } from '../game/source-tiles';
 import {
   emitPublishCommands,
   createS3ObjectStore,
+  createYcCliObjectStore,
   publishMapTiles,
   type ObjectStore,
   type StoredObject,
@@ -168,6 +169,59 @@ it('проверяет staging, публикует каталог последн
   );
 });
 
+it('добавляет частичный dataset поверх базы и сохраняет базу как fallback', async () => {
+  // Arrange
+  const { staging } = await stagingFixture(),
+    store = new MemoryStore(),
+    catalogKey = 'public/maps/catalog-v1.json',
+    baseDataset = {
+      datasetId: 'moscow-full-20260911',
+      schemaVersion: TILE_ARTIFACT_SCHEMA_VERSION,
+      tileBuildVersion: TILE_BUILD_VERSION,
+      path: `maps/v1/${TILE_BUILD_VERSION}/moscow-full-20260911`,
+      tiles: {
+        '15/19809/10243': { bytes: 777, checksum: 'crc32:12345678' },
+      },
+    },
+    currentBody = new TextEncoder().encode(
+      JSON.stringify({
+        schemaVersion: 1,
+        generatedAt: '2026-09-11T12:00:00.000Z',
+        activeDatasets: [baseDataset.datasetId],
+        datasets: [baseDataset],
+      }),
+    );
+  store.objects.set(catalogKey, {
+    body: currentBody,
+    contentLength: currentBody.byteLength,
+    contentType: 'application/json; charset=utf-8',
+    cacheControl: 'no-cache',
+    etag: `"${createHash('md5').update(currentBody).digest('hex')}"`,
+  });
+
+  // Act
+  await publishMapTiles({
+    staging,
+    datasetId: 'moscow-kremlin-20260916',
+    prefix: 'public',
+    store,
+    generatedAt: '2026-09-16T12:00:00.000Z',
+  });
+
+  // Assert
+  const catalog = JSON.parse(
+    new TextDecoder().decode(store.objects.get(catalogKey)?.body),
+  );
+  expect(catalog.activeDatasets).toEqual([
+    'moscow-kremlin-20260916',
+    'moscow-full-20260911',
+  ]);
+  expect(
+    catalog.datasets.map((item: { datasetId: string }) => item.datasetId),
+  ).toEqual(['moscow-kremlin-20260916', 'moscow-full-20260911']);
+  expect(catalog.datasets[1]).toEqual(baseDataset);
+});
+
 it('не активирует dataset при частично неуспешной загрузке', async () => {
   // Arrange
   const { staging } = await stagingFixture(),
@@ -210,7 +264,7 @@ it('dry-run не обращается к бакету и отклоняет не
   ).rejects.toThrow('Staging manifest не завершён');
 });
 
-it('реальный CLI выполняет dry-run и не выводит переданные credentials', async () => {
+it('реальный CLI выполняет dry-run без S3-настроек и не выводит credentials', async () => {
   // Arrange
   const { staging } = await stagingFixture(),
     script = join(process.cwd(), 'scripts', 'publish-map-tiles.ts');
@@ -223,22 +277,75 @@ it('реальный CLI выполняет dry-run и не выводит пе�
     staging,
     '--dataset-id',
     'cli-dry-run',
-    '--endpoint',
-    'https://storage.yandexcloud.net',
-    '--bucket',
-    'example-bucket',
-    '--access-key',
-    'public-id',
-    '--secret-key',
-    'secret-value',
     '--dry-run',
   ]);
 
   // Assert
   expect(stdout).toContain('"kind": "publish-report"');
   expect(stdout).toContain('"planned": 1');
-  expect(`${stdout}${stderr}`).not.toContain('public-id');
-  expect(`${stdout}${stderr}`).not.toContain('secret-value');
+  expect(`${stdout}${stderr}`).not.toContain('AWS_ACCESS_KEY_ID');
+  expect(`${stdout}${stderr}`).not.toContain('AWS_SECRET_ACCESS_KEY');
+});
+
+it('YC CLI читает, условно записывает и проверяет объект без статических ключей', async () => {
+  // Arrange
+  const body = new TextEncoder().encode('overlay'),
+    etag = `"${createHash('md5').update(body).digest('hex')}"`,
+    headers = {
+      etag,
+      content_length: String(body.byteLength),
+      content_type: 'application/json',
+      content_encoding: 'br',
+      cache_control: 'public, max-age=31536000, immutable',
+      metadata: { 'tile-checksum': 'crc32:12345678' },
+    },
+    runner = vi.fn(async (arguments_: string[]) => {
+      const operation = arguments_[2];
+      if (operation === 'head-object')
+        return { stdout: JSON.stringify(headers), stderr: '' };
+      if (operation === 'get-object') {
+        await writeFile(arguments_.at(-1)!, body);
+        return { stdout: '{}', stderr: '' };
+      }
+      if (operation === 'put-object') return { stdout: '{}', stderr: '' };
+      throw new Error(`Неизвестная тестовая операция ${operation}.`);
+    }),
+    store = createYcCliObjectStore({
+      bucket: 'example-bucket',
+      runner,
+    });
+
+  // Act
+  const existing = await store.get('maps/overlay.tile.json.br');
+  await store.put(
+    'maps/overlay.tile.json.br',
+    {
+      body,
+      contentLength: body.byteLength,
+      contentType: 'application/json',
+      contentEncoding: 'br',
+      cacheControl: 'public, max-age=31536000, immutable',
+      metadata: { 'tile-checksum': 'crc32:12345678' },
+    },
+    { ifMatch: etag },
+  );
+
+  // Assert
+  expect(existing).toMatchObject({ contentLength: body.byteLength, etag });
+  expect([...existing!.body]).toEqual([...body]);
+  const putArguments = runner.mock.calls.find(
+    ([arguments_]) => arguments_[2] === 'put-object',
+  )?.[0];
+  expect(putArguments).toEqual(
+    expect.arrayContaining([
+      '--content-encoding',
+      'br',
+      '--content-md5',
+      createHash('md5').update(body).digest('base64'),
+      '--metadata',
+      'tile-checksum=crc32:12345678',
+    ]),
+  );
 });
 
 it('режим команд не раскрывает credentials и не выполняет запросы', async () => {

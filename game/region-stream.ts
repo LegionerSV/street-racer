@@ -92,12 +92,20 @@ export function mapStreamingPolicy(quality: Settings['quality']) {
   return MAP_STREAMING_POLICIES[quality];
 }
 
-export function mapForwardRows(policy: MapStreamingPolicy, speedMetersPerSecond: number) {
+export function mapForwardRows(
+  policy: MapStreamingPolicy,
+  speedMetersPerSecond: number,
+) {
   return speedMetersPerSecond > 2 ? policy.forwardTileRows : 0;
 }
 
-export function mapRadiusAtSpeed(policy: MapStreamingPolicy, speedMetersPerSecond: number) {
-  return speedMetersPerSecond > 2 ? policy.targetRadiusMeters : policy.blockingRadiusMeters;
+export function mapRadiusAtSpeed(
+  policy: MapStreamingPolicy,
+  speedMetersPerSecond: number,
+) {
+  return speedMetersPerSecond > 2
+    ? policy.targetRadiusMeters
+    : policy.blockingRadiusMeters;
 }
 
 export function startupTiles(center: Center, radiusMeters = 1000) {
@@ -382,7 +390,8 @@ export class RegionStream {
     mode: MapDetailMode,
     raw?: ElementBreakdown,
   ) {
-    const requestedMode = this.closeCourtyards && mode === 'standard' ? 'minimal' : mode;
+    const requestedMode =
+      this.closeCourtyards && mode === 'standard' ? 'minimal' : mode;
     const currentMode = tile.checksum.split('|')[1] as
         | MapDetailMode
         | undefined,
@@ -660,9 +669,14 @@ export class RegionStream {
   async next(
     p: Point,
     heading: number,
-    latest?: () => { position: Point; heading: number; speedMetersPerSecond?: number },
+    latest?: () => {
+      position: Point;
+      heading: number;
+      speedMetersPerSecond?: number;
+    },
     speedMetersPerSecond = 0,
     compactUpdate = false,
+    pinnedTileKeys: Iterable<string> = [],
   ): Promise<RegionData | null> {
     this.control.signal.throwIfAborted();
     let order = tileOrder(
@@ -706,8 +720,14 @@ export class RegionStream {
         order = tileOrder(
           p,
           heading,
-          mapRadiusAtSpeed(this.policy, current.speedMetersPerSecond ?? speedMetersPerSecond),
-          mapForwardRows(this.policy, current.speedMetersPerSecond ?? speedMetersPerSecond),
+          mapRadiusAtSpeed(
+            this.policy,
+            current.speedMetersPerSecond ?? speedMetersPerSecond,
+          ),
+          mapForwardRows(
+            this.policy,
+            current.speedMetersPerSecond ?? speedMetersPerSecond,
+          ),
           this.center,
         );
       }
@@ -729,14 +749,15 @@ export class RegionStream {
           });
         } else if (wanted.has(key)) candidate.set(key, result.tile);
       }
-      const pinned = new Set(
-        sourceTileKeysForLocalBounds(this.center, {
+      const pinned = new Set([
+        ...sourceTileKeysForLocalBounds(this.center, {
           minX: p.x - 350,
           maxX: p.x + 350,
           minZ: p.z - 350,
           maxZ: p.z + 350,
         }),
-      );
+        ...pinnedTileKeys,
+      ]);
       const retain = (tiles: Map<string, MapTile>) =>
           retainTiles(
             tiles,

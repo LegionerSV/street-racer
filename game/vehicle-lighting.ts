@@ -6,25 +6,32 @@ import {
   Constants,
   RawTexture,
   Texture,
+  Mesh,
+  StandardMaterial,
+  VertexData,
   type AbstractMesh,
   type Scene,
 } from '@babylonjs/core';
 import type { CarVisual } from './visuals';
 import type { Settings } from './types';
+import type { SurfaceContact } from './surface-contact';
 
 export function headlightPattern(size: number) {
   const pixels = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const u = (x + .5) / size, v = (y + .5) / size;
-    const cutoff = u < .52 ? .43 : .43 - .12 * Math.min(1, (u - .52) / .08);
-    const edge = Math.max(0, Math.min(1, (v - cutoff + .012) / .024));
-    const spread = Math.max(0, 1 - Math.pow(Math.abs(u - .5) / .52, 4));
-    const reach = Math.max(0, 1 - Math.pow(Math.max(0, v - .83) / .17, 2));
-    const brightness = Math.round(255 * edge * spread * reach);
-    const i = (y * size + x) * 4;
-    pixels[i] = pixels[i + 1] = pixels[i + 2] = brightness;
-    pixels[i + 3] = 255;
-  }
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const u = (x + 0.5) / size,
+        v = (y + 0.5) / size;
+      const cutoff =
+        u < 0.52 ? 0.43 : 0.43 - 0.12 * Math.min(1, (u - 0.52) / 0.08);
+      const edge = Math.max(0, Math.min(1, (v - cutoff + 0.012) / 0.024));
+      const spread = Math.max(0, 1 - Math.pow(Math.abs(u - 0.5) / 0.52, 4));
+      const reach = Math.max(0, 1 - Math.pow(Math.max(0, v - 0.83) / 0.17, 2));
+      const brightness = Math.round(255 * edge * spread * reach);
+      const i = (y * size + x) * 4;
+      pixels[i] = pixels[i + 1] = pixels[i + 2] = brightness;
+      pixels[i + 3] = 255;
+    }
   return pixels;
 }
 
@@ -68,11 +75,61 @@ export class VehicleLighting {
   private clock = 0;
   private quality = '';
   private pattern: RawTexture;
-  constructor(private scene: Scene) {
+  private roadBeam: Mesh;
+  private roadBeamMaterial: StandardMaterial;
+  constructor(
+    private scene: Scene,
+    private surface?: (
+      x: number,
+      z: number,
+      referenceY: number,
+    ) => SurfaceContact,
+  ) {
     const size = 128;
-    this.pattern = new RawTexture(headlightPattern(size), size, size, Constants.TEXTUREFORMAT_RGBA, scene, false, true, Texture.BILINEAR_SAMPLINGMODE);
+    this.pattern = new RawTexture(
+      headlightPattern(size),
+      size,
+      size,
+      Constants.TEXTUREFORMAT_RGBA,
+      scene,
+      false,
+      true,
+      Texture.BILINEAR_SAMPLINGMODE,
+    );
     this.pattern.gammaSpace = false;
     this.pattern.wrapU = this.pattern.wrapV = Texture.CLAMP_ADDRESSMODE;
+    this.roadBeam = new Mesh('vehicle-headlight-road-cutoff', scene);
+    this.roadBeam.isPickable = false;
+    this.roadBeam.receiveShadows = false;
+    const rows = 9,
+      positions = Array.from({ length: rows * 2 * 3 }, () => 0),
+      indices: number[] = [],
+      uvs: number[] = [];
+    for (let row = 0; row < rows; row++) {
+      uvs.push(0, row / (rows - 1), 1, row / (rows - 1));
+      if (row < rows - 1) {
+        const base = row * 2;
+        indices.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+      }
+    }
+    const data = new VertexData();
+    data.positions = positions;
+    data.indices = indices;
+    data.uvs = uvs;
+    data.applyToMesh(this.roadBeam, true);
+    this.roadBeamMaterial = new StandardMaterial(
+      'vehicle-headlight-road-cutoff-material',
+      scene,
+    );
+    this.roadBeamMaterial.diffuseColor = Color3.Black();
+    this.roadBeamMaterial.emissiveColor = new Color3(0.76, 0.88, 1);
+    this.roadBeamMaterial.emissiveTexture = this.pattern;
+    this.roadBeamMaterial.opacityTexture = this.pattern;
+    this.roadBeamMaterial.disableLighting = true;
+    this.roadBeamMaterial.backFaceCulling = false;
+    this.roadBeamMaterial.zOffset = -3;
+    this.roadBeam.material = this.roadBeamMaterial;
+    this.roadBeam.setEnabled(false);
     for (let i = 0; i < 3; i++) {
       const light = new SpotLight(
         'vehicle-beam-' + i,
@@ -122,6 +179,30 @@ export class VehicleLighting {
           Vector3.DistanceSquared(b.root.position, player.root.position),
       )
       .slice(0, quality === 'mobile' ? 1 : 2);
+    const beamActive = daylight < 0.9 && player.root.isEnabled();
+    this.roadBeam.setEnabled(beamActive);
+    if (beamActive) {
+      const rawForward = player.root.getDirection(Vector3.Forward()),
+        center = player.root.position,
+        vertices: number[] = [];
+      for (let row = 0; row < 9; row++) {
+        const distance = 3 + row * 6.25,
+          forward = rawForward.normalize(),
+          right = new Vector3(forward.z, 0, -forward.x).normalize(),
+          half = 1.25 + distance * 0.16;
+        for (const side of [-1, 1]) {
+          const p = center
+              .add(forward.scale(distance))
+              .add(right.scale(half * side)),
+            contact = this.surface?.(p.x, p.z, center.y);
+          vertices.push(p.x, (contact?.height ?? center.y - 0.83) + 0.028, p.z);
+        }
+      }
+      this.roadBeam.updateVerticesData('position', vertices);
+      this.roadBeam.refreshBoundingInfo();
+      this.roadBeamMaterial.alpha =
+        0.5 * (1 - Math.max(0, Math.min(1, daylight)) * 0.85);
+    }
     this.clock -= dt;
     const refresh = this.clock <= 0;
     if (refresh) this.clock = 0.2;
@@ -176,6 +257,8 @@ export class VehicleLighting {
       p.shadow.dispose();
       p.light.dispose();
     }
+    this.roadBeam.dispose();
+    this.roadBeamMaterial.dispose();
     this.pattern.dispose();
   }
 }

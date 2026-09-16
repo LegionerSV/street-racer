@@ -3,9 +3,12 @@ import { buildWorld } from './network';
 import { buildChunk, indexWorld } from './chunks';
 import { laneCaption } from './lanes';
 import { projectOnSegment } from './geo';
-import { alignCarriagewayElevations } from './carriageways';
+import {
+  alignCarriagewayElevations,
+  alignGroundIntersections,
+} from './carriageways';
 import { reconcileWorld } from './world-update';
-import type { RegionData } from './types';
+import type { Edge, RegionData } from './types';
 
 function input(lanes = 2, separation = 7.8): RegionData {
   return {
@@ -54,16 +57,31 @@ it('согласует подгруженное встречное направ�
   // Arrange — соседнего направления ещё не было в исходном окне данных.
   const region = input(3, 18);
   region.elements.at(-1)!.tags!.lanes = '3';
-  region.elevation = { width: 61, size: 1200, values: Float32Array.from({ length: 61 * 61 }, (_, i) => (Math.floor(i / 61) * 20 - 600) * .18) };
-  const previous = buildWorld({ ...region, elements: region.elements.filter(e => e.type !== 'way' || e.id === 10) });
-  const before = structuredClone(previous.edges.map(e => e.points));
+  region.elevation = {
+    width: 61,
+    size: 1200,
+    values: Float32Array.from(
+      { length: 61 * 61 },
+      (_, i) => (Math.floor(i / 61) * 20 - 600) * 0.18,
+    ),
+  };
+  const previous = buildWorld({
+    ...region,
+    elements: region.elements.filter((e) => e.type !== 'way' || e.id === 10),
+  });
+  const before = structuredClone(previous.edges.map((e) => e.points));
   // Act
-  const next = reconcileWorld(previous, buildWorld({ ...region, heightDatum: previous.heightDatum }));
+  const next = reconcileWorld(
+    previous,
+    buildWorld({ ...region, heightDatum: previous.heightDatum }),
+  );
   // Assert — старое полотно неподвижно, новое согласовано с ним по всей ширине улицы.
-  expect(previous.edges.map(e => e.points)).toEqual(before);
-  expect(next.edges.filter(e => e.way === 10).map(e => e.points)).toEqual(before);
-  const heights = next.edges.flatMap(e => e.points.map(p => p.y));
-  expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(.05);
+  expect(previous.edges.map((e) => e.points)).toEqual(before);
+  expect(next.edges.filter((e) => e.way === 10).map((e) => e.points)).toEqual(
+    before,
+  );
+  const heights = next.edges.flatMap((e) => e.points.map((p) => p.y));
+  expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(0.05);
 });
 it.each(['right', 'left'] as const)(
   'согласует высоты встречных направлений, сохраняя продольный склон: %s',
@@ -111,6 +129,45 @@ it.each(['right', 'left'] as const)(
     expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(3.5);
   },
 );
+
+it('согласует высоты геометрически пересекающихся наземных дорог без общего OSM-узла', () => {
+  // Arrange
+  const edge = (id: number, way: number, points: Edge['points']): Edge => ({
+    id,
+    stableId: `${way}/1/2/0`,
+    way,
+    from: way * 10,
+    to: way * 10 + 1,
+    length: 40,
+    width: 7,
+    lanes: 2,
+    speed: 14,
+    name: 'Улица',
+    bridge: false,
+    tunnel: false,
+    layer: 0,
+    blocked: false,
+    points,
+  });
+  const horizontal = edge(0, 1, [
+    { x: -30, y: 0, z: 0 },
+    { x: 0, y: 0, z: 0 },
+    { x: 30, y: 0, z: 0 },
+  ]);
+  const vertical = edge(1, 2, [
+    { x: 0, y: 2, z: -30 },
+    { x: 0, y: 2, z: 0 },
+    { x: 0, y: 2, z: 30 },
+  ]);
+  // Act
+  alignGroundIntersections([horizontal, vertical]);
+  // Assert
+  expect(
+    Math.abs(horizontal.points[1].y - vertical.points[1].y),
+  ).toBeLessThanOrEqual(0.15);
+  expect(horizontal.points[0].y).toBeCloseTo(0, 6);
+  expect(vertical.points[0].y).toBeCloseTo(2, 6);
+});
 it('не создаёт ступень на цепочке коротких боковых примыканий', () => {
   // Arrange
   const region = input(3, 18);

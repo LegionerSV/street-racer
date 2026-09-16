@@ -104,6 +104,8 @@ describe('TileArtifactV1', () => {
 
   it('использует отдельную версию сборки source-тайлов', () => {
     // Arrange / Act / Assert
+    expect(TILE_ARTIFACT_SCHEMA_VERSION).toBe(1);
+    expect(TILE_BUILD_VERSION).toBe('2026-09-09-source-tile-1');
     expect(TILE_BUILD_VERSION).not.toBe(MAP_BUILD_VERSION);
     expect(artifact().tileBuildVersion).toBe(TILE_BUILD_VERSION);
   });

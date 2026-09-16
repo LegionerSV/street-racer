@@ -113,6 +113,23 @@ export function coverageBounds(
   );
 }
 
+export function routeCoverageTileKeys(
+  points: Point[],
+  center: Center,
+  margin = 120,
+) {
+  const keys = new Set<string>();
+  for (const point of resample(points, 20))
+    for (const key of sourceTileKeysForLocalBounds(center, {
+      minX: point.x - margin,
+      maxX: point.x + margin,
+      minZ: point.z - margin,
+      maxZ: point.z + margin,
+    }))
+      keys.add(key);
+  return [...keys];
+}
+
 export function routeHasCoverage(
   points: Point[],
   tiles: string[] | undefined,
@@ -123,18 +140,17 @@ export function routeHasCoverage(
   const loaded = new Set(tiles);
   return (
     points.length > 0 &&
-    resample(points, 20).every((point) =>
-      sourceTileKeysForLocalBounds(center, {
-        minX: point.x - margin,
-        maxX: point.x + margin,
-        minZ: point.z - margin,
-        maxZ: point.z + margin,
-      }).every((key) => loaded.has(key)),
+    routeCoverageTileKeys(points, center, margin).every((key) =>
+      loaded.has(key),
     )
   );
 }
 
-export function routeHasDrivingCoverage(points: Point[], tiles: string[] | undefined, center: Center) {
+export function routeHasDrivingCoverage(
+  points: Point[],
+  tiles: string[] | undefined,
+  center: Center,
+) {
   if (!tiles) return true;
   if (points.length < 2) return false;
   const loaded = new Set(tiles);
@@ -143,19 +159,8 @@ export function routeHasDrivingCoverage(points: Point[], tiles: string[] | undef
     const next = samples[Math.min(index + 1, samples.length - 1)];
     const previous = samples[Math.max(index - 1, 0)];
     const heading = Math.atan2(next.x - previous.x, next.z - previous.z);
-    return criticalChunks(point, heading, true).every(key => chunkHasCoverage(loaded, key, center));
+    return criticalChunks(point, heading, true).every((key) =>
+      chunkHasCoverage(loaded, key, center),
+    );
   });
-}
-
-export function needsRaceRecovery(
-  active: boolean,
-  loaded: Set<string> | null | undefined,
-  critical: string[],
-  center: Center,
-) {
-  return (
-    active &&
-    !!loaded &&
-    critical.some((key) => !chunkHasCoverage(loaded, key, center))
-  );
 }

@@ -86,8 +86,13 @@ it('запрашивает только используемые автомоб�
   expect(q).toContain('living_street');
   expect(q).not.toContain('way["highway"]');
   expect(q).toContain('way["building:part"]');
+  expect(q).toContain('relation["building:part"]');
   expect(q).toContain('relation["type"="restriction"]');
   expect(q).toContain('nwr["waterway"="riverbank"]');
+  expect(q).toContain('nwr["place"="square"]');
+  expect(q).toContain('nwr["area:highway"]');
+  expect(q).toContain('nwr["historic"="citywalls"]');
+  expect(q).toContain('nwr["barrier"~"^(city_wall|wall)$"]');
   expect(q).toContain('(._;>;);out body;');
 });
 it('превышение времени выполнения делит участок и сохраняет успешные части', async () => {
@@ -360,7 +365,7 @@ it('очередь отменяется вместе с активным зап�
 it('использует малые части, сохранённые прежней версией без плана деления', async () => {
   // Arrange
   const store = memory();
-  await store.put(`osm:2:${mapCellQuery(splitMapBox(box)[0])}`, {
+  await store.put(`osm:3:${mapCellQuery(splitMapBox(box)[0])}`, {
     savedAt: Date.now(),
     elements: [{ type: 'node', id: 1 }],
   });
@@ -472,11 +477,11 @@ it('дробление ограничено одним уровнем, а час
   await failure;
   // Assert
   expect(fetcher).toHaveBeenCalledTimes(3);
-  expect(await store.get(`osm:2:${mapCellQuery(box)}`)).toMatchObject({
+  expect(await store.get(`osm:3:${mapCellQuery(box)}`)).toMatchObject({
     elements: [],
     split: true,
   });
   expect(
-    await store.get(`osm:2:${mapCellQuery(splitMapBox(box)[0])}`),
+    await store.get(`osm:3:${mapCellQuery(splitMapBox(box)[0])}`),
   ).toBeUndefined();
 });

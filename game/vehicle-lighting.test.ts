@@ -1,7 +1,11 @@
 import { expect, it } from 'vitest';
 import { NullEngine, Scene, Vector3 } from '@babylonjs/core';
 import { createCar, createTrafficCar } from './visuals';
-import { headlightCasters, headlightPattern, VehicleLighting } from './vehicle-lighting';
+import {
+  headlightCasters,
+  headlightPattern,
+  VehicleLighting,
+} from './vehicle-lighting';
 
 it('ближний свет имеет горизонтальную отсечку со ступенькой справа', () => {
   // Arrange
@@ -33,7 +37,9 @@ it('дневной свет фар не выбеливает асфальт, к�
     lights.update(1, car, [], 'medium', 0.45);
     expect(beam.isEnabled()).toBe(true);
     expect(beam.shadowEnabled).toBe(false);
-    expect(beam.getShadowGenerator()!.getShadowMap()!.renderList).toHaveLength(0);
+    expect(beam.getShadowGenerator()!.getShadowMap()!.renderList).toHaveLength(
+      0,
+    );
     lights.update(1, car, [], 'medium', 0);
     expect(beam.intensity).toBeGreaterThan(1);
     expect(beam.intensity).toBeLessThanOrEqual(3);
@@ -94,4 +100,41 @@ it('машины трафика перекрывают свет фар; скры
   traffic.dispose();
   scene.dispose();
   engine.dispose();
+});
+
+it('рисует ночную cutoff-маску отдельной лентой по поверхности дороги', () => {
+  // Arrange
+  const engine = new NullEngine(),
+    scene = new Scene(engine),
+    player = createCar(scene, '#223344', 'player');
+  player.root.position.set(2, 1, 3);
+  const lights = new VehicleLighting(scene, (x, z) => ({
+    height: x * 0.01 + z * 0.02,
+    normal: Vector3.Up(),
+  }));
+  try {
+    // Act
+    lights.update(1 / 60, player, [], 'medium', 0);
+    const beam = scene.getMeshByName('vehicle-headlight-road-cutoff')!,
+      positions = Array.from(beam.getVerticesData('position')!);
+    // Assert
+    expect(beam.isEnabled()).toBe(true);
+    expect(beam.getTotalVertices()).toBe(18);
+    const width = (row: number) =>
+      Math.hypot(
+        positions[(row * 2 + 1) * 3] - positions[row * 2 * 3],
+        positions[(row * 2 + 1) * 3 + 2] - positions[row * 2 * 3 + 2],
+      );
+    expect(width(8)).toBeGreaterThan(width(0) * 4);
+    for (let i = 0; i < positions.length; i += 3)
+      expect(positions[i + 1]).toBeCloseTo(
+        positions[i] * 0.01 + positions[i + 2] * 0.02 + 0.028,
+        5,
+      );
+  } finally {
+    lights.dispose();
+    player.dispose();
+    scene.dispose();
+    engine.dispose();
+  }
 });

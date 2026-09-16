@@ -34,10 +34,16 @@ export const OSMIUM_FILTER_EXPRESSIONS = [
   'w/building',
   'w/building:part',
   'r/building',
+  'r/building:part',
   'nwr/natural=water,wood,tree',
   'nwr/waterway=riverbank',
   'nwr/landuse=forest,grass,meadow,reservoir',
   'nwr/leisure=park',
+  'nwr/place=square',
+  'nwr/area:highway',
+  'nwr/highway=pedestrian',
+  'nwr/historic=citywalls',
+  'nwr/barrier=city_wall,wall',
 ] as const;
 
 export type CommandRunner = (
