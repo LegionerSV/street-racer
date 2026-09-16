@@ -330,6 +330,7 @@ export function buildWorld(region: RegionData): World {
         speed,
         name: tags.name || 'Безымянная улица',
         category: tags.highway,
+        surface: tags.surface,
         oneWay: oneWay || reverse,
         passage: tags.tunnel === 'building_passage',
         bridge,
@@ -583,9 +584,11 @@ export function buildWorld(region: RegionData): World {
             : undefined,
       });
     else if (
-      t.place === 'square' ||
-      t['area:highway'] === 'pedestrian' ||
-      (t.highway === 'pedestrian' && t.area === 'yes')
+      !t.indoor &&
+      t.location !== 'underground' &&
+      (t.place === 'square' ||
+        !!t['area:highway'] ||
+        (t.highway === 'pedestrian' && t.area === 'yes'))
     ) {
       const surface =
         (

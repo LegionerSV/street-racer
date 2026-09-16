@@ -1,4 +1,8 @@
-import { buildingGroups, isBuildingPart } from './building-groups';
+import {
+  buildingGroups,
+  isBuildingPart,
+  isSignificantBuilding,
+} from './building-groups';
 import { toLocal } from './geo';
 import { ROAD_TYPES } from './map-object-filters';
 import type { Center, OSMElement } from './types';
@@ -61,6 +65,17 @@ function isCourtyardRoad(element: OSMElement) {
   );
 }
 
+function isPavedArea(element: OSMElement) {
+  const tags = element.tags ?? {};
+  return (
+    !tags.indoor &&
+    tags.location !== 'underground' &&
+    (tags.place === 'square' ||
+      !!tags['area:highway'] ||
+      (tags.highway === 'pedestrian' && tags.area === 'yes'))
+  );
+}
+
 function isArea(element: OSMElement) {
   const tags = element.tags ?? {};
   return (
@@ -68,9 +83,7 @@ function isArea(element: OSMElement) {
     tags.waterway === 'riverbank' ||
     ['forest', 'grass', 'meadow', 'reservoir'].includes(tags.landuse) ||
     tags.leisure === 'park' ||
-    tags.place === 'square' ||
-    tags['area:highway'] === 'pedestrian' ||
-    (tags.highway === 'pedestrian' && tags.area === 'yes')
+    isPavedArea(element)
   );
 }
 
@@ -284,6 +297,7 @@ export function reduceMapElements(
     ) {
       if (
         tags.building === 'wall' ||
+        isSignificantBuilding(tags) ||
         (mode !== 'roads' &&
           (tags.name ||
             tags['name:ru'] ||
@@ -296,11 +310,12 @@ export function reduceMapElements(
         retain(element);
     } else if (isArea(element)) {
       if (
-        mode === 'standard' &&
-        (!isCourtyardGround(element) ||
-          tags.name ||
-          tags['name:ru'] ||
-          featureNearStreet(element, FRONTAGE_METERS))
+        isPavedArea(element) ||
+        (mode === 'standard' &&
+          (!isCourtyardGround(element) ||
+            tags.name ||
+            tags['name:ru'] ||
+            featureNearStreet(element, FRONTAGE_METERS)))
       )
         retain(element);
       else if (
@@ -333,13 +348,19 @@ export function reduceMapElements(
     }
   }
 
-  if (mode !== 'roads') {
-    const { groups } = buildingGroups(elements, center);
-    for (const [group, members] of groups) {
-      // Вся явно описанная группа или значимая оболочка с её частями.
-      if (kept.has(group) || [...members].some((key) => kept.has(key)))
-        for (const key of members) retain(byKey.get(key));
-    }
+  const { groups } = buildingGroups(elements, center);
+  for (const [group, members] of groups) {
+    // Значимые здания нельзя разбирать на части даже в дорожном fallback:
+    // иначе при смене набора тайлов исчезают башни и отдельные секции фасада.
+    const significant = [...members].some((key) =>
+      isSignificantBuilding(byKey.get(key)?.tags ?? {}),
+    );
+    if (
+      significant ||
+      kept.has(group) ||
+      [...members].some((key) => kept.has(key))
+    )
+      for (const key of members) retain(byKey.get(key));
   }
 
   const reduced = elements.filter((element) => kept.has(keyOf(element)));

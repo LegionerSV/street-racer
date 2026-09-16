@@ -78,6 +78,7 @@ export type Edge = {
   speed: number;
   name: string;
   category?: string;
+  surface?: string;
   sidewalkLeft?: boolean;
   sidewalkRight?: boolean;
   oneWay?: boolean;

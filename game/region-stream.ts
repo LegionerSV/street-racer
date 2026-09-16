@@ -84,7 +84,7 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
       forwardTileRows: 1,
       maxConcurrentTiles: 6,
       maxUpdateTiles: 2,
-      maxElements: 100000,
+      maxElements: 140000,
     },
   };
 

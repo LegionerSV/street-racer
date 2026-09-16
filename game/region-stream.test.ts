@@ -11,7 +11,13 @@ import {
   tileReady,
   type MapTile,
 } from './region-stream';
-import { latLonToSourceTile, parseSourceTileKey, sourceTileBounds, sourceTileCenter, sourceTileKey } from './source-tiles';
+import {
+  latLonToSourceTile,
+  parseSourceTileKey,
+  sourceTileBounds,
+  sourceTileCenter,
+  sourceTileKey,
+} from './source-tiles';
 import { toLocal } from './geo';
 import {
   TILE_ARTIFACT_SCHEMA_VERSION,
@@ -28,11 +34,17 @@ it('близкие точки старта используют одинаков
     first = startupTiles(center, radius),
     second = startupTiles(nearby, radius);
   // Assert
-  const shared = first.filter(key => second.includes(key));
-  expect(latLonToSourceTile(center.lat, center.lon)).toEqual(latLonToSourceTile(nearby.lat, nearby.lon));
-  expect(shared.length).toBeGreaterThanOrEqual(Math.min(first.length, second.length) - 3);
+  const shared = first.filter((key) => second.includes(key));
+  expect(latLonToSourceTile(center.lat, center.lon)).toEqual(
+    latLonToSourceTile(nearby.lat, nearby.lon),
+  );
+  expect(shared.length).toBeGreaterThanOrEqual(
+    Math.min(first.length, second.length) - 3,
+  );
   expect(first.length).toBeGreaterThanOrEqual(9);
-  expect([...first, ...second].every((key) => /^15\/\d+\/\d+$/.test(key))).toBe(true);
+  expect([...first, ...second].every((key) => /^15\/\d+\/\d+$/.test(key))).toBe(
+    true,
+  );
 });
 
 it.each([
@@ -40,18 +52,21 @@ it.each([
   ['low', 2000, 8],
   ['medium', 2500, 10],
   ['high', 700, 2],
-] as const)('на качестве %s стартовое окно покрывает квадрат радиусом %i м', (quality, radius, chunks) => {
-  // Arrange
-  const start = { lat: 59.92328049468514, lon: 30.38644871921713 };
-  // Act
-  const policy = mapStreamingPolicy(quality);
-  const loaded = new Set(startupTiles(start, policy.blockingRadiusMeters));
-  // Assert
-  expect(policy.blockingRadiusMeters).toBe(radius);
-  for (let x = -chunks; x < chunks; x++)
-    for (let z = -chunks; z < chunks; z++)
-      expect(tileReady(loaded, `${x},${z}`, start)).toBe(true);
-});
+] as const)(
+  'на качестве %s стартовое окно покрывает квадрат радиусом %i м',
+  (quality, radius, chunks) => {
+    // Arrange
+    const start = { lat: 59.92328049468514, lon: 30.38644871921713 };
+    // Act
+    const policy = mapStreamingPolicy(quality);
+    const loaded = new Set(startupTiles(start, policy.blockingRadiusMeters));
+    // Assert
+    expect(policy.blockingRadiusMeters).toBe(radius);
+    for (let x = -chunks; x < chunks; x++)
+      for (let z = -chunks; z < chunks; z++)
+        expect(tileReady(loaded, `${x},${z}`, start)).toBe(true);
+  },
+);
 
 it('высокое качество хранит только ближайшие source-тайлы и сохраняет запас по ходу движения', () => {
   // Arrange
@@ -61,16 +76,28 @@ it('высокое качество хранит только ближайшие
   // Act
   const policy = mapStreamingPolicy('high'),
     initial = startupTiles(start, policy.blockingRadiusMeters),
-    ahead = tileOrder(point, 0, policy.targetRadiusMeters, policy.forwardTileRows, start);
+    ahead = tileOrder(
+      point,
+      0,
+      policy.targetRadiusMeters,
+      policy.forwardTileRows,
+      start,
+    );
   // Assert
   expect(policy.targetRadiusMeters).toBe(800);
-  expect(policy.maxElements).toBe(100000);
+  expect(policy.maxElements).toBe(140000);
   expect(initial.length).toBeLessThan(previousWindow.length);
   expect(ahead).toContain(mapTileAt({ x: 0, z: 800 }, start));
-  const kremlinTiles = startupTiles({ lat: 55.7534, lon: 37.6228 }, policy.blockingRadiusMeters);
+  const kremlinTiles = startupTiles(
+    { lat: 55.7534, lon: 37.6228 },
+    policy.blockingRadiusMeters,
+  );
   expect(kremlinTiles).toContain('15/19808/10243');
   expect(kremlinTiles.length).toBeLessThan(12);
-  const southernWallTiles = startupTiles({ lat: 55.7528, lon: 37.6216 }, policy.blockingRadiusMeters);
+  const southernWallTiles = startupTiles(
+    { lat: 55.7528, lon: 37.6216 },
+    policy.blockingRadiusMeters,
+  );
   expect(southernWallTiles).toContain('15/19808/10243');
   expect(southernWallTiles.length).toBeLessThan(12);
 });
@@ -115,15 +142,31 @@ it('ограничивает пакет обновления карты на м�
     medium.maxConcurrentTiles,
     high.maxConcurrentTiles,
   ]).toEqual([4, 6, 8, 6]);
-  expect([mobile.maxUpdateTiles, low.maxUpdateTiles, medium.maxUpdateTiles, high.maxUpdateTiles]).toEqual([4, 6, 8, 2]);
-  expect([mobile.forwardTileRows, low.forwardTileRows, medium.forwardTileRows, high.forwardTileRows]).toEqual([4, 4, 4, 1]);
+  expect([
+    mobile.maxUpdateTiles,
+    low.maxUpdateTiles,
+    medium.maxUpdateTiles,
+    high.maxUpdateTiles,
+  ]).toEqual([4, 6, 8, 2]);
+  expect([
+    mobile.forwardTileRows,
+    low.forwardTileRows,
+    medium.forwardTileRows,
+    high.forwardTileRows,
+  ]).toEqual([4, 4, 4, 1]);
 });
 it('не запрашивает в высоком качестве дальние тайлы сверх бюджета элементов', () => {
   // Arrange
   const policy = mapStreamingPolicy('high');
   const petersburg = { lat: 59.934, lon: 30.335 };
   // Act
-  const moving = tileOrder({ x: 0, y: 0, z: 0 }, 0, policy.targetRadiusMeters, policy.forwardTileRows, petersburg);
+  const moving = tileOrder(
+    { x: 0, y: 0, z: 0 },
+    0,
+    policy.targetRadiusMeters,
+    policy.forwardTileRows,
+    petersburg,
+  );
   // Assert
   expect(policy.targetRadiusMeters).toBe(800);
   expect(moving.length).toBeLessThanOrEqual(55);

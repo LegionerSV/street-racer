@@ -299,6 +299,26 @@ function quad(
   mesh.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
   if (colour) for (let i = 0; i < 4; i++) mesh.colors!.push(...colour, 1);
 }
+
+function pavedQuad(
+  mesh: MeshData,
+  points: [Point, Point, Point, Point],
+  colour: Colour,
+) {
+  const lifted = points.map((point) => ({ ...point, y: point.y + 0.005 })) as [
+    Point,
+    Point,
+    Point,
+    Point,
+  ];
+  quad(mesh, ...lifted, colour);
+  for (const point of lifted) mesh.uvs!.push(point.x * 0.35, point.z * 0.35);
+}
+
+function isPavedRoad(edge: Edge) {
+  return ['sett', 'cobblestone', 'paving_stones'].includes(edge.surface ?? '');
+}
+
 function box(
   mesh: MeshData,
   p: Point,
@@ -362,9 +382,12 @@ type Segment = {
 
 // Один контур для асфальта и вырезания земли: прямоугольная маска не покрывает
 // внешний угол полотна с усреднёнными нормалями на повороте.
-function roadSurface(s: Segment): [Point, Point, Point, Point] {
-  const { a, b, edge } = s,
-    w = edge.width / 2,
+function roadSurface(
+  s: Segment,
+  surfaceWidth = s.edge.width,
+): [Point, Point, Point, Point] {
+  const { a, b } = s,
+    w = surfaceWidth / 2,
     length = distance2(a, b) || 1;
   const offset = (p: Point, normal: Segment['na'], d: number) => ({
     ...p,
@@ -929,7 +952,16 @@ export function buildChunk(
           [0.82, 0.84, 0.8],
         );
     }
-    quad(result.road, ...roadSurface(s), [0.18, 0.21, 0.24]);
+    const surface = roadSurface(s);
+    if (isPavedRoad(edge))
+      pavedQuad(
+        result.paved!,
+        surface,
+        edge.surface === 'paving_stones'
+          ? [0.52, 0.51, 0.47]
+          : [0.48, 0.45, 0.41],
+      );
+    else quad(result.road, ...surface, [0.18, 0.21, 0.24]);
     // Площадки нужны только на перекрёстках. На склонах полотно сшивается боковыми вершинами.
     const junctionPoints = [
       s.index === 0 && index.junctions.has(edge.from) ? a : null,

@@ -13,10 +13,30 @@ it('в режиме закрытых дворов убирает безымян�
     { type: 'node', id: 3, lat: 0.002, lon: 0 },
     { type: 'node', id: 4, lat: 0.003, lon: 0 },
     { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
-    { type: 'way', id: 11, nodes: [2, 3], tags: { highway: 'service', service: 'driveway' } },
-    { type: 'way', id: 12, nodes: [3, 4], tags: { highway: 'service', name: 'Подъезд к музею' } },
-    { type: 'way', id: 13, nodes: [1, 3], tags: { highway: 'service', tunnel: 'yes' } },
-    { type: 'way', id: 14, nodes: [2, 4], tags: { highway: 'service', bridge: 'yes' } },
+    {
+      type: 'way',
+      id: 11,
+      nodes: [2, 3],
+      tags: { highway: 'service', service: 'driveway' },
+    },
+    {
+      type: 'way',
+      id: 12,
+      nodes: [3, 4],
+      tags: { highway: 'service', name: 'Подъезд к музею' },
+    },
+    {
+      type: 'way',
+      id: 13,
+      nodes: [1, 3],
+      tags: { highway: 'service', tunnel: 'yes' },
+    },
+    {
+      type: 'way',
+      id: 14,
+      nodes: [2, 4],
+      tags: { highway: 'service', bridge: 'yes' },
+    },
   ];
 
   // Act
@@ -24,13 +44,13 @@ it('в режиме закрытых дворов убирает безымян�
   const closed = reduceMapElements(elements, center, 'standard', true);
 
   // Assert
-  expect(open.elements.some(element => element.id === 11)).toBe(true);
-  expect(closed.elements.some(element => element.id === 11)).toBe(false);
-  expect(closed.elements.some(element => element.id === 10)).toBe(true);
-  expect(closed.elements.some(element => element.id === 12)).toBe(true);
-  expect(closed.elements.some(element => element.id === 13)).toBe(true);
-  expect(closed.elements.some(element => element.id === 14)).toBe(true);
-  expect(closed.elements.some(element => element.id === 3)).toBe(true);
+  expect(open.elements.some((element) => element.id === 11)).toBe(true);
+  expect(closed.elements.some((element) => element.id === 11)).toBe(false);
+  expect(closed.elements.some((element) => element.id === 10)).toBe(true);
+  expect(closed.elements.some((element) => element.id === 12)).toBe(true);
+  expect(closed.elements.some((element) => element.id === 13)).toBe(true);
+  expect(closed.elements.some((element) => element.id === 14)).toBe(true);
+  expect(closed.elements.some((element) => element.id === 3)).toBe(true);
 });
 
 it('сохраняет проезжие улицы, ограничения поворотов и их точки', () => {
@@ -164,21 +184,86 @@ it('сохраняет безымянные участки стены вдали
   for (const mode of ['standard', 'minimal', 'roads'] as const) {
     const reduced = reduceMapElements(elements, center, mode).elements;
     const keys = new Set(
-      reduced.map(
-        (element) => `${element.type}/${element.id}`,
-      ),
+      reduced.map((element) => `${element.type}/${element.id}`),
     );
     expect(keys.has('relation/2470033'), mode).toBe(true);
     expect(keys.has('way/11'), mode).toBe(true);
     expect(keys.has('node/3'), mode).toBe(true);
     expect(keys.has('way/12'), mode).toBe(false);
     const world = buildWorld({
-      center, elements: reduced,
+      center,
+      elements: reduced,
       elevation: { width: 2, size: 1000, values: new Float32Array(4) },
-      drivingSide: 'right', fetchedAt: 'test', heightDatum: 0,
+      drivingSide: 'right',
+      fetchedAt: 'test',
+      heightDatum: 0,
     });
-    expect(world.buildings.find(building => building.id === 2470033)?.height, mode).toBeGreaterThan(10);
+    expect(
+      world.buildings.find((building) => building.id === 2470033)?.height,
+      mode,
+    ).toBeGreaterThan(10);
   }
+});
+
+it('не удаляет башню и все части её группы даже в дорожном fallback', () => {
+  // Arrange
+  const elements: OSMElement[] = [
+    { type: 'node', id: 1, lat: -0.001, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+    { type: 'node', id: 3, lat: 0, lon: 0.003 },
+    { type: 'node', id: 4, lat: 0.0002, lon: 0.003 },
+    { type: 'node', id: 5, lat: 0.0002, lon: 0.0032 },
+    { type: 'way', id: 11, nodes: [3, 4, 5, 3], tags: { building: 'tower' } },
+    { type: 'node', id: 6, lat: 0.00005, lon: 0.00305 },
+    { type: 'node', id: 7, lat: 0.0001, lon: 0.00305 },
+    { type: 'node', id: 8, lat: 0.0001, lon: 0.0031 },
+    {
+      type: 'way',
+      id: 12,
+      nodes: [6, 7, 8, 6],
+      tags: { 'building:part': 'yes', height: '24' },
+    },
+    {
+      type: 'relation',
+      id: 20,
+      tags: { type: 'building', historic: 'castle' },
+      members: [
+        { type: 'way', ref: 11, role: 'outline' },
+        { type: 'way', ref: 12, role: 'part' },
+      ],
+    },
+  ];
+
+  // Act
+  const reduced = reduceMapElements(elements, center, 'roads').elements;
+
+  // Assert
+  expect(reduced).toEqual(elements);
+});
+
+it('сохраняет мощёную площадь в minimal и roads fallback', () => {
+  // Arrange
+  const elements: OSMElement[] = [
+    { type: 'node', id: 1, lat: -0.001, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+    { type: 'node', id: 3, lat: 0, lon: 0.003 },
+    { type: 'node', id: 4, lat: 0.0002, lon: 0.003 },
+    { type: 'node', id: 5, lat: 0.0002, lon: 0.0032 },
+    {
+      type: 'way',
+      id: 11,
+      nodes: [3, 4, 5, 3],
+      tags: { 'area:highway': 'footway', surface: 'sett' },
+    },
+  ];
+
+  // Act / Assert
+  for (const mode of ['minimal', 'roads'] as const)
+    expect(reduceMapElements(elements, center, mode).elements).toEqual(
+      elements,
+    );
 });
 
 it('оставляет приметное здание вдали от улицы и не опустошает клетку без улиц', () => {

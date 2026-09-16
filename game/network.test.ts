@@ -36,6 +36,21 @@ const region = (elements: OSMElement[]): RegionData => ({
 });
 
 describe('Дорожная сеть', () => {
+  it('сохраняет материал покрытия дороги', () => {
+    // Arrange
+    const elements = [
+      node(1, 0, 0),
+      node(2, 0, 0.001),
+      road(10, [1, 2], { name: 'Тестовая улица', surface: 'sett' }),
+    ];
+
+    // Act
+    const world = buildWorld(region(elements));
+
+    // Assert
+    expect(world.edges).toHaveLength(2);
+    expect(world.edges.every((edge) => edge.surface === 'sett')).toBe(true);
+  });
   it('оставляет здания без указанной высоты низкими и сохраняет явные этажи', () => {
     // Arrange
     const elements: OSMElement[] = [];
@@ -173,7 +188,7 @@ describe('Дорожная сеть', () => {
       [60, 'park', undefined],
     ]);
   });
-  it('сохраняет мощёную пешеходную площадь с нормализованным покрытием', () => {
+  it('сохраняет мощёную area:highway любого типа с нормализованным покрытием', () => {
     // Arrange
     const elements: OSMElement[] = [
       node(1, 0, 0),
@@ -185,9 +200,18 @@ describe('Дорожная сеть', () => {
         id: 1577673,
         nodes: [1, 2, 3, 4, 1],
         tags: {
-          place: 'square',
-          'area:highway': 'pedestrian',
+          'area:highway': 'footway',
           surface: 'sett',
+        },
+      },
+      {
+        type: 'way',
+        id: 1577674,
+        nodes: [1, 2, 3, 4, 1],
+        tags: {
+          'area:highway': 'footway',
+          indoor: 'room',
+          surface: 'paving_stones',
         },
       },
     ];

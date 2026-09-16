@@ -109,6 +109,55 @@ describe('Подготовка кварталов', () => {
     // Assert
     expect(chunk.sidewalks?.indices).toHaveLength(0);
   });
+  it('рисует sett-дорогу материалом мостовой без изменения её ширины', () => {
+    // Arrange
+    const edge = {
+      id: 0,
+      stableId: '1/1/2/0',
+      way: 1,
+      from: 1,
+      to: 2,
+      length: 100,
+      width: 7,
+      lanes: 2,
+      speed: 10,
+      name: 'Тестовая улица',
+      surface: 'sett',
+      bridge: false,
+      tunnel: false,
+      layer: 0,
+      points: [
+        { x: 100, y: 0, z: 20 },
+        { x: 100, y: 0, z: 120 },
+      ],
+      blocked: false,
+    };
+    const world = {
+      center: { lat: 0, lon: 0 },
+      nodes: [],
+      edges: [edge],
+      restrictions: [],
+      buildings: [],
+      areas: [],
+      trees: [],
+      elevation: { width: 2, size: 5600, values: new Float32Array(4) },
+      drivingSide: 'right',
+      warnings: [],
+      spawnEdge: null,
+      routes: [],
+    } as World;
+
+    // Act
+    const chunk = buildChunk(world, '0,0', 0);
+
+    // Assert
+    expect(chunk.paved?.indices.length).toBeGreaterThan(0);
+    expect(chunk.paved?.uvs?.length).toBe(
+      (chunk.paved!.positions.length / 3) * 2,
+    );
+    const xs = chunk.paved!.positions.filter((_, index) => index % 3 === 0);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(edge.width);
+  });
   it('закрывает травяной грунт мощением площади и не создаёт внутри деревья', () => {
     // Arrange
     const area = {
@@ -558,13 +607,11 @@ describe('Подготовка кварталов', () => {
     const mesh = buildChunk(world, '0,0', 0).sidewalks!;
     // Assert
     for (let i = 0; i < mesh.indices.length; i += 3) {
-      const points = mesh.indices
-        .slice(i, i + 3)
-        .map((j) => ({
-          x: mesh.positions[j * 3],
-          y: mesh.positions[j * 3 + 1],
-          z: mesh.positions[j * 3 + 2],
-        }));
+      const points = mesh.indices.slice(i, i + 3).map((j) => ({
+        x: mesh.positions[j * 3],
+        y: mesh.positions[j * 3 + 1],
+        z: mesh.positions[j * 3 + 2],
+      }));
       for (const p of [
         { x: 104, y: 0, z: 70 },
         { x: 96, y: 0, z: 70 },
@@ -932,13 +979,11 @@ describe('Подготовка кварталов', () => {
     const terrain = buildChunk(w, '0,0', 0).terrain,
       point = { x: 101, y: 0, z: 71 };
     const covers = Array.from({ length: terrain.indices.length / 3 }, (_, i) =>
-      terrain.indices
-        .slice(i * 3, i * 3 + 3)
-        .map((id) => ({
-          x: terrain.positions[id * 3],
-          y: 0,
-          z: terrain.positions[id * 3 + 2],
-        })),
+      terrain.indices.slice(i * 3, i * 3 + 3).map((id) => ({
+        x: terrain.positions[id * 3],
+        y: 0,
+        z: terrain.positions[id * 3 + 2],
+      })),
     ).some((triangle) => polygonContains(point, triangle));
     // Assert
     expect(covers).toBe(false);
