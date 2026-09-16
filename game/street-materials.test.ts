@@ -73,6 +73,21 @@ it('фасады сохраняют три общих типа, но получ�
     expect(
       facades.every((material) => material.bumpTexture?.gammaSpace === false),
     ).toBe(true);
+    expect(
+      [...facades, ...bareFacades].every((material) =>
+        [
+          material.diffuseTexture,
+          material.emissiveTexture,
+          material.bumpTexture,
+        ].every((texture) => texture?.anisotropicFilteringLevel === 16),
+      ),
+    ).toBe(true);
+    expect(
+      bareFacades.every((material) => material.bumpTexture?.level === 0.35),
+    ).toBe(true);
+    expect(
+      facades.every((material) => material.bumpTexture?.level === 0.75),
+    ).toBe(true);
     expect(new Set(facades.map((material) => material.bumpTexture)).size).toBe(
       4,
     );

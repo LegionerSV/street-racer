@@ -21,7 +21,9 @@ function texture(scene: Scene, name: string, pixels: Uint8Array, size: number) {
   );
   t.name = name;
   t.wrapU = t.wrapV = Texture.WRAP_ADDRESSMODE;
-  t.anisotropicFilteringLevel = 4;
+  // Длинные фасады почти параллельны взгляду из машины. Низкая
+  // анизотропия превращает швы кирпича и normal map в мерцающие полосы.
+  t.anisotropicFilteringLevel = 16;
   return t;
 }
 export function streetMaterials(scene: Scene) {
@@ -53,7 +55,8 @@ export function streetMaterials(scene: Scene) {
           normal,
           size,
         );
-        mat.bumpTexture.level = 0.75;
+        // На глухих длинных стенах сильный рельеф даёт ложные светлые полосы.
+        mat.bumpTexture.level = windows ? 0.75 : 0.35;
         mat.bumpTexture.gammaSpace = false;
         for (const t of [
           mat.diffuseTexture,
