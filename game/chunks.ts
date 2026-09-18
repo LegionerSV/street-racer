@@ -449,8 +449,10 @@ function roadSurface(
   ];
 }
 type Paving = { id: string; segment: Segment; side: number; mask: Prism };
+const isEmbankment = (edge: Pick<Edge, 'name'>) => /набережн/iu.test(edge.name);
 const sidewalkOn = (edge: Edge, side: number) =>
-  side < 0 ? edge.sidewalkLeft !== false : edge.sidewalkRight !== false;
+  isEmbankment(edge) ||
+  (side < 0 ? edge.sidewalkLeft !== false : edge.sidewalkRight !== false);
 function segmentPolygonSpans(
   a: Point,
   b: Point,
@@ -1240,12 +1242,7 @@ export function buildChunk(
       }
     // Речное ограждение принадлежит дороге: так оно следует тротуару и его высоте,
     // а неточный контур воды используется только для выбора стороны набережной.
-    if (
-      lod === 0 &&
-      !edge.bridge &&
-      !edge.tunnel &&
-      /набережн/iu.test(edge.name)
-    ) {
+    if (lod === 0 && !edge.bridge && !edge.tunnel && isEmbankment(edge)) {
       const length = distance2(a, b) || 1,
         nx = (b.z - a.z) / length,
         nz = -(b.x - a.x) / length;
@@ -1286,8 +1283,8 @@ export function buildChunk(
           return { aa, bb, score };
         })
         .sort((x, y) => x.score - y.score);
-      const bank = choices[0];
-      if (bank && bank.score < 24)
+      const banks = choices[0]?.score < 24 ? [choices[0]] : choices;
+      for (const bank of banks)
         for (const span of embankmentRailingSpans(
           bank.aa,
           bank.bb,

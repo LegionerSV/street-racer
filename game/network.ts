@@ -213,6 +213,8 @@ export function buildWorld(region: RegionData): World {
       right = !['no', 'none', 'separate'].includes(tags['sidewalk:right']);
     return { left, right };
   };
+  const embankment = (name: string | undefined) =>
+    /набережн/iu.test(name || '');
   const roadWays = region.elements.filter((way) => {
     const tags = way.tags || {};
     return (
@@ -318,6 +320,7 @@ export function buildWorld(region: RegionData): World {
         ? ['coverage']
         : [];
       const walk = sidewalks(tags);
+      if (embankment(tags.name)) walk.left = walk.right = true;
       const base = {
         sourceHeightRange: [
           Math.min(...rawHeights),
@@ -736,10 +739,12 @@ export function buildWorld(region: RegionData): World {
           tags.material ||
           linked?.material ||
           (tags.historic === 'citywalls' ? 'brick' : 'stone'),
-        wallLength = line.slice(1).reduce(
-          (sum, point, index) => sum + distance2(line[index], point),
-          0,
-        ),
+        wallLength = line
+          .slice(1)
+          .reduce(
+            (sum, point, index) => sum + distance2(line[index], point),
+            0,
+          ),
         mappedLevels = osmLength(tags['building:levels']),
         generatedHeight = clamp(Math.sqrt(wallLength * width) / 3, 2.5, 12),
         height = Math.max(

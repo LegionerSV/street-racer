@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ru">
+  <meta charset="utf-8" />
+  <title>Набережная — ограждение и тротуар</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 32px;
+      background: #10191d;
+      color: #eaf0df;
+      font:
+        15px system-ui,
+        sans-serif;
+    }
+    h1 {
+      margin: 0 0 8px;
+    }
+    .lead {
+      color: #a8bab4;
+      margin: 0 0 28px;
+    }
+    .variants {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(250px, 1fr));
+      gap: 18px;
+    }
+    .card {
+      background: #18252a;
+      border: 1px solid #3b514f;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .scene {
+      height: 180px;
+      position: relative;
+      background: linear-gradient(#90adbd 0 48%, #5f9aac 48%);
+      overflow: hidden;
+    }
+    .road {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 34px;
+      height: 64px;
+      background: #252a2c;
+      transform: skewY(-6deg);
+    }
+    .sidewalk {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 88px;
+      height: 18px;
+      background: #8b8d85;
+      transform: skewY(-6deg);
+    }
+    .fence {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 105px;
+      height: 38px;
+      border-top: 5px solid #2b3538;
+      background: repeating-linear-gradient(
+        90deg,
+        transparent 0 22px,
+        #2b3538 22px 26px
+      );
+    }
+    .solid {
+      height: 18px;
+      bottom: 105px;
+      background: #6e726b;
+      border-top: 5px solid #414943;
+    }
+    .minimal {
+      height: 25px;
+      bottom: 105px;
+      border-top: 4px solid #2b3538;
+      background: repeating-linear-gradient(
+        90deg,
+        transparent 0 26px,
+        #2b3538 26px 29px
+      );
+    }
+    .copy {
+      padding: 14px;
+    }
+    .copy h2 {
+      font-size: 16px;
+      margin: 0 0 7px;
+    }
+    .copy p {
+      margin: 0;
+      color: #a8bab4;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .recommended {
+      color: #d8ff3e;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+  </style>
+  <body>
+    <h1>Набережная без OSM-тегов тротуара</h1>
+    <p class="lead">
+      Во всех вариантах тротуар строится с обеих сторон дороги; перила ставятся
+      со стороны воды, а при отсутствии контура воды — с обеих сторон.
+    </p>
+    <div class="variants">
+      <section class="card">
+        <div class="scene">
+          <div class="road"></div>
+          <div class="sidewalk"></div>
+          <div class="fence"></div>
+        </div>
+        <div class="copy">
+          <h2>Низкие решётчатые перила</h2>
+          <p>
+            Согласуется с уже существующей моделью набережной; остаётся
+            проезжаемым, но физически закрывает край.
+          </p>
+        </div>
+      </section>
+      <section class="card">
+        <div class="scene">
+          <div class="road"></div>
+          <div class="sidewalk"></div>
+          <div class="fence solid"></div>
+        </div>
+        <div class="copy">
+          <span class="recommended">ВЫБРАНО</span>
+          <h2>Гранитный парапет, 1 м</h2>
+          <p>
+            Тяжёлая каменная база, тело и широкая крышка. Это отдельный тип
+            ограждения набережных; парковая решётка не меняется.
+          </p>
+        </div>
+      </section>
+      <section class="card">
+        <div class="scene">
+          <div class="road"></div>
+          <div class="sidewalk"></div>
+          <div class="fence minimal"></div>
+        </div>
+        <div class="copy">
+          <h2>Минимальные перила</h2>
+          <p>
+            Меньше закрывают воду, но почти не видны с водительской камеры и
+            хуже читают границу края.
+          </p>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

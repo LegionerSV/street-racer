@@ -105,6 +105,21 @@ type BreakableLoaded = {
   lamp?: Point;
   body?: PhysicsAggregate;
 };
+
+export const isStaticCollisionRole = (role: string, lod: number) =>
+  lod === 0 &&
+  ([
+    'terrain',
+    'shoulders',
+    'sidewalks',
+    'road',
+    'structures',
+    'treeTrunks',
+    'buildings',
+    'landmarks',
+  ].includes(role) ||
+    role.startsWith('facade') ||
+    role.startsWith('bareFacade'));
 type Loaded = {
   lod: number;
   meshes: Mesh[];
@@ -406,9 +421,7 @@ export class Game {
       new Vector3(0, -9.81, 0),
       new HavokPlugin(true, havok),
     );
-    this.scene
-      .getPhysicsEngine()!
-      .setTimeStep(DRIVING_PHYSICS_STEP_SECONDS);
+    this.scene.getPhysicsEngine()!.setTimeStep(DRIVING_PHYSICS_STEP_SECONDS);
     this.scene.getPhysicsEngine()!.setSubTimeStep(DRIVING_PHYSICS_SUBSTEP_MS);
     this.scene.physicsEnabled = false;
     this.camera = new FreeCamera('chase-camera', Vector3.Zero(), this.scene);
@@ -427,6 +440,7 @@ export class Game {
       road: material(this.scene, 'road', '#ffffff'),
       markings: material(this.scene, 'markings', '#ffffff'),
       structures: material(this.scene, 'structures', '#ffffff'),
+      embankment: material(this.scene, 'embankment-parapet', '#686b68'),
       buildings: material(this.scene, 'buildings', '#ffffff'),
       windows: material(this.scene, 'windows', '#ffffff', true),
       water: material(this.scene, 'water', '#326b80'),
@@ -681,23 +695,13 @@ export class Game {
           mesh.receiveShadows = false;
         }
         meshes.push(mesh);
-        if (
-          chunk.lod === 0 &&
-          [
-            'terrain',
-            'shoulders',
-            'sidewalks',
-            'road',
-            'structures',
-            'treeTrunks',
-            'buildings',
-            'landmarks',
-          ].includes(role)
-        ) {
+        if (isStaticCollisionRole(role, chunk.lod)) {
           mesh.isPickable =
             role === 'structures' ||
             role === 'buildings' ||
-            role === 'landmarks';
+            role === 'landmarks' ||
+            role.startsWith('facade') ||
+            role.startsWith('bareFacade');
           collisionMeshes.push(mesh);
         }
         installMs += performance.now() - stepStarted;
@@ -728,11 +732,7 @@ export class Game {
                 { height: 7, diameter: 0.16, tessellation: 6 },
                 this.scene,
               )
-            : createFenceVisual(
-                this.scene,
-                prop.fenceType,
-                prop.length || 2,
-              );
+            : createFenceVisual(this.scene, prop.fenceType, prop.length || 2);
         mesh.name = `${chunk.key}:breakable-${pole ? 'pole' : 'fence'}-${i}`;
         mesh.position.copyFromFloats(
           prop.point.x,
@@ -740,7 +740,10 @@ export class Game {
           prop.point.z,
         );
         mesh.rotation.y = prop.heading;
-        mesh.material = this.materials.structures;
+        mesh.material =
+          prop.fenceType === 'embankment'
+            ? this.materials.embankment
+            : this.materials.structures;
         mesh.isPickable = false;
         mesh.setEnabled(!broken);
         if (pole) {

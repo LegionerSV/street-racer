@@ -1,4 +1,4 @@
-import { Matrix, Mesh, MeshBuilder, type Scene } from '@babylonjs/core';
+import { Mesh, MeshBuilder, type Scene } from '@babylonjs/core';
 
 export function createFenceVisual(
   scene: Scene,
@@ -6,12 +6,22 @@ export function createFenceVisual(
   length: number,
 ) {
   if (type !== 'park') {
-    const mesh = MeshBuilder.CreateBox(
-      'embankment-fence',
-      { width: 0.14, height: 1.05, depth: length },
-      scene,
-    );
-    mesh.bakeTransformIntoVertices(Matrix.Translation(0, 0.525, 0));
+    const parts: Mesh[] = [];
+    for (const [name, width, height, y] of [
+      ['embankment-parapet-base', 0.6, 0.16, 0.08],
+      ['embankment-parapet-body', 0.46, 0.68, 0.5],
+      ['embankment-parapet-cap', 0.6, 0.16, 0.92],
+    ] as const) {
+      const part = MeshBuilder.CreateBox(
+        name,
+        { width, height, depth: length },
+        scene,
+      );
+      part.position.y = y;
+      parts.push(part);
+    }
+    const mesh = Mesh.MergeMeshes(parts, true, true, undefined, false, true)!;
+    mesh.name = 'embankment-parapet';
     return mesh;
   }
   const parts: Mesh[] = [];

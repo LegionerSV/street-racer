@@ -391,6 +391,8 @@ describe('Подготовка кварталов', () => {
         { x: 120, y: 2, z: 15 },
       ],
       blocked: false,
+      sidewalkLeft: false,
+      sidewalkRight: false,
     };
     const bridge = {
       ...road,
@@ -461,6 +463,9 @@ describe('Подготовка кварталов', () => {
       ),
     ).toBe(true);
     expect(fences.every((f) => Math.abs(f.point.x - 70) > 6)).toBe(true);
+    expect(
+      buildChunk(world, '0,0', 0).sidewalks!.indices.length,
+    ).toBeGreaterThan(0);
     expect(
       fences.filter(
         (f) =>

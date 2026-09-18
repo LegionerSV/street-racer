@@ -210,6 +210,26 @@ describe('Дорожная сеть', () => {
       ),
     ).toBe(true);
   });
+  it('всегда добавляет тротуары набережной, даже если OSM их запрещает', () => {
+    // Arrange.
+    const input = region([
+      node(1, 0, 0),
+      node(2, 0, 0.003),
+      road(10, [1, 2], {
+        highway: 'secondary',
+        name: 'Тестовая набережная',
+        sidewalk: 'no',
+      }),
+    ]);
+
+    // Act.
+    const world = buildWorld(input);
+
+    // Assert.
+    expect(
+      world.edges.every((edge) => edge.sidewalkLeft && edge.sidewalkRight),
+    ).toBe(true);
+  });
   it('отличает ограждаемые парки и реки от скверного озеленения и водоёмов', () => {
     // Arrange
     const elements: OSMElement[] = [];
