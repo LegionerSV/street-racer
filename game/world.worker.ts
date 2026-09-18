@@ -13,6 +13,7 @@ import {
   SourceTileRegistry,
 } from './source-tile-registry';
 import { createWorldPatch } from './world-patch';
+import { prepareChunkTransfer } from './chunk-transfer';
 let world: World | null = null;
 let prepared: World | null = null;
 let preparedPatch: WorldPatch | null = null;
@@ -23,7 +24,8 @@ let cache = newChunkCache();
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   try {
-    let response: WorkerResponse;
+    let response: WorkerResponse,
+      transfer: Transferable[] = [];
     if (request.type === 'adopt') {
       world = request.world;
       registry = request.sourceTiles
@@ -150,9 +152,15 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           ? buildChunk(prepared!, request.key, request.lod, request.closeCourtyards)
           : cache.get(id) || buildChunk(world, request.key, request.lod, request.closeCourtyards);
       if (!request.prepared) cache.touch(id, chunk);
-      response = { id: request.id, type: 'chunk', chunk };
+      const preparedTransfer = prepareChunkTransfer(chunk);
+      transfer = preparedTransfer.transfer;
+      response = { id: request.id, type: 'chunk', chunk: preparedTransfer.chunk };
     } else throw new Error('Неизвестная команда подготовки района.');
-    self.postMessage(response);
+    (
+      self as unknown as {
+        postMessage(message: WorkerResponse, transfer: Transferable[]): void;
+      }
+    ).postMessage(response, transfer);
   } catch (error) {
     self.postMessage({
       id: request.id,

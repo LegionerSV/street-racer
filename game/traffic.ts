@@ -95,6 +95,26 @@ export function roadPitch(
     ? -Math.atan2(rise, horizontal)
     : 0;
 }
+export function signalStopLine(
+  edgeEnd: number,
+  travel: number,
+  phase: 'green' | 'yellow' | 'red',
+) {
+  const line = edgeEnd - 5;
+  if (phase === 'green' || travel >= edgeEnd) return undefined;
+  return Math.max(line, travel);
+}
+export function advanceTrafficTravel(
+  travel: number,
+  speed: number,
+  dt: number,
+  stopLine?: number,
+) {
+  const next = travel + speed * dt;
+  return stopLine !== undefined && next >= stopLine
+    ? { travel: stopLine, speed: 0 }
+    : { travel: next, speed };
+}
 export function trafficBudget(
   meters: number,
   density: 'light' | 'city' | 'rush' = 'city',
@@ -675,7 +695,8 @@ export class Traffic {
         a.avoidanceOffset = undefined;
         a.avoidanceWay = undefined;
       }
-      let stop = plan.total - (a.travel || 0) - 3;
+      let stop = plan.total - (a.travel || 0) - 3,
+        signalLimit: number | undefined;
       if (!a.race) stop = Math.min(stop, conflictStop);
       // Ищем светофор на нескольких коротких OSM-рёбрах вперёд.
       const index = plan.ends.findIndex((end) => end > (a.travel || 0));
@@ -707,12 +728,16 @@ export class Traffic {
           )
         )
           stop = Math.min(stop, dist - 5);
+        const phase = signalPhase(time, axis),
+          stopLine = signalStopLine(plan.ends[i], a.travel || 0, phase);
         if (
           !a.race &&
           this.signals.has(approaching.to) &&
-          signalPhase(time, axis) !== 'green'
-        )
+          stopLine !== undefined
+        ) {
           stop = Math.min(stop, dist - 5);
+          signalLimit = Math.min(signalLimit ?? Infinity, stopLine);
+        }
         if (
           !a.race &&
           outgoing(this.world, approaching.to).length > 2 &&
@@ -793,7 +818,15 @@ export class Traffic {
             v.x * Math.sin(a.heading) + v.z * Math.cos(a.heading),
           );
       }
-      a.travel = (a.travel || 0) + a.speed * dt;
+      const advanced = advanceTrafficTravel(
+          a.travel || 0,
+          a.speed,
+          dt,
+          signalLimit,
+        ),
+        stoppedAtSignal = advanced.speed === 0 && signalLimit !== undefined;
+      a.travel = advanced.travel;
+      a.speed = advanced.speed;
       if (a.race && !a.race.finished) {
         const finish =
           a.race.route.edges.reduce(
@@ -844,6 +877,8 @@ export class Traffic {
           body.setAngularDamping(1);
         }
         if (a.dynamic) {
+          if (stoppedAtSignal && !a.impact)
+            body.setLinearVelocity(Vector3.Zero());
           const velocity = body.getLinearVelocity(),
             error = new Vector3(
               a.point.x - mesh.position.x,

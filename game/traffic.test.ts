@@ -3,7 +3,12 @@ import { NullEngine, Scene, Vector3, HavokPlugin, FreeCamera } from '@babylonjs/
 import HavokPhysics from '@babylonjs/havok';
 import { readFile } from 'node:fs/promises';
 import { buildWorld } from './network';
-import { roadPitch, Traffic } from './traffic';
+import {
+  advanceTrafficTravel,
+  roadPitch,
+  signalStopLine,
+  Traffic,
+} from './traffic';
 import type { OSMElement, RegionData } from './types';
 
 it('наклоняет машину вдоль дорожного профиля, а не оставляет её горизонтально в воздухе', () => {
@@ -15,6 +20,28 @@ it('наклоняет машину вдоль дорожного профиля
   // Act / Assert
   expect(roadPitch(path, 20)).toBeCloseTo(-Math.atan2(4, 40), 5);
   expect(roadPitch(path.map((point) => ({ ...point, y: 3 })), 20)).toBe(0);
+});
+
+it('не пропускает машину трафика за стоп-линию на красный', () => {
+  // Arrange
+  const edgeEnd = 100;
+
+  // Act
+  const red = signalStopLine(edgeEnd, 94, 'red');
+  const yellow = signalStopLine(edgeEnd, 94, 'yellow');
+  const green = signalStopLine(edgeEnd, 94, 'green');
+  const spawnedPastLine = signalStopLine(edgeEnd, 96, 'red');
+  const alreadyPastEdge = signalStopLine(edgeEnd, 100, 'red');
+  const limited = advanceTrafficTravel(94, 10, 0.5, red);
+
+  // Assert
+  expect(red).toBe(95);
+  expect(yellow).toBe(95);
+  expect(green).toBeUndefined();
+  expect(spawnedPastLine).toBe(96);
+  expect(alreadyPastEdge).toBeUndefined();
+  expect(limited).toEqual({ travel: 95, speed: 0 });
+  expect(advanceTrafficTravel(94, 10, 0.5)).toEqual({ travel: 99, speed: 10 });
 });
 
 describe('Соперники', () => {

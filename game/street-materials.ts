@@ -30,7 +30,7 @@ export function streetMaterials(scene: Scene) {
   const makeFacades = (windows: boolean) =>
       ['brick', 'stone', 'modern', 'wood'].map((style) => {
         const size = 128;
-        const { diffuse, emission, normal } = facadeSurface(
+        const { diffuse, emission } = facadeSurface(
           style as 'brick' | 'stone' | 'modern' | 'wood',
           size,
           windows,
@@ -49,23 +49,11 @@ export function streetMaterials(scene: Scene) {
           emission,
           size,
         );
-        mat.bumpTexture = texture(
-          scene,
-          `${style}-${suffix}-relief`,
-          normal,
-          size,
-        );
-        // Normal map на длинных фасадах мерцает даже с mipmap и анизотропией.
-        mat.bumpTexture.level = 0;
-        mat.bumpTexture.gammaSpace = false;
         for (const t of [
           mat.diffuseTexture,
           mat.emissiveTexture,
         ] as RawTexture[])
           t.uScale = t.vScale = 0.5;
-        (mat.bumpTexture as RawTexture).uScale = (
-          mat.bumpTexture as RawTexture
-        ).vScale = 0.5;
         mat.backFaceCulling = false;
         mat.twoSidedLighting = true;
         mat.maxSimultaneousLights = 8;

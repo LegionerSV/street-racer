@@ -85,13 +85,19 @@ import {
 } from './stream-coverage';
 import { edgeById, edgeStableId } from './road-graph';
 import { nextRaceTurn } from './navigation';
-import { ImpactSpeeds, shouldBreak } from './breakables';
+import {
+  BreakableDamage,
+  breakableKey,
+  ImpactSpeeds,
+  shouldBreak,
+} from './breakables';
 import { createFenceVisual } from './breakable-visuals';
 import { signalApproaches } from './signal-approaches';
 import { sampleWorldSurface } from './surface-contact';
 import { chooseClearRespawn, RecoveryWatchdog } from './driving-safety';
 
 type BreakableLoaded = {
+  key: string;
   mesh: Mesh;
   pole: boolean;
   fenceType?: 'park' | 'embankment';
@@ -152,6 +158,7 @@ export class Game {
   readonly camera: FreeCamera;
   private chunks = new Map<string, Loaded>();
   private impactSpeeds = new ImpactSpeeds();
+  private breakableDamage = new BreakableDamage();
   private pending = new Set<string>();
   private installQueue = new ChunkInstallQueue<ChunkData>(3);
   private patchInstallMetrics = new Map<string, MapUpdateTiming>();
@@ -601,12 +608,16 @@ export class Game {
   private makeMesh(name: string, data: MeshData, mat: StandardMaterial) {
     if (!data.positions.length || !data.indices.length) return null;
     const mesh = new Mesh(name, this.scene),
-      vertices = new VertexData(),
-      normals: number[] = [];
+      vertices = new VertexData();
     vertices.positions = data.positions;
     vertices.indices = data.indices;
-    VertexData.ComputeNormals(data.positions, data.indices, normals);
-    vertices.normals = normals;
+    if (data.normals?.length === data.positions.length)
+      vertices.normals = data.normals;
+    else {
+      const normals: number[] = [];
+      VertexData.ComputeNormals(data.positions, data.indices, normals);
+      vertices.normals = normals;
+    }
     if (data.colors?.length === (data.positions.length / 3) * 4)
       vertices.colors = data.colors;
     vertices.uvs =
@@ -709,6 +720,8 @@ export class Game {
       }
       for (const [i, prop] of chunk.breakables.entries()) {
         const pole = prop.kind === 'pole',
+          key = breakableKey(prop),
+          broken = this.breakableDamage.isBroken(prop),
           mesh = pole
             ? MeshBuilder.CreateCylinder(
                 `${chunk.key}:breakable-pole-${i}`,
@@ -729,6 +742,7 @@ export class Game {
         mesh.rotation.y = prop.heading;
         mesh.material = this.materials.structures;
         mesh.isPickable = false;
+        mesh.setEnabled(!broken);
         if (pole) {
           const head = MeshBuilder.CreateBox(
             'streetlight-head',
@@ -743,12 +757,14 @@ export class Game {
         const lamp = pole
           ? lamps.find((p) => p.x === prop.point.x && p.z === prop.point.z)
           : undefined;
+        if (broken && lamp) lamps.splice(lamps.indexOf(lamp), 1);
         meshes.push(mesh);
         breakables.push({
+          key,
           mesh,
           pole,
           fenceType: prop.fenceType,
-          broken: false,
+          broken,
           lamp,
         });
         installMs += performance.now() - stepStarted;
@@ -1048,6 +1064,7 @@ export class Game {
             )
               return;
             prop.broken = true;
+            this.breakableDamage.markBroken(prop.key);
             body.body.setMotionType(PhysicsMotionType.DYNAMIC);
             if (prop.lamp) {
               const i = chunk.lamps.indexOf(prop.lamp);

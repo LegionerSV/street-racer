@@ -261,7 +261,7 @@ it('мобильное качество освобождает солнечны�
   try {
     // Act
     expect(materials.road.bumpTexture).toBeTruthy();
-    expect(facade.bumpTexture).toBeTruthy();
+    expect(facade.bumpTexture).toBeNull();
     expect(materials.road.bumpTexture!.gammaSpace).toBe(false);
     expect(materials.road.specularTexture!.gammaSpace).toBe(false);
     system.update(
@@ -288,7 +288,7 @@ it('мобильное качество освобождает солнечны�
     );
     expect(scene.shadowsEnabled).toBe(true);
     expect(materials.road.bumpTexture).toBeTruthy();
-    expect(facade.bumpTexture).toBeTruthy();
+    expect(facade.bumpTexture).toBeNull();
     system.update(
       0,
       1 / 30,

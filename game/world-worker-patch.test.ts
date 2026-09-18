@@ -43,11 +43,15 @@ const region = (sourceTiles: SourceTileData[]): RegionData => ({
 it('готовит WorldPatch отдельно от активного мира и не коммитит ошибочный prepare', async () => {
   // Arrange
   const responses: WorkerResponse[] = [],
+    transfers: Transferable[][] = [],
     surface = {
       onmessage: undefined as
         | ((event: { data: WorkerRequest }) => void)
         | undefined,
-      postMessage: (response: WorkerResponse) => responses.push(response),
+      postMessage: (response: WorkerResponse, transfer: Transferable[] = []) => {
+        responses.push(response);
+        transfers.push(transfer);
+      },
     },
     firstTile = tile('15/16384/16384', road(10, 0.001)),
     secondTile = tile('15/16385/16384', road(20, 0.012));
@@ -95,8 +99,11 @@ it('готовит WorldPatch отдельно от активного мира 
   }
   expect(before.type).toBe('chunk');
   expect(during.type).toBe('chunk');
-  if (before.type === 'chunk' && during.type === 'chunk')
-    expect(during.chunk).toBe(before.chunk);
+  if (before.type === 'chunk' && during.type === 'chunk') {
+    expect(during.chunk).toStrictEqual(before.chunk);
+    expect(before.chunk.terrain.positions).toBeInstanceOf(Float32Array);
+  }
+  expect(transfers.some((transfer) => transfer.length > 0)).toBe(true);
   expect(failed).toEqual(
     expect.objectContaining({
       type: 'error',

@@ -2,6 +2,27 @@ import type { Breakable } from './types';
 
 type MovingBody = { getLinearVelocity: () => { x: number; z: number } };
 
+export function breakableKey(prop: Breakable) {
+  return [
+    prop.kind,
+    prop.fenceType || '',
+    prop.point.x.toFixed(2),
+    prop.point.z.toFixed(2),
+    prop.heading.toFixed(3),
+    (prop.length || 0).toFixed(2),
+  ].join('/');
+}
+
+export class BreakableDamage {
+  private broken = new Set<string>();
+  markBroken(key: string) {
+    this.broken.add(key);
+  }
+  isBroken(prop: Breakable) {
+    return this.broken.has(breakableKey(prop));
+  }
+}
+
 export class ImpactSpeeds {
   private beforeStep = new WeakMap<MovingBody, number>();
   capture(body: MovingBody) {

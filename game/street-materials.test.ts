@@ -52,7 +52,7 @@ it('деревянный фасад показывает горизонталь�
   expect(wood.normal).toHaveLength(size * size * 4);
 });
 
-it('фасады сохраняют три общих типа, но получают рельеф и разную отделку', () => {
+it('фасады сохраняют цвет и отделку без мерцающего normal map', () => {
   // Arrange
   const engine = new NullEngine(),
     scene = new Scene(engine);
@@ -64,36 +64,23 @@ it('фасады сохраняют три общих типа, но получ�
     expect(facades).toHaveLength(4);
     expect(
       facades.every(
-        (material) =>
-          material.diffuseTexture &&
-          material.emissiveTexture &&
-          material.bumpTexture,
+        (material) => material.diffuseTexture && material.emissiveTexture,
       ),
-    ).toBe(true);
-    expect(
-      facades.every((material) => material.bumpTexture?.gammaSpace === false),
     ).toBe(true);
     expect(
       [...facades, ...bareFacades].every((material) =>
-        [
-          material.diffuseTexture,
-          material.emissiveTexture,
-          material.bumpTexture,
-        ].every((texture) => texture?.anisotropicFilteringLevel === 16),
+        [material.diffuseTexture, material.emissiveTexture].every(
+          (texture) => texture?.anisotropicFilteringLevel === 16,
+        ),
       ),
     ).toBe(true);
     expect(
-      [...facades, ...bareFacades].every(
-        (material) => material.bumpTexture?.level === 0,
-      ),
+      [...facades, ...bareFacades].every((material) => !material.bumpTexture),
     ).toBe(true);
-    expect(new Set(facades.map((material) => material.bumpTexture)).size).toBe(
-      4,
-    );
     expect(bareFacades).toHaveLength(4);
     expect(
       bareFacades.every(
-        (material) => material.diffuseTexture && material.bumpTexture,
+        (material) => material.diffuseTexture && material.emissiveTexture,
       ),
     ).toBe(true);
     expect(

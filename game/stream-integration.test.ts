@@ -723,7 +723,7 @@ it('подготовка нового мира не меняет текущие 
     during.type === 'chunk' &&
     after.type === 'chunk'
   ) {
-    expect(during.chunk).toBe(before.chunk);
+    expect(during.chunk).toStrictEqual(before.chunk);
     expect(before.chunk.road.indices.length).toBeGreaterThan(0);
     expect(after.chunk.road.indices).toHaveLength(0);
     expect(staged.type).toBe('chunk');
@@ -736,7 +736,7 @@ it('подготовка нового мира не меняет текущие 
   expect(cleanBefore.type).toBe('chunk');
   expect(cleanAfter.type).toBe('chunk');
   if (cleanBefore.type === 'chunk' && cleanAfter.type === 'chunk')
-    expect(cleanAfter.chunk).toBe(cleanBefore.chunk);
+    expect(cleanAfter.chunk).toStrictEqual(cleanBefore.chunk);
 });
 it('переносит трафик на ту же дорогу после перестановки индексов и запрещает смену сети в гонке', () => {
   // Arrange

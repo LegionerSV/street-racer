@@ -1,5 +1,10 @@
 import { expect, it } from 'vitest';
-import { ImpactSpeeds, shouldBreak } from './breakables';
+import {
+  BreakableDamage,
+  breakableKey,
+  ImpactSpeeds,
+  shouldBreak,
+} from './breakables';
 
 it('парковое ограждение сбивается при умеренном ударе', () => {
   // Arrange
@@ -42,4 +47,31 @@ it('берёт скорость до физического шага, даже �
   const broken = shouldBreak(fence, 10000, impact.atContact(car));
   // Assert
   expect(broken).toBe(true);
+});
+
+it('сохраняет сбитую ограду при пересборке рельефа', () => {
+  // Arrange
+  const fence = {
+    kind: 'fence' as const,
+    fenceType: 'park' as const,
+    point: { x: 12.345, y: 1, z: -67.891 },
+    heading: 0.25,
+    length: 2,
+  };
+
+  // Act
+  const before = breakableKey(fence);
+  const after = breakableKey({ ...fence, point: { ...fence.point, y: 4.5 } });
+  const damage = new BreakableDamage();
+  damage.markBroken(before);
+
+  // Assert
+  expect(after).toBe(before);
+  expect(damage.isBroken({ ...fence, point: { ...fence.point, y: 4.5 } })).toBe(
+    true,
+  );
+  expect(breakableKey({ ...fence, fenceType: 'embankment' })).not.toBe(before);
+  expect(breakableKey({ ...fence, kind: 'pole', fenceType: undefined })).not.toBe(
+    before,
+  );
 });
