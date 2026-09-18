@@ -59,6 +59,7 @@ type EncodedElevationGrid = Omit<ElevationGrid, 'values' | 'patches'> & {
 
 const BASE64 =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const SOURCE_TILE_BOUNDARY_TOLERANCE = 1e-12;
 
 function fail(code: TileArtifactErrorCode, message: string): never {
   throw new TileArtifactError(code, message);
@@ -99,6 +100,10 @@ function validateBounds(bounds: SourceTileBounds, label: string) {
     bounds.west >= bounds.east
   )
     fail('invalid-bounds', `${label} содержат некорректные координаты.`);
+}
+
+function equalSourceTileBoundary(actual: number, expected: number) {
+  return Math.abs(actual - expected) <= SOURCE_TILE_BOUNDARY_TOLERANCE;
 }
 
 function validateElements(elements: OSMElement[]) {
@@ -182,10 +187,10 @@ function validateArtifact(input: TileArtifactV1Input) {
   validateBounds(input.bufferedBounds, 'Buffered bounds');
   const exact = sourceTileBounds(input);
   if (
-    input.coreBounds.south !== exact.south ||
-    input.coreBounds.west !== exact.west ||
-    input.coreBounds.north !== exact.north ||
-    input.coreBounds.east !== exact.east
+    !equalSourceTileBoundary(input.coreBounds.south, exact.south) ||
+    !equalSourceTileBoundary(input.coreBounds.west, exact.west) ||
+    !equalSourceTileBoundary(input.coreBounds.north, exact.north) ||
+    !equalSourceTileBoundary(input.coreBounds.east, exact.east)
   )
     fail('invalid-bounds', 'Core bounds не соответствуют XYZ source-тайла.');
   if (

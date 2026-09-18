@@ -156,6 +156,28 @@ describe('TileArtifactV1', () => {
     );
   });
 
+  it('принимает core bounds с разницей в один ULP после вычисления в другом runtime', () => {
+    // Arrange.
+    const input = artifact();
+    input.coreBounds.south += 1e-14;
+
+    // Act / Assert.
+    expect(() => encodeTileArtifact(input)).not.toThrow();
+  });
+
+  it('отклоняет core bounds с существенным отклонением от XYZ', () => {
+    // Arrange.
+    const input = artifact();
+    input.coreBounds.south += 1e-10;
+
+    // Act / Assert.
+    expectArtifactError(
+      () => encodeTileArtifact(input),
+      'invalid-bounds',
+      'Core bounds не соответствуют XYZ source-тайла.',
+    );
+  });
+
   it('отклоняет нечисловые высоты и некорректные bounds до кодирования', () => {
     // Arrange
     const invalidHeight = artifact();
