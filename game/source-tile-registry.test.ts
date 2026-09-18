@@ -44,6 +44,10 @@ const region = (sourceTiles: SourceTileData[]): RegionData => ({
   fetchedAt: 'test',
   heightDatum: 0,
 });
+const regionAt = (
+  at: RegionData['center'],
+  sourceTiles: SourceTileData[],
+): RegionData => ({ ...region(sourceTiles), center: at });
 const road: OSMElement[] = [
   { type: 'node', id: 1, lat: 0, lon: 0 },
   { type: 'node', id: 2, lat: 0, lon: 0.001 },
@@ -105,6 +109,63 @@ it('удаляет OSM-объект и его рёбра после выгруз
   expect(staged.registry.referenceCount('way/10')).toBe(0);
   expect(after.edges).toHaveLength(0);
   expect(after.loadedTiles).toEqual([]);
+});
+
+it('добавляет и удаляет процедурный шпиль вместе с source-тайлом собора', () => {
+  // Arrange
+  const peterCenter = { lat: 59.950105, lon: 30.316005 },
+    cathedral: OSMElement[] = [
+      { type: 'node', id: 901, lat: 59.94995, lon: 30.31575 },
+      { type: 'node', id: 902, lat: 59.94995, lon: 30.31625 },
+      { type: 'node', id: 903, lat: 59.95035, lon: 30.31625 },
+      { type: 'node', id: 904, lat: 59.95035, lon: 30.31575 },
+      { type: 'way', id: 900, nodes: [901, 902, 903, 904, 901] },
+      {
+        type: 'relation',
+        id: 2594681,
+        members: [{ type: 'way', ref: 900, role: 'outer' }],
+        tags: {
+          type: 'multipolygon',
+          building: 'cathedral',
+          wikidata: 'Q736587',
+        },
+      },
+    ],
+    source = tile('15/19143/9524', cathedral),
+    full = regionAt(peterCenter, [source]),
+    empty = regionAt(peterCenter, []),
+    registry = SourceTileRegistry.fromRegion(full)!;
+  // Act
+  const added = buildIncrementalWorld(
+      buildWorld(empty),
+      registry,
+      registry.keys(),
+      full,
+    ),
+    staged = registry.stage(empty),
+    removed = buildIncrementalWorld(
+      added,
+      staged.registry,
+      staged.registry.affectedTiles(staged.changed, staged.changedElements),
+      full,
+      staged.changedElements,
+    );
+  // Assert
+  expect(
+    added.buildings.filter(
+      (building) => building.sourceKey === 'relation/2594681',
+    ),
+  ).toHaveLength(3);
+  expect(Math.max(...added.buildings.map((building) => building.height))).toBe(
+    122.5,
+  );
+  expect(
+    removed.buildings.some(
+      (building) =>
+        building.group === 'relation/2594681' ||
+        building.sourceKey === 'relation/2594681',
+    ),
+  ).toBe(false);
 });
 
 it('перестраивает только затронутые тайлы, включая соседний halo', () => {

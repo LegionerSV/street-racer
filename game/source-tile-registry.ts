@@ -172,6 +172,8 @@ function mergeByKey<T, K>(
 
 const buildingKey = (building: Building) =>
   `${building.osmType ?? 'way'}/${building.id}`;
+const buildingSourceKey = (building: Building) =>
+  building.sourceKey ?? buildingKey(building);
 const areaKey = (area: Area) => `${area.osmType ?? 'way'}/${area.id}`;
 
 function mergeBuildings(
@@ -179,7 +181,7 @@ function mergeBuildings(
   rebuilt: Building[],
   affected: Set<string>,
 ) {
-  return mergeByKey(previous, rebuilt, affected, buildingKey);
+  return mergeByKey(previous, rebuilt, affected, buildingSourceKey);
 }
 
 function mergeAreas(previous: Area[], rebuilt: Area[], affected: Set<string>) {

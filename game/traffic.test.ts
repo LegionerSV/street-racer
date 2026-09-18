@@ -3,8 +3,19 @@ import { NullEngine, Scene, Vector3, HavokPlugin, FreeCamera } from '@babylonjs/
 import HavokPhysics from '@babylonjs/havok';
 import { readFile } from 'node:fs/promises';
 import { buildWorld } from './network';
-import { Traffic } from './traffic';
+import { roadPitch, Traffic } from './traffic';
 import type { OSMElement, RegionData } from './types';
+
+it('наклоняет машину вдоль дорожного профиля, а не оставляет её горизонтально в воздухе', () => {
+  // Arrange
+  const path = [
+    { x: 0, y: 0, z: 0 },
+    { x: 0, y: 4, z: 40 },
+  ];
+  // Act / Assert
+  expect(roadPitch(path, 20)).toBeCloseTo(-Math.atan2(4, 40), 5);
+  expect(roadPitch(path.map((point) => ({ ...point, y: 3 })), 20)).toBe(0);
+});
 
 describe('Соперники', () => {
   it('все три бота проходят три круга и получают время финиша', async () => {

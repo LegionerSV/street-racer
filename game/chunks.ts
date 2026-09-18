@@ -3,6 +3,7 @@ import { bridgeRailingSpans, embankmentRailingSpans } from './bridge-railings';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
+import { blendGroundHeight } from './ground-height';
 import {
   SpatialGrid,
   boundsOf,
@@ -794,13 +795,8 @@ export function buildChunk(
     const query = { minX: x, maxX: x, minZ: z, maxZ: z },
       near = index.spatial.query(query);
     const y = sampleElevation(world.elevation, x, z);
-    let best = Infinity,
-      nearestHeight = y,
-      roadHeight = y,
-      weightedHeight = 0,
-      totalWeight = 0,
-      minHeight = Infinity,
-      maxHeight = -Infinity;
+    let roadHeight = y;
+    const roadSamples: { height: number; influence: number }[] = [];
     const groundSegments = near.filter(
       (s) => !s.edge.bridge && !s.edge.tunnel && s.edge.layer === 0,
     );
@@ -810,25 +806,11 @@ export function buildChunk(
       if (projected.distance < limit) {
         const influence =
             1 - smooth((projected.distance - s.edge.width / 2 - 3) / 4),
-          candidate = y + (projected.point.y - 0.3 - y) * influence,
-          weight = influence * influence;
-        if (projected.distance < best) {
-          best = projected.distance;
-          nearestHeight = candidate;
-        }
-        weightedHeight += candidate * weight;
-        totalWeight += weight;
-        if (influence > 0.05) {
-          minHeight = Math.min(minHeight, projected.point.y - 0.3);
-          maxHeight = Math.max(maxHeight, projected.point.y - 0.3);
-        }
+          height = projected.point.y - 0.3;
+        roadSamples.push({ height, influence });
       }
     }
-    if (totalWeight)
-      roadHeight =
-        maxHeight - minHeight <= 0.3
-          ? weightedHeight / totalWeight
-          : nearestHeight;
+    roadHeight = blendGroundHeight(y, roadSamples);
     const p = { x, y: 0, z };
     for (const area of index.waters.query(query)) {
       const inside =
@@ -840,7 +822,7 @@ export function buildChunk(
             projectOnSegment(p, a, ring[(i + 1) % ring.length]).distance < 18,
         ),
       );
-      if ((inside || bank) && best === Infinity)
+      if ((inside || bank) && !roadSamples.length)
         roadHeight = Math.min(roadHeight, waterLevel(area) - 3);
     }
     index.ground.set(cacheKey, roadHeight);

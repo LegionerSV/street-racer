@@ -83,10 +83,9 @@ it('фасады сохраняют три общих типа, но получ�
       ),
     ).toBe(true);
     expect(
-      bareFacades.every((material) => material.bumpTexture?.level === 0.35),
-    ).toBe(true);
-    expect(
-      facades.every((material) => material.bumpTexture?.level === 0.75),
+      [...facades, ...bareFacades].every(
+        (material) => material.bumpTexture?.level === 0,
+      ),
     ).toBe(true);
     expect(new Set(facades.map((material) => material.bumpTexture)).size).toBe(
       4,

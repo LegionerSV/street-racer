@@ -110,6 +110,7 @@ export type Restriction = {
 export type Building = {
   id: number;
   osmType?: 'way' | 'relation';
+  sourceKey?: string;
   footprint: Point[];
   holes?: Point[][];
   height: number;

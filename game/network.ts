@@ -46,6 +46,7 @@ import {
 import { roadLayout, directedLanes, roadTypes } from './lanes';
 import { buildingCoveredByParts } from './buildings';
 import { applyBuildingAppearances } from './building-appearance';
+import { addLandmarkSupplements } from './landmark-supplements';
 import { SpatialGrid, boundsOf, overlaps } from './geometry';
 import {
   coverageBounds,
@@ -439,6 +440,26 @@ export function buildWorld(region: RegionData): World {
       ((t.building && t.building !== 'no') || isBuildingPart(t)) &&
       t.location !== 'underground'
     ) {
+      const fortification =
+        t.castle_type === 'citadel' ||
+        ['yes', 'true', '1'].includes(t.defensive_works);
+      const footprintArea =
+          Math.abs(
+            footprint.reduce(
+              (sum, point, index) =>
+                sum +
+                point.x * footprint[(index + 1) % footprint.length].z -
+                footprint[(index + 1) % footprint.length].x * point.z,
+              0,
+            ),
+          ) / 2,
+        mappedHeight = osmLength(t.height),
+        generatedFortificationHeight =
+          fortification &&
+          mappedHeight === undefined &&
+          t['building:levels'] === undefined
+            ? clamp(Math.sqrt(footprintArea) / 35, 4.5, 12)
+            : undefined;
       const fallbackLevels = ['garage', 'garages', 'shed', 'hut'].includes(
         t.building,
       )
@@ -468,12 +489,17 @@ export function buildWorld(region: RegionData): World {
           'school',
         ].includes(t.building);
       const floorHeight = publicUse ? 4.2 : 3;
-      const explicitHeight = osmLength(t.height),
+      const explicitHeight = mappedHeight,
         levels = tagsNumber(
           t['building:levels'],
           explicitHeight
             ? Math.max(1, Math.round(explicitHeight / floorHeight))
-            : fallbackLevels,
+            : generatedFortificationHeight
+              ? Math.max(
+                  1,
+                  Math.round(generatedFortificationHeight / floorHeight),
+                )
+              : fallbackLevels,
         );
       const roof = t['roof:shape'] || 'flat',
         parsedRoofAngle =
@@ -505,9 +531,13 @@ export function buildWorld(region: RegionData): World {
             ? (Math.tan((roofAngle * Math.PI) / 180) * footprintWidth) / 2
             : calculatedGable);
       const technicalHeight =
-        ['flat', 'terrace'].includes(roof) && levels > 0 ? 0.8 : 0;
+        !fortification && ['flat', 'terrace'].includes(roof) && levels > 0
+          ? 0.8
+          : 0;
       const height = clamp(
-        explicitHeight ?? levels * floorHeight + roofHeight + technicalHeight,
+        explicitHeight ??
+          generatedFortificationHeight ??
+          levels * floorHeight + roofHeight + technicalHeight,
         0.1,
         600,
       );
@@ -515,7 +545,7 @@ export function buildWorld(region: RegionData): World {
         t['building:material'] ||
         t['building:facade:material'] ||
         t.material ||
-        (t.shop === 'mall' ? 'glass' : undefined);
+        (t.shop === 'mall' ? 'glass' : fortification ? 'brick' : undefined);
       const confirmedWindows =
         ['yes', 'true', '1'].includes(t.window) ||
         ['yes', 'true', '1'].includes(t.windows) ||
@@ -706,9 +736,20 @@ export function buildWorld(region: RegionData): World {
           tags.material ||
           linked?.material ||
           (tags.historic === 'citywalls' ? 'brick' : 'stone'),
+        wallLength = line.slice(1).reduce(
+          (sum, point, index) => sum + distance2(line[index], point),
+          0,
+        ),
+        mappedLevels = osmLength(tags['building:levels']),
+        generatedHeight = clamp(Math.sqrt(wallLength * width) / 3, 2.5, 12),
         height = Math.max(
           0.5,
-          osmLength(tags.height) ?? (tags.historic === 'citywalls' ? 6 : 2.5),
+          osmLength(tags.height) ??
+            (mappedLevels !== undefined
+              ? mappedLevels * 3
+              : linked
+                ? Math.min(generatedHeight, linked.height * 0.8)
+                : generatedHeight),
         );
       buildings.push({
         id: e.id,
@@ -729,6 +770,7 @@ export function buildWorld(region: RegionData): World {
         osmTags: { ...tags },
       });
     }
+  addLandmarkSupplements(buildings, region.center);
   // Части здания заменяют общую оболочку только при полном покрытии у земли.
   // Надземные и перекрывающиеся части не должны удалять оставшиеся этажи/крылья.
   const parts = new SpatialGrid<Building>(250, objectBounds);

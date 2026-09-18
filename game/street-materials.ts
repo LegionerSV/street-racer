@@ -55,8 +55,8 @@ export function streetMaterials(scene: Scene) {
           normal,
           size,
         );
-        // На глухих длинных стенах сильный рельеф даёт ложные светлые полосы.
-        mat.bumpTexture.level = windows ? 0.75 : 0.35;
+        // Normal map на длинных фасадах мерцает даже с mipmap и анизотропией.
+        mat.bumpTexture.level = 0;
         mat.bumpTexture.gammaSpace = false;
         for (const t of [
           mat.diffuseTexture,

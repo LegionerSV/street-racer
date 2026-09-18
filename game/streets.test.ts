@@ -32,7 +32,7 @@ it('надземный проезд под зданием сохраняет у�
   expect(w.buildings[0].minHeight).toBe(6);
 });
 
-it('обратный обход контура сохраняет фасадные UV, вдали остаётся силуэт',()=>{
+it('обратный обход контура сохраняет фасадные UV вблизи и вдали',()=>{
   // Arrange
   const outline=[{x:20,y:0,z:20},{x:70,y:0,z:20},{x:70,y:0,z:70},{x:20,y:0,z:70}];
   for(const footprint of [outline,[...outline].reverse()]){
@@ -44,7 +44,9 @@ it('обратный обход контура сохраняет фасадны
     expect(facade.positions.length).toBeGreaterThan(0);
     expect(facade.uvs!.length).toBe(facade.positions.length/3*2);
     expect(close.windows.positions).toHaveLength(0);
-    expect(far.facades!.every(m=>m.positions.length===0)).toBe(true);
+    const farFacade=far.facades!.find(m=>m.positions.length)!;
+    expect(farFacade.positions.length).toBeGreaterThan(0);
+    expect(farFacade.uvs!.length).toBe(farFacade.positions.length/3*2);
     expect(far.buildings.positions.length).toBeGreaterThan(0);
     for(let i=0;i<facade.positions.length;i+=3){const x=facade.positions[i],z=facade.positions[i+2];expect(x===20||x===70||z===20||z===70).toBe(true);}
   }

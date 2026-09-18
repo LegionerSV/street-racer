@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Варианты парковой решётки</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #111820; color: #ecf4f6; }
+      body { margin: 0; padding: 30px; }
+      h1 { margin: 0 0 8px; font-size: 24px; }
+      .lead { margin: 0 0 24px; color: #a9bac0; }
+      .grid { display: grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); gap: 18px; }
+      article { overflow: hidden; border: 1px solid #31434b; border-radius: 12px; background: #182229; }
+      .scene { position: relative; height: 250px; overflow: hidden; background: linear-gradient(#a9c2d0 0 45%, #879c76 45% 68%, #3c4548 68%); }
+      .road { position: absolute; inset: 68% -10% -30%; transform: perspective(500px) rotateX(62deg); background: #252d32; border-top: 7px solid #a8a297; }
+      .path { position: absolute; left: 0; right: 0; top: 57%; height: 31px; background: #aaa49a; transform: skewY(-1deg); }
+      .trees { position: absolute; inset: 18% 0 auto; color: #173a2c; font-size: 66px; letter-spacing: 28px; white-space: nowrap; opacity: .96; }
+      .fence { position: absolute; z-index: 2; left: -2%; right: -2%; top: 47%; height: 94px; display: flex; align-items: end; border-bottom: 8px solid #252a2d; }
+      .fence::before, .fence::after { content: ""; position: absolute; left: 0; right: 0; height: 7px; background: #252a2d; box-shadow: 0 2px 2px #0005; }
+      .fence::before { top: 7px; } .fence::after { top: 61px; }
+      .bars { width: 100%; height: 100%; background: repeating-linear-gradient(90deg, transparent 0 16px, #252a2d 16px 22px, transparent 22px 36px); }
+      .spear .bars { clip-path: polygon(0 15%, 2% 0, 4% 15%, 6% 0, 8% 15%, 10% 0, 12% 15%, 14% 0, 16% 15%, 18% 0, 20% 15%, 22% 0, 24% 15%, 26% 0, 28% 15%, 30% 0, 32% 15%, 34% 0, 36% 15%, 38% 0, 40% 15%, 42% 0, 44% 15%, 46% 0, 48% 15%, 50% 0, 52% 15%, 54% 0, 56% 15%, 58% 0, 60% 15%, 62% 0, 64% 15%, 66% 0, 68% 15%, 70% 0, 72% 15%, 74% 0, 76% 15%, 78% 0, 80% 15%, 82% 0, 84% 15%, 86% 0, 88% 15%, 90% 0, 92% 15%, 94% 0, 96% 15%, 98% 0, 100% 15%, 100% 100%, 0 100%); }
+      .dense .bars { background: repeating-linear-gradient(90deg, transparent 0 9px, #252a2d 9px 14px, transparent 14px 24px); }
+      .simple { height: 90px; }
+      .simple::after { display: none; }
+      .copy { padding: 16px 18px 18px; }
+      h2 { margin: 0 0 7px; font-size: 18px; }
+      p { margin: 0; color: #b9c8cc; line-height: 1.45; font-size: 14px; }
+      .vote { color: #c9ff45; }
+      @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <h1>Парковая решётка — 2 метра, легко сбивается</h1>
+    <p class="lead">Один и тот же участок парка рядом с тротуаром и дорогой. Набережное ограждение остаётся без изменений.</p>
+    <main class="grid">
+      <article>
+        <div class="scene"><div class="trees">● ● ● ●</div><div class="path"></div><div class="fence simple"><div class="bars"></div></div><div class="road"></div></div>
+        <div class="copy"><h2>A · строгая решётка</h2><p>Редкие вертикали и одна верхняя перекладина. Самая чистая геометрия и минимальная цена рендера.</p></div>
+      </article>
+      <article>
+        <div class="scene"><div class="trees">● ● ● ●</div><div class="path"></div><div class="fence spear"><div class="bars"></div></div><div class="road"></div></div>
+        <div class="copy"><h2 class="vote">B · петербургская ✓</h2><p>Вертикали, две перекладины и простой силуэт пик. Мой выбор: читается как парковая ограда, но не выглядит тяжёлой стеной.</p></div>
+      </article>
+      <article>
+        <div class="scene"><div class="trees">● ● ● ●</div><div class="path"></div><div class="fence dense"><div class="bars"></div></div><div class="road"></div></div>
+        <div class="copy"><h2>C · частая решётка</h2><p>Более плотный ритм прутьев. Выглядит богаче, но сильнее мерцает вдали и увеличивает число граней.</p></div>
+      </article>
+    </main>
+  </body>
+</html>

@@ -738,9 +738,9 @@ export default function Home() {
               <span>ПРИГОТОВЬСЯ</span>
             </div>
           )}
-          {hud.loading && (
+          {hud.loading && hud.mapStatus && (
             <output className="streaming-banner">
-              {hud.mapStatus || 'Подготавливаем улицы впереди…'}
+              {hud.mapStatus}
             </output>
           )}
           {hud.nearRace && !hud.race && (

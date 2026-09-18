@@ -86,6 +86,7 @@ import {
 import { edgeById, edgeStableId } from './road-graph';
 import { nextRaceTurn } from './navigation';
 import { ImpactSpeeds, shouldBreak } from './breakables';
+import { createFenceVisual } from './breakable-visuals';
 import { signalApproaches } from './signal-approaches';
 import { sampleWorldSurface } from './surface-contact';
 import { chooseClearRespawn, RecoveryWatchdog } from './driving-safety';
@@ -714,14 +715,15 @@ export class Game {
                 { height: 7, diameter: 0.16, tessellation: 6 },
                 this.scene,
               )
-            : MeshBuilder.CreateBox(
-                `${chunk.key}:breakable-fence-${i}`,
-                { width: 0.14, height: 1.05, depth: prop.length || 2 },
+            : createFenceVisual(
                 this.scene,
+                prop.fenceType,
+                prop.length || 2,
               );
+        mesh.name = `${chunk.key}:breakable-${pole ? 'pole' : 'fence'}-${i}`;
         mesh.position.copyFromFloats(
           prop.point.x,
-          prop.point.y + (pole ? 3.5 : 0.525),
+          prop.point.y + (pole ? 3.5 : 0),
           prop.point.z,
         );
         mesh.rotation.y = prop.heading;

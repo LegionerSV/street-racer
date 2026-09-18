@@ -32,7 +32,7 @@ const world = (b = building) =>
     spawnEdge: null,
     routes: [],
   }) as World;
-it('использует фасадные текстуры вблизи и силуэты вдали без прямоугольника на каждое окно', () => {
+it('использует фасадные текстуры вблизи и вдали без прямоугольника на каждое окно', () => {
   // Arrange / Act
   const near = buildChunk(world(), '0,0', 0),
     far = buildChunk(world(), '0,0', 2);
@@ -41,7 +41,9 @@ it('использует фасадные текстуры вблизи и си�
   for (const mesh of near.facades!)
     expect(mesh.uvs?.length || 0).toBe((mesh.positions.length / 3) * 2);
   expect(near.windows.positions).toHaveLength(0);
-  expect(far.facades!.every((m) => !m.indices.length)).toBe(true);
+  expect(far.facades!.some((m) => m.indices.length > 0)).toBe(true);
+  for (const mesh of far.facades!)
+    expect(mesh.uvs?.length || 0).toBe((mesh.positions.length / 3) * 2);
   expect(far.buildings.indices.length).toBeLessThan(
     near.buildings.indices.length +
       near.facades!.reduce((sum, m) => sum + m.indices.length, 0),

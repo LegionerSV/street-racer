@@ -345,6 +345,7 @@ export function appendBuilding(
       return;
   }
   const windowed = hasFacadeWindows(b),
+    textured = windowed,
     detailed = lod === 0 && !(b.part && b.group) && windowed;
   const bareDetailed = lod === 0 && !windowed;
   const gateOpening =
@@ -434,13 +435,14 @@ export function appendBuilding(
   for (const ring of rings)
     for (let i = 0; i < ring.length; i++) {
       const allowed = !detailedEdge || detailedEdge(ring, i),
+        edgeTextured = textured && allowed,
         edgeDetailed = detailed && allowed,
         edgeBare = bareDetailed && allowed;
       const a = ring[i],
         b = ring[(i + 1) % ring.length],
         length = distance2(a, b),
         cuts = [0, 1];
-      const facade = edgeDetailed
+      const facade = edgeTextured
         ? facades[style]
         : edgeBare
           ? bareFacades[style] || shell
@@ -511,7 +513,7 @@ export function appendBuilding(
               { ...start, y: ya },
             ],
             c,
-            uv(edgeDetailed || edgeBare, floor, ya, yb),
+            uv(edgeTextured || edgeBare, floor, ya, yb),
           );
       }
       if (edgeDetailed) {

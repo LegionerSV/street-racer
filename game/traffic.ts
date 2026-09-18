@@ -17,7 +17,7 @@ import type {
   WorldPatch,
 } from './types';
 import { allowedTurn, outgoing, advanceTurnHistory } from './network';
-import { clamp, distance2, seeded } from './geo';
+import { clamp, distance2, pathLengths, pointAt, seeded } from './geo';
 import { laneOffsets } from './lanes';
 import { signalPhase } from './simulation';
 import { smoothPath, samplePath, type DrivingPath } from './driving-path';
@@ -55,6 +55,7 @@ type Agent = {
   speed: number;
   point: Point;
   heading: number;
+  pitch?: number;
   stuck: number;
   visual?: CarVisual;
   body?: PhysicsAggregate;
@@ -76,6 +77,24 @@ type Agent = {
     finishTime?: number;
   };
 };
+export function roadPitch(
+  points: Point[],
+  distance: number,
+  cumulative = pathLengths(points),
+) {
+  if (points.length < 2) return 0;
+  const before = pointAt(points, cumulative, Math.max(0, distance - 4)).point,
+    after = pointAt(
+      points,
+      cumulative,
+      Math.min(cumulative.at(-1) || 0, distance + 4),
+    ).point,
+    horizontal = distance2(before, after),
+    rise = after.y - before.y;
+  return horizontal && Math.abs(rise) > 1e-8
+    ? -Math.atan2(rise, horizontal)
+    : 0;
+}
 export function trafficBudget(
   meters: number,
   density: 'light' | 'city' | 'rush' = 'city',
@@ -338,6 +357,7 @@ export class Traffic {
       z: s.point.z - Math.sin(s.heading) * agent.laneOffset,
     };
     agent.heading = s.heading;
+    agent.pitch = roadPitch(plan.path.points, d, plan.path.stations);
     if (agent.race) {
       const r = agent.race,
         graphLength = r.route.edges.reduce(
@@ -368,7 +388,7 @@ export class Traffic {
     a.visual.root.position.copyFromFloats(a.point.x, a.point.y, a.point.z);
     a.visual.root.rotationQuaternion = Quaternion.RotationYawPitchRoll(
       a.heading,
-      0,
+      a.pitch || 0,
       0,
     );
     a.body = new PhysicsAggregate(
@@ -892,7 +912,7 @@ export class Traffic {
         if (!a.dynamic)
           body.setTargetTransform(
             new Vector3(a.point.x, a.point.y, a.point.z),
-            Quaternion.RotationYawPitchRoll(a.heading, 0, 0),
+            Quaternion.RotationYawPitchRoll(a.heading, a.pitch || 0, 0),
           );
         for (const [wheelIndex, wheel] of a.visual!.wheels.entries()) {
           wheel.rotation.y = wheelIndex < 2 ? a.turn! * 0.22 : 0;

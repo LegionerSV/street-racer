@@ -21,6 +21,60 @@ const node = (
   lat,
   tags: signal ? { highway: 'traffic_signals' } : {},
 });
+
+it('выводит высоту цитадели из масштаба, но сохраняет явные OSM-теги', () => {
+  // Arrange
+  const citadel = (size: number, extra: Record<string, string> = {}) => {
+    const elements: OSMElement[] = [
+      node(1, 0, 0),
+      node(2, size, 0),
+      node(3, size, size),
+      node(4, 0, size),
+      {
+        type: 'way',
+        id: 77,
+        nodes: [1, 2, 3, 4, 1],
+        tags: {
+          building: 'castle',
+          historic: 'castle',
+          castle_type: 'citadel',
+          ...extra,
+        },
+      },
+    ];
+    return buildWorld(region(elements)).buildings[0];
+  };
+  // Act
+  const compact = citadel(0.0005),
+    broad = citadel(0.004),
+    rejected = citadel(0.004, {
+      castle_type: '',
+      defensive_works: 'no',
+    }),
+    tagged = citadel(0.004, {
+      height: '8',
+      'building:material': 'stone',
+      'building:colour': '#c7ad79',
+    });
+  // Assert
+  expect(compact.height).toBeLessThan(broad.height);
+  expect(compact.height).toBeGreaterThanOrEqual(4.5);
+  expect(broad.height).toBeLessThanOrEqual(12);
+  expect(broad).toMatchObject({
+    material: 'brick',
+    facadeColour: undefined,
+    windowPolicy: 'forbid',
+  });
+  expect(rejected).toMatchObject({
+    material: undefined,
+    technicalHeight: 0.8,
+  });
+  expect(tagged).toMatchObject({
+    height: 8,
+    material: 'stone',
+    facadeColour: '#c7ad79',
+  });
+});
 const road = (id: number, nodes: number[], tags = {}): OSMElement => ({
   type: 'way',
   id,
@@ -292,9 +346,9 @@ describe('Дорожная сеть', () => {
       height: 4,
     });
   });
-  it('строит линейную городскую стену как узкий текстурированный объект без окон', () => {
+  it('выводит высоту линейной городской стены из геометрии и сохраняет явный OSM height', () => {
     // Arrange
-    const elements: OSMElement[] = [
+    const elements = [
       node(1, 0, 0),
       node(2, 0.002, 0),
       node(3, 0.003, 0.001),
@@ -304,17 +358,25 @@ describe('Дорожная сеть', () => {
         nodes: [1, 2, 3],
         tags: { historic: 'citywalls', barrier: 'wall' },
       },
-    ];
+    ] satisfies OSMElement[];
+    const taggedElements = elements.map((element) =>
+      element.type === 'way'
+        ? { ...element, id: 78, tags: { ...element.tags, height: '7.4' } }
+        : element,
+    );
     // Act
     const wall = buildWorld(region(elements)).buildings[0];
+    const taggedWall = buildWorld(region(taggedElements)).buildings[0];
     // Assert
     expect(wall).toMatchObject({
       id: 77,
       kind: 'wall',
       material: 'brick',
-      height: 6,
       windowPolicy: 'forbid',
     });
+    expect(wall.height).toBeGreaterThan(2.5);
+    expect(wall.height).toBeLessThanOrEqual(12);
+    expect(taggedWall.height).toBe(7.4);
     expect(wall.footprint.length).toBe(6);
   });
   it('наследует материал и цвет линейной стены от соединённой башни', () => {
