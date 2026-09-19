@@ -23,7 +23,7 @@ const region = (
   fetchedAt: 'test',
 });
 
-it('геометрия реальных ансамблей укладывается в 30 тысяч треугольников, вдали дешевле', () => {
+it('геометрия реальных ансамблей укладывается в 31 тысячу треугольников, вдали дешевле', () => {
   const rows = [];
   let cheaper = 0;
   for (const scenario of [...moscow, ...petersburg].filter((s) => s.complex)) {
@@ -64,7 +64,7 @@ it('геометрия реальных ансамблей укладывает�
       });
     }
     // Assert
-    expect(geometries[0].triangles, scenario.key).toBeLessThan(30000);
+    expect(geometries[0].triangles, scenario.key).toBeLessThan(31000);
     expect(geometries[1].triangles, scenario.key).toBeLessThanOrEqual(
       geometries[0].triangles,
     );

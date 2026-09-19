@@ -130,15 +130,39 @@ export function hasExplicitWindows(tags: Tags) {
   const negative = new Set(['no', 'false', '0', 'none']);
   return values.length > 0 && !values.some((value) => negative.has(value));
 }
+
+export function windowsForbiddenByTags(tags: Tags) {
+  const values = [tags.window, tags.windows, tags['building:windows']]
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => !!value);
+  const part = tags['building:part'] || '';
+  return (
+    values.some((value) => ['no', 'false', '0', 'none'].includes(value)) ||
+    [
+      'bridge',
+      'bunker',
+      'carport',
+      'roof',
+      'shelter',
+      'storage_tank',
+      'triumphal_arch',
+      'ventilation_kiosk',
+      'wall',
+    ].includes(tags.building || '') ||
+    ['citywalls', 'city_wall'].includes(tags.historic || '') ||
+    ['city_wall', 'wall'].includes(tags.barrier || '') ||
+    /^(abacus|architrav|baraban|base|column|cornice|cross|dome|pedestal|pediment|plinth|portico|pylon|roof|rotunda|spire|steps?|stilobate|stylobate|wall)/.test(
+      part,
+    )
+  );
+}
+
 export function hasFacadeWindows(b: Building) {
   const tags = b.osmTags || {};
   return (
     b.windowPolicy !== 'forbid' &&
-    hasExplicitWindows(tags) &&
-    !['triumphal_arch', 'wall', 'fortification'].includes(b.kind || '') &&
-    !['citywalls', 'city_wall'].includes(tags.historic || '') &&
-    !['city_wall', 'wall'].includes(tags.barrier || '') &&
-    tags['building:part'] !== 'wall'
+    !windowsForbiddenByTags(tags) &&
+    !['triumphal_arch', 'wall', 'fortification'].includes(b.kind || '')
   );
 }
 

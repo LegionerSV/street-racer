@@ -75,6 +75,42 @@ it('выводит высоту цитадели из масштаба, но с�
     facadeColour: '#c7ad79',
   });
 });
+
+it('по умолчанию даёт обычному зданию окна, но не конструктивным частям', () => {
+  // Arrange
+  const elements: OSMElement[] = [
+    node(1, 0, 0),
+    node(2, 0.0001, 0),
+    node(3, 0.0001, 0.0001),
+    node(4, 0, 0.0001),
+    node(5, 0.0002, 0),
+    node(6, 0.0003, 0),
+    node(7, 0.0003, 0.0001),
+    node(8, 0.0002, 0.0001),
+    {
+      type: 'way',
+      id: 101,
+      nodes: [1, 2, 3, 4, 1],
+      tags: { building: 'apartments' },
+    },
+    {
+      type: 'way',
+      id: 102,
+      nodes: [5, 6, 7, 8, 5],
+      tags: { 'building:part': 'steps' },
+    },
+  ];
+  // Act
+  const buildings = buildWorld(region(elements)).buildings;
+  // Assert
+  expect(buildings.find((building) => building.id === 101)).toMatchObject({
+    windowPolicy: 'procedural',
+  });
+  expect(buildings.find((building) => building.id === 102)).toMatchObject({
+    windowPolicy: 'forbid',
+  });
+});
+
 const road = (id: number, nodes: number[], tags = {}): OSMElement => ({
   type: 'way',
   id,

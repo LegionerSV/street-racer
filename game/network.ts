@@ -44,7 +44,7 @@ import {
   validateClearance,
 } from './clearance';
 import { roadLayout, directedLanes, roadTypes } from './lanes';
-import { buildingCoveredByParts, hasExplicitWindows } from './buildings';
+import { buildingCoveredByParts, windowsForbiddenByTags } from './buildings';
 import { applyBuildingAppearances } from './building-appearance';
 import { addLandmarkSupplements } from './landmark-supplements';
 import { SpatialGrid, boundsOf, overlaps } from './geometry';
@@ -557,10 +557,8 @@ export function buildWorld(region: RegionData): World {
         t['building:facade:material'] ||
         t.material ||
         (t.shop === 'mall' ? 'glass' : fortification ? 'brick' : undefined);
-      const confirmedWindows = hasExplicitWindows(t);
-      const windowPolicy: 'procedural' | 'forbid' = confirmedWindows
-        ? 'procedural'
-        : 'forbid';
+      const windowPolicy: 'procedural' | 'forbid' =
+        fortification || windowsForbiddenByTags(t) ? 'forbid' : 'procedural';
       buildings.push({
         id: e.id,
         osmType: e.type === 'relation' ? 'relation' : 'way',

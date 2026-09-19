@@ -83,7 +83,7 @@ it('не рисует жилые окна на триумфальной арке
   ).toBe(true);
 });
 
-it('рисует окна только при явном положительном теге и сохраняет голый фасад между LOD', () => {
+it('рисует окна по умолчанию, но уважает явный запрет и конструктивные части', () => {
   // Arrange.
   const untagged = { ...building, osmTags: {} };
   const tagged = { ...building, osmTags: { 'building:windows': 'yes' } };
@@ -92,6 +92,13 @@ it('рисует окна только при явном положительн�
     osmTags: { window: 'no', windows: 'yes' },
   };
   const empty = { ...building, osmTags: { windows: '   ' } };
+  const column = { ...building, osmTags: { 'building:part': 'column' } };
+  const wallPart = { ...building, osmTags: { 'building:part': 'wall' } };
+  const steps = { ...building, osmTags: { 'building:part': 'steps' } };
+  const rotunda = {
+    ...building,
+    osmTags: { 'building:part': 'rotunda_wall' },
+  };
   // Act.
   const near = buildChunk(world(untagged), '0,0', 0);
   const far = buildChunk(world(untagged), '0,0', 2);
@@ -99,15 +106,33 @@ it('рисует окна только при явном положительн�
   const conflicting = buildChunk(world(forbidden), '0,0', 0);
   const blank = buildChunk(world(empty), '0,0', 0);
   // Assert.
-  expect(near.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
-  expect(far.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
-  expect(near.bareFacades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
-  expect(far.bareFacades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
+  expect(near.facades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
+  expect(far.facades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
   expect(explicit.facades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
   expect(conflicting.facades!.every((mesh) => mesh.indices.length === 0)).toBe(
     true,
   );
-  expect(blank.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
+  expect(blank.facades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
+  expect(
+    buildChunk(world(column), '0,0', 0).facades!.every(
+      (mesh) => mesh.indices.length === 0,
+    ),
+  ).toBe(true);
+  expect(
+    buildChunk(world(wallPart), '0,0', 0).facades!.every(
+      (mesh) => mesh.indices.length === 0,
+    ),
+  ).toBe(true);
+  expect(
+    buildChunk(world(steps), '0,0', 0).facades!.every(
+      (mesh) => mesh.indices.length === 0,
+    ),
+  ).toBe(true);
+  expect(
+    buildChunk(world(rotunda), '0,0', 0).facades!.every(
+      (mesh) => mesh.indices.length === 0,
+    ),
+  ).toBe(true);
 });
 
 it('не продолжает оконную текстуру выше карниза двускатной крыши', () => {
