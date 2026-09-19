@@ -107,19 +107,31 @@ type BreakableLoaded = {
 };
 
 export const isStaticCollisionRole = (role: string, lod: number) =>
-  lod === 0 &&
-  ([
-    'terrain',
-    'shoulders',
-    'sidewalks',
-    'road',
-    'structures',
-    'treeTrunks',
-    'buildings',
-    'landmarks',
-  ].includes(role) ||
-    role.startsWith('facade') ||
-    role.startsWith('bareFacade'));
+  lod === 0 && role === 'collision';
+
+export function mergeStaticCollisionData(chunk: ChunkData): MeshData {
+  const meshes = [
+      chunk.terrain,
+      chunk.shoulders,
+      chunk.sidewalks,
+      chunk.paved,
+      chunk.road,
+      chunk.structures,
+      chunk.treeTrunks,
+      chunk.buildings,
+      chunk.landmarks,
+      ...(chunk.facades ?? []),
+      ...(chunk.bareFacades ?? []),
+    ],
+    merged: MeshData = { positions: [], indices: [] };
+  for (const mesh of meshes) {
+    if (!mesh?.positions.length || !mesh.indices.length) continue;
+    const offset = merged.positions.length / 3;
+    for (const position of mesh.positions) merged.positions.push(position);
+    for (const index of mesh.indices) merged.indices.push(index + offset);
+  }
+  return merged;
+}
 type Loaded = {
   lod: number;
   meshes: Mesh[];
@@ -661,6 +673,8 @@ export class Game {
       breakables: BreakableLoaded[] = [],
       lamps = [...chunk.lamps],
       collisionMeshes: Mesh[] = [];
+    const collision =
+      chunk.lod === 0 ? mergeStaticCollisionData(chunk) : undefined;
     const surfaces: [string, MeshData | undefined, StandardMaterial][] = [
       'terrain',
       'shoulders',
@@ -685,30 +699,29 @@ export class Game {
     chunk.bareFacades?.forEach((data, i) =>
       surfaces.push(['bareFacade' + i, data, this.materials['bareFacade' + i]]),
     );
+    surfaces.push(['collision', collision, this.materials.trunk]);
     try {
       for (const [role, data, mat] of surfaces) {
         if (!data) continue;
         const mesh = this.makeMesh(`${chunk.key}:${role}`, data, mat);
         if (!mesh) continue;
-        if (role === 'treeTrunks') {
+        if (role === 'treeTrunks' || role === 'collision') {
           mesh.isVisible = false;
           mesh.receiveShadows = false;
         }
+        mesh.isPickable =
+          role === 'structures' ||
+          role === 'buildings' ||
+          role === 'landmarks' ||
+          role.startsWith('facade') ||
+          role.startsWith('bareFacade');
         meshes.push(mesh);
-        if (isStaticCollisionRole(role, chunk.lod)) {
-          mesh.isPickable =
-            role === 'structures' ||
-            role === 'buildings' ||
-            role === 'landmarks' ||
-            role.startsWith('facade') ||
-            role.startsWith('bareFacade');
-          collisionMeshes.push(mesh);
-        }
+        if (isStaticCollisionRole(role, chunk.lod)) collisionMeshes.push(mesh);
         installMs += performance.now() - stepStarted;
         yield;
         stepStarted = performance.now();
       }
-      // Фасады совпадают с объёмом buildings, поэтому отдельные MESH-коллайдеры для них дублируют работу Havok.
+      // Один MESH на чанк сохраняет геометрию поверхностей, но не раздувает broadphase Havok.
       for (const mesh of collisionMeshes) {
         bodies.push(
           new PhysicsAggregate(

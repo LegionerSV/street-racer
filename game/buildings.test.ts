@@ -16,6 +16,7 @@ const building: Building = {
   colour: 0.5,
   levels: 5,
   roofHeight: 3,
+  osmTags: { window: 'yes' },
 };
 const world = (b = building) =>
   ({
@@ -80,6 +81,44 @@ it('не рисует жилые окна на триумфальной арке
       (mesh) => mesh.indices.length > 0,
     ),
   ).toBe(true);
+});
+
+it('рисует окна только при явном положительном теге и сохраняет голый фасад между LOD', () => {
+  // Arrange.
+  const untagged = { ...building, osmTags: {} };
+  const tagged = { ...building, osmTags: { 'building:windows': 'yes' } };
+  const forbidden = {
+    ...building,
+    osmTags: { window: 'no', windows: 'yes' },
+  };
+  const empty = { ...building, osmTags: { windows: '   ' } };
+  // Act.
+  const near = buildChunk(world(untagged), '0,0', 0);
+  const far = buildChunk(world(untagged), '0,0', 2);
+  const explicit = buildChunk(world(tagged), '0,0', 0);
+  const conflicting = buildChunk(world(forbidden), '0,0', 0);
+  const blank = buildChunk(world(empty), '0,0', 0);
+  // Assert.
+  expect(near.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
+  expect(far.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
+  expect(near.bareFacades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
+  expect(far.bareFacades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
+  expect(explicit.facades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
+  expect(conflicting.facades!.every((mesh) => mesh.indices.length === 0)).toBe(
+    true,
+  );
+  expect(blank.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
+});
+
+it('не продолжает оконную текстуру выше карниза двускатной крыши', () => {
+  // Arrange / Act.
+  const chunk = buildChunk(world(), '0,0', 0);
+  const facadeYs = chunk.facades!.flatMap((mesh) =>
+    mesh.positions.filter((_, index) => index % 3 === 1),
+  );
+  // Assert.
+  expect(Math.max(...facadeYs)).toBeCloseTo(15, 6);
+  expect(chunk.bareFacades!.some((mesh) => mesh.indices.length > 0)).toBe(true);
 });
 
 it('оставляет центральный проём триумфальных ворот открытым без дорожного тега', () => {
@@ -267,6 +306,7 @@ it.each([
           'building:material': material,
           'building:colour': facadeColour,
           'roof:colour': '#224466',
+          window: 'yes',
         },
       },
     ];

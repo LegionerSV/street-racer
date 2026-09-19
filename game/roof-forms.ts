@@ -57,11 +57,11 @@ export const roofShapes = [
   'onion',
   'cone',
 ];
-export function roofForm(b: Building, lod: number, top: number, floor: number) {
-  const source = b.roof.trim().toLowerCase();
-  let shape = roofAliases[source] || source;
-  if (!roofShapes.includes(shape)) shape = 'flat';
-  const ring = b.footprint;
+function roofMetrics(
+  ring: Point[],
+  roofDirection?: number,
+  roofOrientation?: string,
+) {
   const longest = ring.reduce(
     (best, p, i) =>
       distance2(p, ring[(i + 1) % ring.length]) >
@@ -75,21 +75,55 @@ export function roofForm(b: Building, lod: number, top: number, floor: number) {
     length = distance2(a, end) || 1;
   let ux = (end.z - a.z) / length,
     uz = -(end.x - a.x) / length;
-  if (b.roofOrientation === 'across') [ux, uz] = [-uz, ux];
-  if (b.roofDirection !== undefined) {
-    ux = Math.sin((b.roofDirection * Math.PI) / 180);
-    uz = Math.cos((b.roofDirection * Math.PI) / 180);
+  if (roofOrientation === 'across') [ux, uz] = [-uz, ux];
+  if (roofDirection !== undefined) {
+    ux = Math.sin((roofDirection * Math.PI) / 180);
+    uz = Math.cos((roofDirection * Math.PI) / 180);
   }
   const u = (p: Point) => p.x * ux + p.z * uz,
-    v = (p: Point) => -p.x * uz + p.z * ux;
-  const us = ring.map(u),
+    v = (p: Point) => -p.x * uz + p.z * ux,
+    us = ring.map(u),
     vs = ring.map(v),
     u0 = Math.min(...us),
     u1 = Math.max(...us),
     v0 = Math.min(...vs),
     v1 = Math.max(...vs);
-  const width = Math.max(0.01, u1 - u0),
-    depth = Math.max(0.01, v1 - v0);
+  return {
+    u,
+    v,
+    u0,
+    v0,
+    v1,
+    width: Math.max(0.01, u1 - u0),
+    depth: Math.max(0.01, v1 - v0),
+  };
+}
+
+export function inferredRoofRise(
+  footprint: Point[],
+  shape: string,
+  angle: number,
+  bodyHeight: number,
+  roofDirection?: number,
+  roofOrientation?: string,
+) {
+  const { width } = roofMetrics(footprint, roofDirection, roofOrientation),
+    run = shape === 'skillion' ? width : width / 2,
+    geometric = Math.tan((angle * Math.PI) / 180) * run,
+    architectural = Math.min(8, Math.max(1.5, bodyHeight * 0.25));
+  return Math.min(geometric, architectural);
+}
+
+export function roofForm(b: Building, lod: number, top: number, floor: number) {
+  const source = b.roof.trim().toLowerCase();
+  let shape = roofAliases[source] || source;
+  if (!roofShapes.includes(shape)) shape = 'flat';
+  const ring = b.footprint;
+  const { u, v, u0, v0, v1, width, depth } = roofMetrics(
+    ring,
+    b.roofDirection,
+    b.roofOrientation,
+  );
   const radial = ['dome', 'onion', 'cone'].includes(shape);
   // Радиальные профили требуют выпуклого одиночного контура. Иначе плоская
   // крыша сохраняет двор/вогнутость, не придумывая купол над пустотой.
@@ -109,7 +143,6 @@ export function roofForm(b: Building, lod: number, top: number, floor: number) {
     b.roofAngle !== undefined && b.roofAngle > 0 && b.roofAngle < 85
       ? b.roofAngle
       : undefined;
-  const run = shape === 'skillion' ? width : width / 2;
   const rise =
     shape === 'flat'
       ? 0
@@ -117,7 +150,14 @@ export function roofForm(b: Building, lod: number, top: number, floor: number) {
           Math.max(0, top - floor),
           b.roofHeight ??
             (angle !== undefined
-              ? Math.tan((angle * Math.PI) / 180) * run
+              ? inferredRoofRise(
+                  ring,
+                  shape,
+                  angle,
+                  Math.max(0, top - floor),
+                  b.roofDirection,
+                  b.roofOrientation,
+                )
               : b.roofLevels && b.roofLevels > 0
                 ? b.roofLevels * 3
                 : radial

@@ -4,7 +4,7 @@ import {
   osmKey,
   resolveBuildingEnvelopes,
 } from './building-groups';
-import { osmLength, osmDirection } from './roof-forms';
+import { inferredRoofRise, osmDirection, osmLength } from './roof-forms';
 import { MinHeap } from './min-heap';
 import type {
   Area,
@@ -44,7 +44,7 @@ import {
   validateClearance,
 } from './clearance';
 import { roadLayout, directedLanes, roadTypes } from './lanes';
-import { buildingCoveredByParts } from './buildings';
+import { buildingCoveredByParts, hasExplicitWindows } from './buildings';
 import { applyBuildingAppearances } from './building-appearance';
 import { addLandmarkSupplements } from './landmark-supplements';
 import { SpatialGrid, boundsOf, overlaps } from './geometry';
@@ -526,13 +526,21 @@ export function buildWorld(region: RegionData): World {
           roofAngle === undefined
             ? Math.min(1.5, Math.max(0.3, footprintWidth / 2))
             : 0;
-      const roofHeight =
-        osmLength(t['roof:height']) ??
-        (osmLength(t['roof:levels']) !== undefined
-          ? osmLength(t['roof:levels'])! * floorHeight
-          : roofAngle !== undefined
-            ? (Math.tan((roofAngle * Math.PI) / 180) * footprintWidth) / 2
-            : calculatedGable);
+      const roofDirection = osmDirection(t['roof:direction']),
+        roofHeight =
+          osmLength(t['roof:height']) ??
+          (osmLength(t['roof:levels']) !== undefined
+            ? osmLength(t['roof:levels'])! * floorHeight
+            : roofAngle !== undefined
+              ? inferredRoofRise(
+                  footprint,
+                  roof,
+                  roofAngle,
+                  explicitHeight ?? levels * floorHeight,
+                  roofDirection,
+                  t['roof:orientation'],
+                )
+              : calculatedGable);
       const technicalHeight =
         !fortification && ['flat', 'terrace'].includes(roof) && levels > 0
           ? 0.8
@@ -549,21 +557,10 @@ export function buildWorld(region: RegionData): World {
         t['building:facade:material'] ||
         t.material ||
         (t.shop === 'mall' ? 'glass' : fortification ? 'brick' : undefined);
-      const confirmedWindows =
-        ['yes', 'true', '1'].includes(t.window) ||
-        ['yes', 'true', '1'].includes(t.windows) ||
-        ['yes', 'true', '1'].includes(t['building:windows']);
-      const fortified =
-        ['triumphal_arch', 'wall', 'fortification', 'tower'].includes(
-          t.building,
-        ) ||
-        ['citywalls', 'city_wall', 'castle', 'fort'].includes(t.historic) ||
-        ['city_wall', 'wall'].includes(t.barrier) ||
-        t['building:part'] === 'wall';
-      const windowPolicy: 'procedural' | 'forbid' =
-        t.window === 'no' || (fortified && !confirmedWindows)
-          ? 'forbid'
-          : 'procedural';
+      const confirmedWindows = hasExplicitWindows(t);
+      const windowPolicy: 'procedural' | 'forbid' = confirmedWindows
+        ? 'procedural'
+        : 'forbid';
       buildings.push({
         id: e.id,
         osmType: e.type === 'relation' ? 'relation' : 'way',
@@ -591,7 +588,7 @@ export function buildWorld(region: RegionData): World {
         windowPolicy,
         kind: t.building,
         roofHeight: roofHeight || undefined,
-        roofDirection: osmDirection(t['roof:direction']),
+        roofDirection,
         roofAngle,
         roofLevels: osmLength(t['roof:levels']),
         roofColour: t['roof:colour'],

@@ -26,6 +26,57 @@ const physicalEdges = (edges: Edge[]) => [
   ...new Map(edges.map((e) => [physicalKey(e), e])).values(),
 ];
 
+const edgeDistance = (edge: Edge) =>
+  edge.points
+    .slice(1)
+    .reduce(
+      (sum, point, index) => sum + distance2(point, edge.points[index]),
+      0,
+    );
+
+function directionAwayFromNode(edge: Edge, node: number) {
+  const fromStart = edge.from === node,
+    a = fromStart ? edge.points[0] : edge.points.at(-1)!,
+    b = fromStart ? edge.points[1] : edge.points.at(-2)!,
+    length = distance2(a, b) || 1;
+  return { x: (b.x - a.x) / length, z: (b.z - a.z) / length };
+}
+
+function tunnelContinuation(incoming: Edge, node: number, options: Edge[]) {
+  if (!options.length) return undefined;
+  const towardNode = directionAwayFromNode(incoming, node),
+    unnamed = (name: string) => !name || name === 'Безымянная улица',
+    ranked = options
+      .map((edge) => {
+        const away = directionAwayFromNode(edge, node),
+          alignment = -(towardNode.x * away.x + towardNode.z * away.z),
+          sameWay = edge.way === incoming.way,
+          sameName = !unnamed(edge.name) && edge.name === incoming.name,
+          sameCategory = !!edge.category && edge.category === incoming.category;
+        return {
+          edge,
+          alignment,
+          strong: sameWay || sameName,
+          compatible:
+            sameWay || sameName || sameCategory || options.length === 1,
+          score:
+            alignment +
+            (sameWay ? 4 : 0) +
+            (sameName ? 2 : 0) +
+            (sameCategory ? 1 : 0),
+        };
+      })
+      .filter(
+        (candidate) =>
+          candidate.compatible &&
+          (options.length === 1 || candidate.strong || candidate.alignment >= 0.5),
+      )
+      .sort((a, b) => b.score - a.score);
+  if (!ranked.length || (ranked[1] && ranked[0].score - ranked[1].score < 0.25))
+    return undefined;
+  return ranked[0].edge;
+}
+
 // Встречные полотна одного моста часто имеют разные узлы OSM.
 // Связываем только соответствующие торцы близких параллельных конструкций;
 // эти связи используются для геометрии, но не разрешают разворот в маршрутах.
@@ -189,12 +240,18 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
   const edgeLength = (edge: Edge) => {
     let length = edgeLengths.get(edge);
     if (length === undefined) {
-      length = edge.points.slice(1).reduce((sum, point, i) => sum + distance2(point, edge.points[i]), 0);
+      length = edge.points
+        .slice(1)
+        .reduce((sum, point, i) => sum + distance2(point, edge.points[i]), 0);
       edgeLengths.set(edge, length);
     }
     return length;
   };
-  const distanceToEnd = (edge: Edge, point: Point) => Math.min(distance2(point, edge.points[0]), distance2(point, edge.points.at(-1)!));
+  const distanceToEnd = (edge: Edge, point: Point) =>
+    Math.min(
+      distance2(point, edge.points[0]),
+      distance2(point, edge.points.at(-1)!),
+    );
   const keys = (s: Segment) => {
     const r = s.edge.width / 2 + SIDEWALK_WIDTH + CURB_WIDTH,
       keys: string[] = [];
@@ -300,8 +357,16 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
             lowerPoint = mixPoint(lower.a, lower.b, u);
           // У въезда на мост соседнее полотно может иметь отдельные OSM-узлы.
           // Плоское примыкание у торцов обеих дорог не является путепроводом.
-          if (upper.edge.bridge && Math.abs(upperPoint.y - lowerPoint.y) < 1.5) {
-            if (distanceToEnd(upper.edge, upperPoint) < Math.min(12, edgeLength(upper.edge) * .35) && distanceToEnd(lower.edge, lowerPoint) < 16) continue;
+          if (
+            upper.edge.bridge &&
+            Math.abs(upperPoint.y - lowerPoint.y) < 1.5
+          ) {
+            if (
+              distanceToEnd(upper.edge, upperPoint) <
+                Math.min(12, edgeLength(upper.edge) * 0.35) &&
+              distanceToEnd(lower.edge, lowerPoint) < 16
+            )
+              continue;
           }
           // Короткие OSM-соединители у съезда не создают второй уровень.
           // Исключение локально у торцов: настоящее пересечение в середине
@@ -435,36 +500,40 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
         );
     if (Math.abs(rise) < 1e-6) continue;
     const ramp = Math.max(100, (Math.abs(rise) * 1.875) / 0.06),
-      distances = new Map<number, number>();
-    const queue = new MinHeap<{ id: number; d: number }>((a, b) => a.d - b.d);
+      distances = new Map<number, number>(),
+      approaches = new Set<Edge>();
+    const queue = new MinHeap<{ id: number; d: number; incoming: Edge }>(
+      (a, b) => a.d - b.d,
+    );
     for (const e of group)
-      for (const id of [e.from, e.to])
-        if (!distances.has(id)) {
-          distances.set(id, 0);
-          queue.push({ id, d: 0 });
-        }
+      for (const id of [e.from, e.to]) {
+        distances.set(id, 0);
+        queue.push({ id, d: 0, incoming: e });
+      }
     while (queue.size) {
-      const { id, d } = queue.pop()!;
+      const { id, d, incoming } = queue.pop()!;
       if (d !== distances.get(id)) continue;
-      for (const e of links.get(id) || []) {
-        // Реальное примыкание к другому сооружению также должно оставаться
-        // непрерывным; геометрически пересекающая дорога не имеет общего узла.
-        const next = e.from === id ? e.to : e.from,
-          nd =
-            d +
-            e.points
-              .slice(1)
-              .reduce((sum, p, i) => sum + distance2(p, e.points[i]), 0);
+      const options = (links.get(id) || []).filter(
+          (edge) => edge !== incoming && !members.has(edge),
+        ),
+        continuations = tunnelTerrain
+          ? [tunnelContinuation(incoming, id, options)].filter(
+              (edge): edge is Edge => !!edge,
+            )
+          : options;
+      for (const edge of continuations) {
+        approaches.add(edge);
+        const next = edge.from === id ? edge.to : edge.from,
+          nd = d + edgeDistance(edge);
         if (nd < ramp && nd < (distances.get(next) ?? Infinity)) {
           distances.set(next, nd);
-          queue.push({ id: next, d: nd });
+          queue.push({ id: next, d: nd, incoming: edge });
         }
       }
     }
     const changed = new Map<string, number[]>();
     for (const e of physical) {
-      if (!members.has(e) && !distances.has(e.from) && !distances.has(e.to))
-        continue;
+      if (!members.has(e) && !approaches.has(e)) continue;
       const total = e.points
         .slice(1)
         .reduce((sum, p, i) => sum + distance2(p, e.points[i]), 0);

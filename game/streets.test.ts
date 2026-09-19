@@ -36,7 +36,7 @@ it('обратный обход контура сохраняет фасадны
   // Arrange
   const outline=[{x:20,y:0,z:20},{x:70,y:0,z:20},{x:70,y:0,z:70},{x:20,y:0,z:70}];
   for(const footprint of [outline,[...outline].reverse()]){
-    const w=buildWorld(region([]));w.buildings=[{id:200,footprint,height:20,colour:.5,roof:'flat'}];
+    const w=buildWorld(region([]));w.buildings=[{id:200,footprint,height:20,colour:.5,roof:'flat',osmTags:{windows:'yes'}}];
     // Act
     const close=buildChunk(w,'0,0',0),far=buildChunk(w,'0,0',1);
     // Assert
@@ -54,7 +54,7 @@ it('обратный обход контура сохраняет фасадны
 it('не оставляет узкую стену поперёк дороги между её узлами',()=>{
   // Arrange
   const data:OSMElement[]=[[1,0,0],[2,.0001,0],[3,.00002,-.0005],[4,.00003,-.0005],[5,.00003,.0005],[6,.00002,.0005]].map(([id,lon,lat])=>({type:'node',id,lon,lat}));
-  data.push({type:'way',id:10,nodes:[1,2],tags:{highway:'service'}},{type:'way',id:20,nodes:[3,4,5,6,3],tags:{building:'yes'}});
+  data.push({type:'way',id:10,nodes:[1,2],tags:{highway:'service'}},{type:'way',id:20,nodes:[3,4,5,6,3],tags:{building:'yes',windows:'yes'}});
   // Act
   const w=buildWorld(region(data));
   // Assert

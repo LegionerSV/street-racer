@@ -32,7 +32,7 @@ function passageWorld(passage = true) {
       type: 'way',
       id: 20,
       nodes: [3, 4, 5, 6, 3],
-      tags: { building: 'apartments', height: '18' },
+      tags: { building: 'apartments', height: '18', windows: 'yes' },
     },
   ];
   return buildWorld({

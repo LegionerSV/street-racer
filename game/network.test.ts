@@ -366,6 +366,46 @@ describe('Дорожная сеть', () => {
       height: 4,
     });
   });
+  it('ограничивает только вычисленную по углу крышу большого здания', () => {
+    // Arrange.
+    const elements: OSMElement[] = [
+      node(1, 0, 0),
+      node(2, 0.0012, 0),
+      node(3, 0.0012, 0.0008),
+      node(4, 0, 0.0008),
+      {
+        type: 'way',
+        id: 33,
+        nodes: [1, 2, 3, 4, 1],
+        tags: {
+          building: 'office',
+          'building:levels': '9',
+          'roof:shape': 'gabled',
+          'roof:angle': '30',
+        },
+      },
+      {
+        type: 'way',
+        id: 34,
+        nodes: [1, 2, 3, 4, 1],
+        tags: {
+          building: 'office',
+          'building:levels': '9',
+          'roof:shape': 'gabled',
+          'roof:height': '14',
+        },
+      },
+    ];
+    // Act.
+    const buildings = buildWorld(region(elements)).buildings;
+    const inferred = buildings.find((building) => building.id === 33)!;
+    const explicit = buildings.find((building) => building.id === 34)!;
+    // Assert.
+    expect(inferred.roofHeight).toBeLessThanOrEqual(8);
+    expect(inferred.height).toBeCloseTo(45.8, 6);
+    expect(explicit.roofHeight).toBe(14);
+    expect(explicit.height).toBeCloseTo(51.8, 6);
+  });
   it('выводит высоту линейной городской стены из геометрии и сохраняет явный OSM height', () => {
     // Arrange
     const elements = [

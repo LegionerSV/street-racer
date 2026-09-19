@@ -41,6 +41,7 @@ const building: Building = {
   colour: 0.5,
   roof: 'flat',
   roofColour: '#123456',
+  osmTags: { window: 'yes' },
 };
 it.each([
   'dome',
@@ -92,7 +93,7 @@ it('угол задаёт подъём, roof:height имеет приорите�
   const form = roofForm(b, 0, 25, 0),
     explicit = roofForm({ ...b, roofHeight: 7 }, 0, 25, 0);
   // Assert
-  expect(form.rise).toBeCloseTo(20 * Math.tan(Math.PI / 6));
+  expect(form.rise).toBeCloseTo(6.25);
   expect(explicit.rise).toBe(7);
   expect(form.planes[0]({ x: 20, y: 0, z: 0 })).toBeLessThan(
     form.planes[0]({ x: 0, y: 0, z: 0 }),

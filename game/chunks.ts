@@ -1462,6 +1462,7 @@ export function buildChunk(
       }
     }
   }
+  const pavedCuts = new SpatialGrid<Prism>(32);
   for (const area of world.areas) {
     const minx = Math.min(...area.points.map((p) => p.x)),
       maxx = Math.max(...area.points.map((p) => p.x)),
@@ -1514,23 +1515,32 @@ export function buildChunk(
           : area.surface === 'sett' || area.surface === 'cobblestone'
             ? [0.48, 0.45, 0.41]
             : [0.52, 0.51, 0.47];
+      const clippedTriangles: [Point, Point, Point][] = [];
       for (let i = 0; i < triangles.length; i += 3) {
         const clipped = clipToChunk(
-            triangles.slice(i, i + 3).map((index) => {
-              const p = vertices[index];
-              return { ...p, y: ground(p.x, p.z) + 0.035 };
-            }),
-            x0,
-            z0,
-          ),
-          base = result.paved!.positions.length / 3;
-        for (const p of clipped) {
-          result.paved!.positions.push(p.x, p.y, p.z);
-          result.paved!.colors!.push(...colour, 1);
-          result.paved!.uvs!.push(p.x * 0.35, p.z * 0.35);
-        }
+          triangles.slice(i, i + 3).map((index) => vertices[index]),
+          x0,
+          z0,
+        );
         for (let j = 1; j < clipped.length - 1; j++)
-          result.paved!.indices.push(base, base + j, base + j + 1);
+          clippedTriangles.push([clipped[0], clipped[j], clipped[j + 1]]);
+      }
+      for (const [a, b, c] of clippedTriangles) {
+        const points = [a, b, c].map((point) => ({
+            ...point,
+            y: ground(point.x, point.z) + 0.035,
+          })) as [Point, Point, Point],
+          base = result.paved!.positions.length / 3;
+        for (const point of points) {
+          result.paved!.positions.push(point.x, point.y, point.z);
+          result.paved!.colors!.push(...colour, 1);
+          result.paved!.uvs!.push(point.x * 0.35, point.z * 0.35);
+        }
+        result.paved!.indices.push(base, base + 1, base + 2);
+        if (lod === 0) {
+          const mask = surfacePrism(points, 0.08, 10000);
+          if (mask) pavedCuts.add(mask, mask.bounds);
+        }
       }
     } else if (lod === 0) {
       for (let i = 0; i < 24; i++) {
@@ -1626,6 +1636,7 @@ export function buildChunk(
         }
     }
   cutSoil(result.terrain, roadCuts);
+  if (lod === 0) cutSoil(result.terrain, pavedCuts);
   // Откос одной улицы не может выступать на асфальт соседней или поперечной.
   // Вырезаем только проезжую часть: широкая маска земли удалила бы сам откос.
   for (const mesh of [result.terrain, result.shoulders])

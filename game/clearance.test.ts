@@ -1,54 +1,238 @@
 import { expect, it } from 'vitest';
-import { validateClearance, fitBridgeClearance, fitTunnelDepth, roadCrossings, crossingClearance } from './clearance';
+import {
+  validateClearance,
+  fitBridgeClearance,
+  fitTunnelDepth,
+  roadCrossings,
+  crossingClearance,
+} from './clearance';
 import type { Edge } from './types';
 
-const road = (id: number, points: Edge['points'], bridge = false): Edge => ({ id, stableId:`${id}/${id*2}/${id*2+1}/0`, way: id, from: id * 2, to: id * 2 + 1, points, bridge, tunnel: false, layer: bridge ? 1 : 0, width: 7, lanes: 2, length: 100, speed: 15, name: 'Дорога', blocked: false });
+const road = (id: number, points: Edge['points'], bridge = false): Edge => ({
+  id,
+  stableId: `${id}/${id * 2}/${id * 2 + 1}/0`,
+  way: id,
+  from: id * 2,
+  to: id * 2 + 1,
+  points,
+  bridge,
+  tunnel: false,
+  layer: bridge ? 1 : 0,
+  width: 7,
+  lanes: 2,
+  length: 100,
+  speed: 15,
+  name: 'Дорога',
+  blocked: false,
+});
 
 it('заглубление тоннеля не тянет соседний мост и его торец под воду', () => {
   // Arrange
-  const tunnel = { ...road(1, [{ x: 0, y: 0, z: 0 }, { x: 100, y: 0, z: 0 }]), from: 1, to: 2, tunnel: true, layer: -1 };
-  const approach = { ...road(2, [{ x: 100, y: 0, z: 0 }, { x: 200, y: 0, z: 0 }]), from: 2, to: 3 };
-  const bridge = { ...road(3, [{ x: 200, y: 0, z: 0 }, { x: 250, y: 0, z: 0 }], true), from: 3, to: 4 };
+  const tunnel = {
+    ...road(1, [
+      { x: 0, y: 0, z: 0 },
+      { x: 100, y: 0, z: 0 },
+    ]),
+    from: 1,
+    to: 2,
+    tunnel: true,
+    layer: -1,
+  };
+  const approach = {
+    ...road(2, [
+      { x: 100, y: 0, z: 0 },
+      { x: 200, y: 0, z: 0 },
+    ]),
+    from: 2,
+    to: 3,
+  };
+  const bridge = {
+    ...road(
+      3,
+      [
+        { x: 200, y: 0, z: 0 },
+        { x: 250, y: 0, z: 0 },
+      ],
+      true,
+    ),
+    from: 3,
+    to: 4,
+  };
   const elevation = { width: 2, size: 1000, values: new Float32Array(4) };
   // Act
   fitTunnelDepth([tunnel, approach, bridge], elevation);
   // Assert
   expect(tunnel.points[0].y).toBeLessThan(-6);
-  expect(bridge.points.every(point => point.y === 0)).toBe(true);
+  expect(bridge.points.every((point) => point.y === 0)).toBe(true);
   expect(approach.points.at(-1)!.y).toBeCloseTo(bridge.points[0].y, 6);
 });
 
 it('короткий подход от моста плавно входит в тоннель без потери глубины внутри', () => {
   // Arrange
-  const bridge = { ...road(1, [{ x: 0, y: 0, z: 0 }, { x: 50, y: 0, z: 0 }], true), from: 1, to: 2 };
-  const approach = { ...road(2, [{ x: 50, y: 0, z: 0 }, { x: 100, y: 0, z: 0 }]), from: 2, to: 3 };
-  const tunnel = { ...road(3, [{ x: 100, y: 0, z: 0 }, { x: 150, y: 0, z: 0 }, { x: 200, y: 0, z: 0 }]), from: 3, to: 4, tunnel: true, layer: -1 };
+  const bridge = {
+    ...road(
+      1,
+      [
+        { x: 0, y: 0, z: 0 },
+        { x: 50, y: 0, z: 0 },
+      ],
+      true,
+    ),
+    from: 1,
+    to: 2,
+  };
+  const approach = {
+    ...road(2, [
+      { x: 50, y: 0, z: 0 },
+      { x: 100, y: 0, z: 0 },
+    ]),
+    from: 2,
+    to: 3,
+  };
+  const tunnel = {
+    ...road(3, [
+      { x: 100, y: 0, z: 0 },
+      { x: 150, y: 0, z: 0 },
+      { x: 200, y: 0, z: 0 },
+    ]),
+    from: 3,
+    to: 4,
+    tunnel: true,
+    layer: -1,
+  };
   const elevation = { width: 2, size: 1000, values: new Float32Array(4) };
   // Act
   fitTunnelDepth([bridge, approach, tunnel], elevation);
   // Assert
-  expect(bridge.points.every(point => point.y === 0)).toBe(true);
+  expect(bridge.points.every((point) => point.y === 0)).toBe(true);
   expect(approach.points[0].y).toBeCloseTo(bridge.points.at(-1)!.y, 6);
   expect(tunnel.points[0].y).toBeCloseTo(approach.points.at(-1)!.y, 6);
   expect(tunnel.points[1].y).toBeLessThan(-6);
 });
 
+it('не превращает примыкающую магистраль в подход к безымянному тоннелю', () => {
+  // Arrange.
+  const tunnel = {
+    ...road(1, [
+      { x: 0, y: 0, z: 0 },
+      { x: 100, y: 0, z: 0 },
+    ]),
+    from: 1,
+    to: 2,
+    name: 'Безымянная улица',
+    category: 'service',
+    tunnel: true,
+    layer: -1,
+  };
+  const approach = {
+    ...road(2, [
+      { x: 100, y: 0, z: 0 },
+      { x: 200, y: 0, z: 0 },
+    ]),
+    from: 2,
+    to: 3,
+    name: 'Безымянная улица',
+    category: 'service',
+  };
+  const avenue = {
+    ...road(3, [
+      { x: 100, y: 0, z: 0 },
+      { x: 100, y: 0, z: 150 },
+    ]),
+    from: 2,
+    to: 4,
+    name: 'Театральный проезд',
+    category: 'primary',
+  };
+  const elevation = {
+    width: 2,
+    size: 1000,
+    values: new Float32Array(4),
+  };
+  // Act.
+  fitTunnelDepth([tunnel, approach, avenue], elevation);
+  // Assert.
+  expect(approach.tunnelApproach).toBe(true);
+  expect(approach.points[0].y).toBeLessThan(-6);
+  expect(avenue.tunnelApproach).not.toBe(true);
+  expect(avenue.points.every((point) => point.y === 0)).toBe(true);
+});
+
+it('сшивает единственный поворачивающий подъезд с порталом тоннеля', () => {
+  // Arrange.
+  const tunnel = {
+    ...road(1, [
+      { x: 0, y: 0, z: 0 },
+      { x: 100, y: 0, z: 0 },
+    ]),
+    from: 1,
+    to: 2,
+    tunnel: true,
+    layer: -1,
+  };
+  const approach = {
+    ...road(2, [
+      { x: 100, y: 0, z: 0 },
+      { x: 100, y: 0, z: 120 },
+    ]),
+    from: 2,
+    to: 3,
+  };
+  const elevation = { width: 2, size: 1000, values: new Float32Array(4) };
+  // Act.
+  fitTunnelDepth([tunnel, approach], elevation);
+  // Assert.
+  expect(approach.tunnelApproach).toBe(true);
+  expect(approach.points[0].y).toBeCloseTo(tunnel.points.at(-1)!.y, 6);
+  expect(approach.points.at(-1)!.y).toBeGreaterThan(approach.points[0].y);
+});
+
 it('закрывает оба направления моста при недостаточном просвете', () => {
   // Arrange
-  const lower = road(1, [{ x: -50, y: 0, z: 0 }, { x: 50, y: 0, z: 0 }]);
-  const upper = road(2, [{ x: 0, y: 3, z: -50 }, { x: 0, y: 3, z: 50 }], true);
-  const reverse = { ...upper, id: 3, from: upper.to, to: upper.from, points: [...upper.points].reverse() };
+  const lower = road(1, [
+    { x: -50, y: 0, z: 0 },
+    { x: 50, y: 0, z: 0 },
+  ]);
+  const upper = road(
+    2,
+    [
+      { x: 0, y: 3, z: -50 },
+      { x: 0, y: 3, z: 50 },
+    ],
+    true,
+  );
+  const reverse = {
+    ...upper,
+    id: 3,
+    from: upper.to,
+    to: upper.from,
+    points: [...upper.points].reverse(),
+  };
   // Act
   const warnings = validateClearance([lower, upper, reverse]);
   // Assert
-  expect(lower.blocked).toBe(false); expect(upper.blocked).toBe(true); expect(reverse.blocked).toBe(true);
-  expect(warnings).toEqual(['Дорога 2 закрыта: недостаточный просвет между уровнями.']);
+  expect(lower.blocked).toBe(false);
+  expect(upper.blocked).toBe(true);
+  expect(reverse.blocked).toBe(true);
+  expect(warnings).toEqual([
+    'Дорога 2 закрыта: недостаточный просвет между уровнями.',
+  ]);
 });
 
 it('не закрывает плоский въезд на мост из соседнего полотна без общего OSM-узла', () => {
   // Arrange
-  const approach = road(1, [{ x: 4, y: 0, z: -40 }, { x: 4, y: 0, z: 0 }]);
-  const bridge = road(2, [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 20 }], true);
+  const approach = road(1, [
+    { x: 4, y: 0, z: -40 },
+    { x: 4, y: 0, z: 0 },
+  ]);
+  const bridge = road(
+    2,
+    [
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: 0, z: 20 },
+    ],
+    true,
+  );
   // Act
   const warnings = validateClearance([approach, bridge]);
   // Assert
@@ -63,16 +247,20 @@ it('не закрывает соседнее полотно Московског
     { x: 23.365, y: -8.031, z: -163.055 },
   ]);
   avenue.width = 14;
-  const bridge = road(28678607, [
-    { x: 23.831, y: -8.018, z: -185.601 },
-    { x: 25.095, y: -8.014, z: -183.672 },
-    { x: 26.360, y: -7.970, z: -181.743 },
-    { x: 27.624, y: -7.908, z: -179.814 },
-    { x: 28.889, y: -7.849, z: -177.885 },
-    { x: 30.153, y: -7.827, z: -175.956 },
-    { x: 31.418, y: -7.954, z: -174.027 },
-    { x: 32.682, y: -8.018, z: -172.098 },
-  ], true);
+  const bridge = road(
+    28678607,
+    [
+      { x: 23.831, y: -8.018, z: -185.601 },
+      { x: 25.095, y: -8.014, z: -183.672 },
+      { x: 26.36, y: -7.97, z: -181.743 },
+      { x: 27.624, y: -7.908, z: -179.814 },
+      { x: 28.889, y: -7.849, z: -177.885 },
+      { x: 30.153, y: -7.827, z: -175.956 },
+      { x: 31.418, y: -7.954, z: -174.027 },
+      { x: 32.682, y: -8.018, z: -172.098 },
+    ],
+    true,
+  );
   bridge.width = 7;
   // Act
   const warnings = validateClearance([avenue, bridge]);
@@ -83,45 +271,102 @@ it('не закрывает соседнее полотно Московског
 
 it('продолжает закрывать реальный недостаточный просвет в середине моста', () => {
   // Arrange
-  const lower = road(1, [{ x: -50, y: 0, z: 50 }, { x: 50, y: 0, z: 50 }]);
-  const bridge = road(2, [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 100 }], true);
+  const lower = road(1, [
+    { x: -50, y: 0, z: 50 },
+    { x: 50, y: 0, z: 50 },
+  ]);
+  const bridge = road(
+    2,
+    [
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: 0, z: 100 },
+    ],
+    true,
+  );
   // Act
   const warnings = validateClearance([lower, bridge]);
   // Assert
-  expect(warnings).toEqual(['Дорога 2 закрыта: недостаточный просвет между уровнями.']);
+  expect(warnings).toEqual([
+    'Дорога 2 закрыта: недостаточный просвет между уровнями.',
+  ]);
   expect(bridge.blocked).toBe(true);
 });
 
 it('сохраняет проезд с просветом 6,5 м и не проверяет съезд как пересечение', () => {
   // Arrange
-  const lower = road(1, [{ x: -50, y: 0, z: 0 }, { x: 50, y: 0, z: 0 }]);
-  const upper = road(2, [{ x: 0, y: 6.5, z: -50 }, { x: 0, y: 6.5, z: 50 }], true);
+  const lower = road(1, [
+    { x: -50, y: 0, z: 0 },
+    { x: 50, y: 0, z: 0 },
+  ]);
+  const upper = road(
+    2,
+    [
+      { x: 0, y: 6.5, z: -50 },
+      { x: 0, y: 6.5, z: 50 },
+    ],
+    true,
+  );
   // Act
   const warnings = validateClearance([lower, upper]);
   // Assert
-  expect(warnings).toEqual([]); expect(upper.blocked).toBe(false);
+  expect(warnings).toEqual([]);
+  expect(upper.blocked).toBe(false);
 });
 
-it('проверяет низ плиты, в том числе края косой дороги и параллельное перекрытие',()=>{
+it('проверяет низ плиты, в том числе края косой дороги и параллельное перекрытие', () => {
   // Arrange
-  const lower=road(1,[{x:-40,y:0,z:0},{x:40,y:1,z:30}]);lower.width=14;
-  const upper=road(2,[{x:-30,y:1,z:9},{x:30,y:2,z:9}],true);
+  const lower = road(1, [
+    { x: -40, y: 0, z: 0 },
+    { x: 40, y: 1, z: 30 },
+  ]);
+  lower.width = 14;
+  const upper = road(
+    2,
+    [
+      { x: -30, y: 1, z: 9 },
+      { x: 30, y: 2, z: 9 },
+    ],
+    true,
+  );
   // Act
-  const edges=[lower,upper];fitBridgeClearance(edges);const contacts=roadCrossings(edges);
+  const edges = [lower, upper];
+  fitBridgeClearance(edges);
+  const contacts = roadCrossings(edges);
   // Assert
   expect(contacts.length).toBeGreaterThan(4);
-  for(const c of contacts)expect(crossingClearance(c)).toBeGreaterThanOrEqual(3.5);
+  for (const c of contacts)
+    expect(crossingClearance(c)).toBeGreaterThanOrEqual(3.5);
   expect(validateClearance(edges)).toEqual([]);
 });
 
-it('нижний мост учитывается до верхнего, номер слоя не становится множителем высоты',()=>{
+it('нижний мост учитывается до верхнего, номер слоя не становится множителем высоты', () => {
   // Arrange
-  const ground=road(1,[{x:-50,y:0,z:0},{x:50,y:0,z:0}]);
-  const middle=road(2,[{x:0,y:0,z:-50},{x:0,y:0,z:50}],true);
-  const top=road(3,[{x:-50,y:0,z:0},{x:50,y:0,z:0}],true);top.layer=5;
+  const ground = road(1, [
+    { x: -50, y: 0, z: 0 },
+    { x: 50, y: 0, z: 0 },
+  ]);
+  const middle = road(
+    2,
+    [
+      { x: 0, y: 0, z: -50 },
+      { x: 0, y: 0, z: 50 },
+    ],
+    true,
+  );
+  const top = road(
+    3,
+    [
+      { x: -50, y: 0, z: 0 },
+      { x: 50, y: 0, z: 0 },
+    ],
+    true,
+  );
+  top.layer = 5;
   // Act
-  const edges=[top,ground,middle];fitBridgeClearance(edges);
+  const edges = [top, ground, middle];
+  fitBridgeClearance(edges);
   // Assert
-  for(const c of roadCrossings(edges))expect(crossingClearance(c)).toBeGreaterThanOrEqual(3.5);
+  for (const c of roadCrossings(edges))
+    expect(crossingClearance(c)).toBeGreaterThanOrEqual(3.5);
   expect(top.points[0].y).toBeLessThan(9);
 });

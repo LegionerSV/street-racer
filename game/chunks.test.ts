@@ -194,6 +194,23 @@ describe('Подготовка кварталов', () => {
         .filter((_, index) => index % 3 === 1)
         .every((y) => y > 0.03),
     ).toBe(true);
+    const covers = (mesh: NonNullable<typeof chunk.paved>, x: number, z: number) => {
+      const side = (a: number, b: number, c: number) => {
+        const bx = mesh.positions[b * 3],
+          bz = mesh.positions[b * 3 + 2],
+          cx = mesh.positions[c * 3],
+          cz = mesh.positions[c * 3 + 2];
+        return (x - cx) * (bz - cz) - (bx - cx) * (z - cz) >= -1e-6;
+      };
+      for (let i = 0; i < mesh.indices.length; i += 3) {
+        const [a, b, c] = mesh.indices.slice(i, i + 3),
+          signs = [side(a, b, c), side(b, c, a), side(c, a, b)];
+        if (signs.every(Boolean) || signs.every((value) => !value)) return true;
+      }
+      return false;
+    };
+    expect(covers(chunk.paved!, 73, 69)).toBe(true);
+    expect(covers(chunk.terrain, 73, 69)).toBe(false);
     expect(chunk.trees).toHaveLength(0);
   });
   it('не ставит бетонные блоки на временном краю покрытия карты', () => {

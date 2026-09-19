@@ -7,7 +7,7 @@ import {
   type Prism,
 } from './geometry';
 import { distance2, mixPoint } from './geo';
-import type { Building, MeshData, Point } from './types';
+import type { Building, MeshData, Point, Tags } from './types';
 type Colour = [number, number, number];
 
 export function buildingCoveredByParts(building: Building, parts: Building[]) {
@@ -123,11 +123,18 @@ export function facadeStyle(b: Building) {
       ? 2
       : 1;
 }
+export function hasExplicitWindows(tags: Tags) {
+  const values = [tags.window, tags.windows, tags['building:windows']]
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => !!value);
+  const negative = new Set(['no', 'false', '0', 'none']);
+  return values.length > 0 && !values.some((value) => negative.has(value));
+}
 export function hasFacadeWindows(b: Building) {
   const tags = b.osmTags || {};
   return (
     b.windowPolicy !== 'forbid' &&
-    tags.window !== 'no' &&
+    hasExplicitWindows(tags) &&
     !['triumphal_arch', 'wall', 'fortification'].includes(b.kind || '') &&
     !['citywalls', 'city_wall'].includes(tags.historic || '') &&
     !['city_wall', 'wall'].includes(tags.barrier || '') &&
@@ -347,7 +354,7 @@ export function appendBuilding(
   const windowed = hasFacadeWindows(b),
     textured = windowed,
     detailed = lod === 0 && !(b.part && b.group) && windowed;
-  const bareDetailed = lod === 0 && !windowed;
+  const bare = !windowed;
   const gateOpening =
     b.kind === 'triumphal_arch'
       ? triumphalOpening(b, foundationFloor)
@@ -437,7 +444,7 @@ export function appendBuilding(
       const allowed = !detailedEdge || detailedEdge(ring, i),
         edgeTextured = textured && allowed,
         edgeDetailed = detailed && allowed,
-        edgeBare = bareDetailed && allowed;
+        edgeBare = bare && allowed;
       const a = ring[i],
         b = ring[(i + 1) % ring.length],
         length = distance2(a, b),
@@ -502,6 +509,31 @@ export function appendBuilding(
             ],
             c,
             uv(!!bareFacades[style], technicalA, ya, yb),
+          );
+        } else if (edgeTextured && (ya > eaves + 1e-6 || yb > eaves + 1e-6)) {
+          const windowTopA = Math.min(ya, Math.max(floor, eaves)),
+            windowTopB = Math.min(yb, Math.max(floor, eaves));
+          polygon(
+            facade,
+            [
+              { ...start, y: floor },
+              { ...end, y: floor },
+              { ...end, y: windowTopB },
+              { ...start, y: windowTopA },
+            ],
+            c,
+            uv(true, floor, windowTopA, windowTopB),
+          );
+          polygon(
+            bareFacades[style] || shell,
+            [
+              { ...start, y: windowTopA },
+              { ...end, y: windowTopB },
+              { ...end, y: yb },
+              { ...start, y: ya },
+            ],
+            c,
+            uv(!!bareFacades[style], windowTopA, ya, yb),
           );
         } else
           polygon(
