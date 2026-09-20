@@ -44,7 +44,11 @@ import {
   validateClearance,
 } from './clearance';
 import { roadLayout, directedLanes, roadTypes } from './lanes';
-import { buildingCoveredByParts, windowsForbiddenByTags } from './buildings';
+import {
+  buildingCoveredByParts,
+  genericPartMayHaveFacadeWindows,
+  windowsForbiddenByTags,
+} from './buildings';
 import { applyBuildingAppearances } from './building-appearance';
 import { addLandmarkSupplements } from './landmark-supplements';
 import { SpatialGrid, boundsOf, overlaps } from './geometry';
@@ -398,7 +402,7 @@ export function buildWorld(region: RegionData): World {
           kind: r.tags.restriction,
         });
     }
-  const { groupOf } = buildingGroups(region.elements, region.center);
+  const { groupOf, groupTags } = buildingGroups(region.elements, region.center);
   const buildings: Building[] = [],
     areas: Area[] = [],
     trees: Point[] = [];
@@ -557,8 +561,14 @@ export function buildWorld(region: RegionData): World {
         t['building:facade:material'] ||
         t.material ||
         (t.shop === 'mall' ? 'glass' : fortification ? 'brick' : undefined);
-      const windowPolicy: 'procedural' | 'forbid' =
-        fortification || windowsForbiddenByTags(t) ? 'forbid' : 'procedural';
+      const group = groupOf.get(osmKey(e)),
+        inheritedGroupTags = group ? groupTags.get(group) : undefined,
+        windowPolicy: 'procedural' | 'forbid' =
+          fortification ||
+          windowsForbiddenByTags(t) ||
+          !genericPartMayHaveFacadeWindows(t, inheritedGroupTags)
+            ? 'forbid'
+            : 'procedural';
       buildings.push({
         id: e.id,
         osmType: e.type === 'relation' ? 'relation' : 'way',
@@ -591,7 +601,8 @@ export function buildWorld(region: RegionData): World {
         roofLevels: osmLength(t['roof:levels']),
         roofColour: t['roof:colour'],
         roofMaterial: t['roof:material'],
-        group: groupOf.get(osmKey(e)),
+        group,
+        groupTags: inheritedGroupTags,
         osmTags: { ...t },
         roofOrientation: t['roof:orientation'],
       });

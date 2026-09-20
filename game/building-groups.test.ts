@@ -120,14 +120,82 @@ it('явные отношения обходятся с циклами и отс
     },
   ];
   // Act
-  const { groupOf } = buildingGroups(elements, center);
+  const { groupOf, groupTags } = buildingGroups(elements, center);
   // Assert
   expect(groupOf.get('way/1')).toBe('relation/1');
   expect(groupOf.get('way/2')).toBe('relation/1');
   expect(groupOf.has('way/999')).toBe(false);
+  expect(groupTags.get('relation/1')).toMatchObject({ building: 'church' });
   expect(reduceMapElements(elements, center).elements.length).toBe(
     elements.length,
   );
+});
+it('поднимает roof-face без min_height к высоте кровли или опорного яруса', () => {
+  // Arrange
+  const footprint = [
+    { x: 0, y: 0, z: 0 },
+    { x: 10, y: 0, z: 0 },
+    { x: 10, y: 0, z: 10 },
+    { x: 0, y: 0, z: 10 },
+  ];
+  const part = (
+    id: number,
+    height: number,
+    tags: Record<string, string>,
+  ): Building => ({
+    id,
+    footprint,
+    height,
+    part: true,
+    colour: 0.5,
+    roof: 'flat',
+    group: 'relation/1',
+    osmTags: tags,
+  });
+  const fromRoofHeight = part(1, 31.8, { 'building:part': 'roof' });
+  fromRoofHeight.roofHeight = 1.8;
+  const fromSupport = part(2, 24, { 'building:part': 'roof' });
+  const support = part(3, 20, { 'building:part': 'yes' });
+  const fallback = part(4, 12, { 'building:part': 'roof' });
+  const explicit = {
+    ...part(5, 30, { 'building:part': 'roof', min_height: '26' }),
+    minHeight: 26,
+  };
+  // Act
+  resolveBuildingEnvelopes([
+    fromRoofHeight,
+    fromSupport,
+    support,
+    fallback,
+    explicit,
+  ]);
+  // Assert
+  expect(fromRoofHeight.minHeight).toBeCloseTo(30, 6);
+  expect(fromSupport.minHeight).toBe(20);
+  expect(fallback.minHeight).toBeCloseTo(11.9, 6);
+  expect(explicit.minHeight).toBe(26);
+});
+it('нормализует roof-face с roof:height и без строительной группы', () => {
+  // Arrange
+  const roof: Building = {
+    id: 1,
+    footprint: [
+      { x: 0, y: 0, z: 0 },
+      { x: 10, y: 0, z: 0 },
+      { x: 10, y: 0, z: 10 },
+      { x: 0, y: 0, z: 10 },
+    ],
+    height: 12,
+    part: true,
+    colour: 0.5,
+    roof: 'flat',
+    roofHeight: 2,
+    osmTags: { 'building:part': 'roof' },
+  };
+  // Act
+  resolveBuildingEnvelopes([roof]);
+  // Assert
+  expect(roof.minHeight).toBe(10);
 });
 it('вложенная группа и её части принадлежат одной компоненте независимо от порядка OSM', () => {
   // Arrange

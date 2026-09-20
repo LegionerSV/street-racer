@@ -155,7 +155,15 @@ export function buildingGroups(elements: OSMElement[], center: Center) {
         link(group, osmKey(part));
       }
     }
-  return { groupOf, groups };
+  const groupTags = new Map<string, Tags>();
+  for (const [group, members] of groups) {
+    const anchor = byKey.get(group);
+    const facade = [...members]
+      .map((key) => byKey.get(key))
+      .find((member) => member?.tags?.building && !isBuildingPart(member.tags));
+    groupTags.set(group, { ...facade?.tags, ...anchor?.tags });
+  }
+  return { groupOf, groups, groupTags };
 }
 
 export function resolveBuildingEnvelopes(buildings: Building[]) {
@@ -170,12 +178,57 @@ export function resolveBuildingEnvelopes(buildings: Building[]) {
       ),
     ) / 2;
   const parts = new Map<string, Building[]>();
+  const grouped = new Map<string, Building[]>();
+  for (const b of buildings)
+    if (b.group) {
+      const members = grouped.get(b.group) || [];
+      members.push(b);
+      grouped.set(b.group, members);
+    }
   for (const b of buildings)
     if (b.part && b.group) {
       const list = parts.get(b.group) || [];
       list.push(b);
       parts.set(b.group, list);
     }
+  for (const roof of buildings) {
+    if (!roof.part) continue;
+    const tags = roof.osmTags || {};
+    if (
+      tags['building:part'] !== 'roof' ||
+      tags.min_height !== undefined ||
+      tags['building:min_level'] !== undefined ||
+      (roof.minHeight || 0) > 0
+    )
+      continue;
+    if (roof.roofHeight && roof.roofHeight < roof.height) {
+      roof.minHeight = roof.height - roof.roofHeight;
+      continue;
+    }
+    const center = roof.footprint.reduce(
+      (point, vertex) => ({
+        x: point.x + vertex.x / roof.footprint.length,
+        y: 0,
+        z: point.z + vertex.z / roof.footprint.length,
+      }),
+      { x: 0, y: 0, z: 0 },
+    );
+    const support = Math.max(
+      0,
+      ...(grouped.get(roof.group || '') || [])
+        .filter(
+          (part) =>
+            part !== roof &&
+            (part.envelopeHeight ?? part.height) < roof.height - 0.05 &&
+            area(part.footprint) >= area(roof.footprint) * 0.8 &&
+            polygonContains(center, part.footprint),
+        )
+        .map((part) => part.envelopeHeight ?? part.height),
+    );
+    // Когда источник не задаёт ни высоту кровли, ни опорный ярус, тонкая
+    // крышка честнее ложного объёма от земли.
+    roof.minHeight = support || Math.max(0, roof.height - 0.1);
+  }
   for (const b of buildings)
     if (!b.part && b.group) {
       const members = parts.get(b.group) || [];
@@ -191,7 +244,9 @@ export function resolveBuildingEnvelopes(buildings: Building[]) {
           : [];
       // Низкий размеченный цоколь может задавать основание комплекса.
       // Высокий карниз не уменьшает всю оболочку без широкого яруса под ним.
-      const lowTier = members.filter(p => (p.minHeight || 0) >= 3 && (p.minHeight || 0) <= 10);
+      const lowTier = members.filter(
+        (p) => (p.minHeight || 0) >= 3 && (p.minHeight || 0) <= 10,
+      );
       const candidates = lowTier.length ? lowTier : broad;
       const bases = candidates
         .map((p) => p.minHeight || 0)
@@ -211,22 +266,42 @@ export function resolveBuildingEnvelopes(buildings: Building[]) {
         b.envelopeHeight = firstTier;
     }
   const byGroup = new Map<string, Building[]>();
-  for (const b of buildings) if (b.group) {
-    const members = byGroup.get(b.group) || [];
-    members.push(b);
-    byGroup.set(b.group, members);
-  }
+  for (const b of buildings)
+    if (b.group) {
+      const members = byGroup.get(b.group) || [];
+      members.push(b);
+      byGroup.set(b.group, members);
+    }
   for (const members of byGroup.values()) {
-    const outline = members.find(b => !b.part);
+    const outline = members.find((b) => !b.part);
     if (!outline) continue;
     const outlineArea = area(outline.footprint);
     for (const part of members) {
       const min = part.minHeight || 0;
-      if (!part.part || min < 12 || area(part.footprint) > outlineArea * .02) continue;
-      const center = part.footprint.reduce((p,q)=>({x:p.x+q.x/part.footprint.length,y:0,z:p.z+q.z/part.footprint.length}),{x:0,y:0,z:0});
-      const support = Math.max(0,...members.filter(b=>b!==part&&(b.envelopeHeight??b.height)<=min+.1&&area(b.footprint)>=area(part.footprint)*.9&&polygonContains(center,b.footprint)).map(b=>b.envelopeHeight??b.height));
+      if (!part.part || min < 12 || area(part.footprint) > outlineArea * 0.02)
+        continue;
+      const center = part.footprint.reduce(
+        (p, q) => ({
+          x: p.x + q.x / part.footprint.length,
+          y: 0,
+          z: p.z + q.z / part.footprint.length,
+        }),
+        { x: 0, y: 0, z: 0 },
+      );
+      const support = Math.max(
+        0,
+        ...members
+          .filter(
+            (b) =>
+              b !== part &&
+              (b.envelopeHeight ?? b.height) <= min + 0.1 &&
+              area(b.footprint) >= area(part.footprint) * 0.9 &&
+              polygonContains(center, b.footprint),
+          )
+          .map((b) => b.envelopeHeight ?? b.height),
+      );
       // Тег min_height сохраняется: достраиваем лишь недостающую опору башни.
-      if (support > 0 && min-support > 2) part.supportMinHeight = support;
+      if (support > 0 && min - support > 2) part.supportMinHeight = support;
     }
   }
 }

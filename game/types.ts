@@ -135,6 +135,7 @@ export type Building = {
   roofColour?: string;
   roofMaterial?: string;
   group?: string;
+  groupTags?: Tags;
   envelopeHeight?: number;
   osmTags?: Tags;
 };

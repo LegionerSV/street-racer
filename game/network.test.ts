@@ -110,6 +110,69 @@ it('по умолчанию даёт обычному зданию окна, н�
     windowPolicy: 'forbid',
   });
 });
+it('даёт окнам generic-частей только явное фасадное основание или тег окна', () => {
+  // Arrange
+  const elements: OSMElement[] = [
+    node(1, 0, 0),
+    node(2, 0.0003, 0),
+    node(3, 0.0003, 0.0003),
+    node(4, 0, 0.0003),
+    node(5, 0.0001, 0.0001),
+    node(6, 0.0002, 0.0001),
+    node(7, 0.0002, 0.0002),
+    node(8, 0.0001, 0.0002),
+    node(9, 0.0005, 0),
+    node(10, 0.0008, 0),
+    node(11, 0.0008, 0.0003),
+    node(12, 0.0005, 0.0003),
+    node(13, 0.0006, 0.0001),
+    node(14, 0.0007, 0.0001),
+    node(15, 0.0007, 0.0002),
+    node(16, 0.0006, 0.0002),
+    {
+      type: 'way',
+      id: 201,
+      nodes: [1, 2, 3, 4, 1],
+      tags: { building: 'tower', man_made: 'beacon', tourism: 'attraction' },
+    },
+    {
+      type: 'way',
+      id: 202,
+      nodes: [5, 6, 7, 8, 5],
+      tags: { 'building:part': 'yes' },
+    },
+    {
+      type: 'way',
+      id: 203,
+      nodes: [9, 10, 11, 12, 9],
+      tags: { building: 'apartments', tourism: 'attraction' },
+    },
+    {
+      type: 'way',
+      id: 204,
+      nodes: [13, 14, 15, 16, 13],
+      tags: { 'building:part': 'yes' },
+    },
+    {
+      type: 'way',
+      id: 205,
+      nodes: [5, 6, 7, 8, 5],
+      tags: { 'building:part': 'yes', windows: 'yes' },
+    },
+  ];
+  // Act
+  const buildings = buildWorld(region(elements)).buildings;
+  // Assert
+  expect(buildings.find((building) => building.id === 202)).toMatchObject({
+    windowPolicy: 'forbid',
+  });
+  expect(buildings.find((building) => building.id === 204)).toMatchObject({
+    windowPolicy: 'procedural',
+  });
+  expect(buildings.find((building) => building.id === 205)).toMatchObject({
+    windowPolicy: 'procedural',
+  });
+});
 
 const road = (id: number, nodes: number[], tags = {}): OSMElement => ({
   type: 'way',

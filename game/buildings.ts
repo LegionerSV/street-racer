@@ -157,11 +157,33 @@ export function windowsForbiddenByTags(tags: Tags) {
   );
 }
 
+const facadeBearingBuildings = new Set([
+  'apartments',
+  'commercial',
+  'dormitory',
+  'hotel',
+  'house',
+  'hospital',
+  'office',
+  'residential',
+  'retail',
+  'school',
+]);
+
+// Обобщённая часть сама по себе не говорит, что это этаж с фасадом.
+// Окна допустимы только при явном теге или у части обычного фасадного здания.
+export function genericPartMayHaveFacadeWindows(tags: Tags, groupTags?: Tags) {
+  if (tags['building:part'] !== 'yes') return true;
+  if (hasExplicitWindows(tags)) return true;
+  return facadeBearingBuildings.has(tags.building || groupTags?.building || '');
+}
+
 export function hasFacadeWindows(b: Building) {
   const tags = b.osmTags || {};
   return (
     b.windowPolicy !== 'forbid' &&
     !windowsForbiddenByTags(tags) &&
+    genericPartMayHaveFacadeWindows(tags, b.groupTags) &&
     !['triumphal_arch', 'wall', 'fortification'].includes(b.kind || '')
   );
 }

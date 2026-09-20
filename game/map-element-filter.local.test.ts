@@ -22,7 +22,7 @@ const pilotComplete = pilotKeys.every((key) => {
 });
 
 it.skipIf(!pilotComplete)(
-  'сокращает реальный плотный старт Петербурга до мобильного бюджета',
+  'укладывает реальный старт Петербурга в мобильный бюджет',
   () => {
     // Arrange
     const raw = new Map<string, OSMElement>();
@@ -48,7 +48,10 @@ it.skipIf(!pilotComplete)(
     }
 
     // Assert
-    expect(raw.size).toBeGreaterThan(mapStreamingPolicy('mobile').maxElements);
+    expect(raw.size).toBeLessThanOrEqual(
+      mapStreamingPolicy('mobile').maxElements,
+    );
+    expect(kept.size).toBeLessThanOrEqual(raw.size);
     expect(kept.size).toBeLessThanOrEqual(
       mapStreamingPolicy('mobile').maxElements,
     );

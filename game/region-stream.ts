@@ -55,7 +55,7 @@ type TileOutcome =
 const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
   {
     mobile: {
-      blockingRadiusMeters: 1500,
+      blockingRadiusMeters: 1000,
       targetRadiusMeters: 2500,
       forwardTileRows: 4,
       maxConcurrentTiles: 4,

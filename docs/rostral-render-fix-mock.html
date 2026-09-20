@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ростральные колонны — нормализация частей</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, Arial, sans-serif;
+        background: #10181b;
+        color: #edf2e8;
+      }
+      body {
+        margin: 0;
+        padding: 30px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 26px;
+      }
+      p {
+        color: #aebbb7;
+        max-width: 980px;
+        line-height: 1.45;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(330px, 1fr));
+        gap: 22px;
+        max-width: 1050px;
+      }
+      article {
+        overflow: hidden;
+        border: 1px solid #3d5050;
+        border-radius: 12px;
+        background: #152125;
+      }
+      article.good {
+        border-color: #b9db4c;
+      }
+      h2 {
+        margin: 0;
+        padding: 16px 18px 4px;
+        font-size: 18px;
+      }
+      small {
+        display: block;
+        min-height: 40px;
+        padding: 0 18px 14px;
+        color: #aebbb7;
+        line-height: 1.35;
+      }
+      svg {
+        display: block;
+        width: 100%;
+        height: auto;
+        background: #93cbed;
+      }
+      .road {
+        fill: #171d20;
+      }
+      .line {
+        stroke: #dde8cc;
+        stroke-width: 4;
+        stroke-dasharray: 21 19;
+        opacity: 0.8;
+      }
+      .base {
+        fill: #d1c4ad;
+        stroke: #82755f;
+        stroke-width: 2;
+      }
+      .shaft {
+        fill: #bea88d;
+        stroke: #75614e;
+        stroke-width: 2;
+      }
+      .roof {
+        fill: #52634b;
+        stroke: #344331;
+        stroke-width: 2;
+      }
+      .window {
+        fill: #83cce1;
+        stroke: #3b7082;
+        stroke-width: 2;
+      }
+      .bad-face {
+        fill: #596d54;
+        opacity: 0.88;
+        stroke: #354537;
+        stroke-width: 2;
+      }
+      .label {
+        font-size: 14px;
+        fill: #dce8df;
+        font-weight: 700;
+      }
+      .callout {
+        font-size: 12px;
+        fill: #253134;
+      }
+      .arrow {
+        stroke: #d8ff3e;
+        stroke-width: 2;
+        fill: none;
+        marker-end: url(#arrow);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Ростральные колонны: ожидаемая коррекция процедурного рендера</h1>
+    <p>
+      Вариант справа — предлагаемый: roof-face начинается у своего яруса, а
+      конструктивные части памятника не получают жилые окна. Геометрия и
+      материалы остаются исходными OSM.
+    </p>
+    <section class="grid">
+      <article>
+        <h2>Сейчас</h2>
+        <small
+          >Кровельные поверхности без <code>min_height</code> экструзятся от
+          земли; generic-подчасти получают окна.</small
+        >
+        <svg
+          viewBox="0 0 500 350"
+          role="img"
+          aria-label="Текущий искажённый вид колонны"
+        >
+          <defs>
+            <marker
+              id="arrow"
+              markerWidth="7"
+              markerHeight="7"
+              refX="6"
+              refY="3.5"
+              orient="auto"
+            >
+              <path d="M0,0 L7,3.5 L0,7z" fill="#d8ff3e" />
+            </marker>
+          </defs>
+          <rect class="road" x="0" y="245" width="500" height="105" />
+          <path class="line" d="M0 296H500" />
+          <rect class="base" x="200" y="216" width="100" height="30" rx="3" />
+          <rect class="shaft" x="230" y="92" width="40" height="125" />
+          <path class="bad-face" d="M185 45 L315 45 L290 217 L210 217Z" />
+          <rect class="window" x="217" y="125" width="13" height="18" />
+          <rect class="window" x="270" y="125" width="13" height="18" />
+          <rect class="window" x="215" y="164" width="13" height="18" />
+          <rect class="window" x="272" y="164" width="13" height="18" />
+          <path class="roof" d="M220 93 L250 47 L280 93Z" />
+          <text class="label" x="20" y="30">лишний объём roof-face</text>
+          <path class="arrow" d="M155 33 L200 70" />
+          <text class="label" x="315" y="172">ложные окна</text>
+          <path class="arrow" d="M405 176 L286 176" />
+        </svg>
+      </article>
+      <article class="good">
+        <h2>После исправления</h2>
+        <small
+          >Кровельная грань привязана к верхнему ярусу; окна появляются только у
+          явно фасадных частей здания.</small
+        >
+        <svg
+          viewBox="0 0 500 350"
+          role="img"
+          aria-label="Исправленный вид колонны"
+        >
+          <defs>
+            <marker
+              id="arrow2"
+              markerWidth="7"
+              markerHeight="7"
+              refX="6"
+              refY="3.5"
+              orient="auto"
+            >
+              <path d="M0,0 L7,3.5 L0,7z" fill="#d8ff3e" />
+            </marker>
+          </defs>
+          <rect class="road" x="0" y="245" width="500" height="105" />
+          <path class="line" d="M0 296H500" />
+          <rect class="base" x="200" y="216" width="100" height="30" rx="3" />
+          <rect class="shaft" x="230" y="92" width="40" height="125" />
+          <path class="roof" d="M220 93 L250 47 L280 93Z" />
+          <path class="roof" d="M230 92 L250 76 L270 92Z" />
+          <text class="label" x="20" y="30">
+            roof-face — только верхний ярус
+          </text>
+          <path class="arrow" d="M220 33 L247 67" />
+          <text class="label" x="307" y="172">
+            конструктивная часть
+            <br />
+            без окон
+          </text>
+          <path class="arrow" d="M405 176 L275 176" />
+        </svg>
+      </article>
+    </section>
+  </body>
+</html>
