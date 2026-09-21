@@ -102,19 +102,46 @@ it('высокое качество хранит только ближайшие
   expect(southernWallTiles.length).toBeLessThan(12);
 });
 
-it('на стоянке не загружает будущие ряды карты, а при движении сохраняет опережение', () => {
+it('плавно увеличивает окно source-тайлов вместе со скоростью', () => {
   // Arrange
   const policy = mapStreamingPolicy('high');
   // Act
   const parked = mapForwardRows(policy, 0),
     crawling = mapForwardRows(policy, 1),
-    driving = mapForwardRows(policy, 12);
+    city = mapForwardRows(policy, 12),
+    fast = mapForwardRows(policy, 40);
   // Assert
   expect(parked).toBe(0);
   expect(crawling).toBe(0);
-  expect(driving).toBe(1);
+  expect(city).toBe(1);
+  expect(fast).toBe(1);
   expect(mapRadiusAtSpeed(policy, 0)).toBe(policy.blockingRadiusMeters);
-  expect(mapRadiusAtSpeed(policy, 12)).toBe(policy.targetRadiusMeters);
+  expect(mapRadiusAtSpeed(policy, 1)).toBe(policy.blockingRadiusMeters);
+  expect(mapRadiusAtSpeed(policy, 12)).toBeGreaterThan(
+    policy.blockingRadiusMeters,
+  );
+  expect(mapRadiusAtSpeed(policy, 12)).toBeLessThan(policy.targetRadiusMeters);
+  expect(mapRadiusAtSpeed(policy, 200)).toBe(policy.targetRadiusMeters);
+});
+
+it('не раскрывает четыре дальних ряда source-тайлов сразу после начала движения', () => {
+  // Arrange
+  const policy = mapStreamingPolicy('mobile');
+  // Act / Assert
+  expect(mapForwardRows(policy, 0)).toBe(0);
+  expect(mapForwardRows(policy, 3)).toBe(1);
+  expect(mapForwardRows(policy, 12)).toBe(2);
+  expect(mapForwardRows(policy, 30)).toBe(4);
+});
+
+it('не расширяет окно при неизвестной или отрицательной скорости', () => {
+  // Arrange
+  const policy = mapStreamingPolicy('mobile');
+  // Act / Assert
+  for (const speed of [Number.NaN, Number.POSITIVE_INFINITY, -10]) {
+    expect(mapForwardRows(policy, speed)).toBe(0);
+    expect(mapRadiusAtSpeed(policy, speed)).toBe(policy.blockingRadiusMeters);
+  }
 });
 
 it('метровое стартовое окно не сужается на высокой широте', () => {

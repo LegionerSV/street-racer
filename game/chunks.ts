@@ -37,6 +37,7 @@ import {
   mixPoint,
   polygonContains,
   projectOnSegment,
+  resample,
   sampleElevation,
   seeded,
   smooth,
@@ -128,6 +129,29 @@ export function chunkCacheWeight(chunk: ChunkData) {
     ) +
     (chunk.trees.length + chunk.lamps.length + chunk.breakables.length) * 96
   );
+}
+
+export const RACE_PRELOAD_MAX_CHUNKS = 192;
+export const RACE_PRELOAD_MAX_BYTES = 96 * 1024 * 1024;
+
+export function racePreloadWithinBudget(chunkCount: number, bytes: number) {
+  return (
+    Number.isFinite(chunkCount) &&
+    Number.isFinite(bytes) &&
+    chunkCount >= 0 &&
+    bytes >= 0 &&
+    chunkCount <= RACE_PRELOAD_MAX_CHUNKS &&
+    bytes <= RACE_PRELOAD_MAX_BYTES
+  );
+}
+
+export function raceInstalledChunkWeight(
+  keys: Iterable<string>,
+  installed: ReadonlyMap<string, { weight: number }>,
+) {
+  let total = 0;
+  for (const key of new Set(keys)) total += installed.get(key)?.weight ?? 0;
+  return total;
 }
 export class ChunkInstallQueue<T> {
   private entries = new Map<string, T>();
@@ -268,6 +292,45 @@ export function desiredChunks(
       });
     }
   return result.sort((a, b) => a.priority - b.priority);
+}
+
+export function routeChunkPlan(points: Point[], quality: Settings['quality']) {
+  if (!points.length) return [];
+  const samples = resample(points, CHUNK_SIZE / 2),
+    planned = new Map<string, { key: string; lod: number; priority: number }>();
+  for (let index = 0; index < samples.length; index++) {
+    const previous = samples[Math.max(0, index - 1)],
+      next = samples[Math.min(samples.length - 1, index + 1)],
+      heading = Math.atan2(next.x - previous.x, next.z - previous.z);
+    for (const chunk of desiredChunks(samples[index], heading, quality, true)) {
+      const current = planned.get(chunk.key);
+      if (!current || chunk.lod < current.lod)
+        planned.set(chunk.key, {
+          ...chunk,
+          priority: Math.min(chunk.priority, current?.priority ?? Infinity),
+        });
+    }
+  }
+  return [...planned.values()].sort(
+    (a, b) => a.priority - b.priority || a.key.localeCompare(b.key),
+  );
+}
+
+export function mergePinnedChunks(
+  wanted: { key: string; lod: number; priority: number }[],
+  pinned: ReadonlyMap<string, number> | ReadonlySet<string>,
+) {
+  const pinnedEntries: [string, number][] =
+      pinned instanceof Map ? [...pinned] : [...pinned].map((key) => [key, 0]),
+    pinnedKeys = new Set(pinnedEntries.map(([key]) => key));
+  return [
+    ...pinnedEntries.map(([key, lod]) => ({
+      key,
+      lod,
+      priority: -2_000_000 + lod,
+    })),
+    ...wanted.filter((chunk) => !pinnedKeys.has(chunk.key)),
+  ];
 }
 
 export function startupDrivingChunks(

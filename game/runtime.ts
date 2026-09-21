@@ -28,6 +28,7 @@ import HavokPhysics from '@babylonjs/havok';
 import havokWasm from '@babylonjs/havok/lib/esm/HavokPhysics.wasm?url';
 import type {
   ChunkData,
+  EdgeStableId,
   HUD,
   MeshData,
   Point,
@@ -44,6 +45,11 @@ import {
   criticalChunks,
   startupDrivingChunks,
   ChunkInstallQueue,
+  chunkCacheWeight,
+  mergePinnedChunks,
+  raceInstalledChunkWeight,
+  racePreloadWithinBudget,
+  routeChunkPlan,
 } from './chunks';
 import { distance2, pathLengths, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
@@ -82,6 +88,7 @@ import {
   routeCoverageTileKeys,
   routeHasCoverage,
   routeHasDrivingCoverage,
+  sourceTileKeysForLocalBounds,
 } from './stream-coverage';
 import { edgeById, edgeStableId } from './road-graph';
 import { nextRaceTurn } from './navigation';
@@ -134,6 +141,7 @@ export function mergeStaticCollisionData(chunk: ChunkData): MeshData {
 }
 type Loaded = {
   lod: number;
+  weight: number;
   meshes: Mesh[];
   bodies: PhysicsAggregate[];
   breakables: BreakableLoaded[];
@@ -169,11 +177,21 @@ export function mapTransitionBlocksDriving(
 }
 export function mapStreamCanUpdate(state: {
   preparingRaceActive: boolean;
+  raceCoverageLoading?: boolean;
   raceActive: boolean;
   driveTestActive: boolean;
   hidden: boolean;
 }) {
-  return !state.preparingRaceActive && !state.hidden;
+  return (
+    (!state.preparingRaceActive || !!state.raceCoverageLoading) && !state.hidden
+  );
+}
+export function raceChunkNeedsPreparation(
+  installedLod: number | undefined,
+  targetLod: number,
+  stale: boolean,
+) {
+  return stale || installedLod !== targetLod;
 }
 export class Game {
   private readonly closeCourtyards =
@@ -217,6 +235,10 @@ export class Game {
   private loading = true;
   private loadingReasons: string[] = [];
   private preparingRace = false;
+  private racePreparationStatus = '';
+  private racePinnedChunks = new Map<string, number>();
+  private racePinnedTiles = new Set<string>();
+  private raceCoverageLoading = false;
   private message = '';
   private signalMeshes = new Map<
     number,
@@ -842,6 +864,7 @@ export class Game {
       this.chunks.get(chunk.key)?.dispose();
       this.chunks.set(chunk.key, {
         lod: chunk.lod,
+        weight: chunkCacheWeight(chunk),
         meshes,
         bodies,
         breakables,
@@ -872,18 +895,21 @@ export class Game {
     }
   }
   private refreshWanted() {
-    this.wanted = desiredChunks(
-      this.player.position,
-      this.player.speed < 0
-        ? this.player.heading + Math.PI
-        : this.player.heading,
-      this.settings.quality,
-      !!this.mapCoverage,
-      Math.abs(this.player.speed),
-    ).filter(
-      (c) =>
-        !this.mapCoverage ||
-        tileReady(this.mapCoverage, c.key, this.world.center),
+    this.wanted = mergePinnedChunks(
+      desiredChunks(
+        this.player.position,
+        this.player.speed < 0
+          ? this.player.heading + Math.PI
+          : this.player.heading,
+        this.settings.quality,
+        !!this.mapCoverage,
+        Math.abs(this.player.speed),
+      ).filter(
+        (c) =>
+          !this.mapCoverage ||
+          tileReady(this.mapCoverage, c.key, this.world.center),
+      ),
+      this.racePinnedChunks,
     );
     const wanted = new Set(this.wanted.map((c) => c.key));
     for (const [key, chunk] of this.chunks)
@@ -1384,7 +1410,8 @@ export class Game {
       paused: this.paused,
       loading: this.loading,
       mapStatus: this.preparingRace
-        ? 'Прокладываем маршрут по загруженной карте…'
+        ? this.racePreparationStatus ||
+          'Прокладываем маршрут по загруженной карте…'
         : this.mapStream?.status,
       race: this.race ? { ...this.race } : null,
       navigation:
@@ -1426,6 +1453,7 @@ export class Game {
     const blocked = () =>
       !mapStreamCanUpdate({
         preparingRaceActive: this.preparingRace,
+        raceCoverageLoading: this.raceCoverageLoading,
         raceActive: !!this.race,
         driveTestActive: !!this.driveTest,
         hidden: document.hidden,
@@ -1448,13 +1476,15 @@ export class Game {
                 ),
               )
             : 120;
-          const pinnedRaceTiles = this.race
-            ? routeCoverageTileKeys(
-                this.race.route.points,
-                this.world.center,
-                raceMargin,
-              )
-            : undefined;
+          const pinnedRaceTiles = this.racePinnedTiles.size
+            ? this.racePinnedTiles
+            : this.race
+              ? routeCoverageTileKeys(
+                  this.race.route.points,
+                  this.world.center,
+                  raceMargin,
+                )
+              : undefined;
           const region: RegionData | null =
             awaiting ??
             (await stream.next(
@@ -1768,6 +1798,152 @@ export class Game {
     this.streamClock = 0;
     this.camera.position.setAll(0);
   }
+  private async installRaceChunk(chunk: ChunkData) {
+    const steps = this.installSteps(chunk);
+    while (!this.disposed && !this.paused) {
+      const started = performance.now();
+      do {
+        if (steps.next().done) return;
+      } while (performance.now() - started < 3);
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+    steps.return?.(undefined);
+    throw new Error('Подготовка заезда отменена.');
+  }
+  private raceTileKeys(plan: ReturnType<typeof routeChunkPlan>) {
+    return new Set(
+      plan.flatMap((chunk) => {
+        const [x, z] = chunk.key.split(',').map(Number);
+        return sourceTileKeysForLocalBounds(this.world.center, {
+          minX: x * 250,
+          maxX: (x + 1) * 250,
+          minZ: z * 250,
+          maxZ: (z + 1) * 250,
+        });
+      }),
+    );
+  }
+  private async ensureRaceCoverage(required: Set<string>) {
+    const missing = () =>
+      [...required].filter((key) => !this.mapCoverage?.has(key));
+    if (!missing().length) return false;
+    if (!this.mapStream)
+      throw new Error('Потоковая карта ещё не готова к подготовке заезда.');
+    this.mapStream.clearPinnedCapacityError();
+    this.racePinnedTiles = required;
+    this.raceCoverageLoading = true;
+    this.streamClock = 0;
+    const deadline = performance.now() + 300000;
+    try {
+      while (!this.disposed) {
+        if (this.paused) throw new Error('Подготовка заезда отменена.');
+        const capacityError = this.mapStream.diagnostics().pinnedCapacityError;
+        if (capacityError) throw new Error(capacityError);
+        const pending = missing();
+        if (!pending.length && !this.applyingMap) return true;
+        if (performance.now() >= deadline)
+          throw new Error(
+            'Подготовка полного окружения трассы заняла больше пяти минут.',
+          );
+        this.racePreparationStatus = `Загружаем окружение трассы · осталось тайлов: ${pending.length}`;
+        this.emit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error('Подготовка заезда отменена.');
+    } finally {
+      this.raceCoverageLoading = false;
+    }
+  }
+  private async prepareRaceEnvironment(
+    route: Route,
+    start: EdgeStableId,
+    kind: Route['kind'],
+  ) {
+    let plan: ReturnType<typeof routeChunkPlan> | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      plan = routeChunkPlan(route.points, this.settings.quality);
+      if (!plan.length)
+        throw new Error(
+          'Не удалось определить окружение для выбранного заезда.',
+        );
+      if (!racePreloadWithinBudget(plan.length, 0))
+        throw new Error(
+          'Окружение этой трассы слишком велико для безопасной предварительной загрузки.',
+        );
+      const expanded = await this.ensureRaceCoverage(this.raceTileKeys(plan));
+      if (!expanded) break;
+      const refreshed = await this.worker.raceRoute(start, kind);
+      if (!refreshed)
+        throw new Error(
+          'После загрузки окружения не удалось повторно построить маршрут заезда.',
+        );
+      route = refreshed;
+      plan = undefined;
+    }
+    if (!plan)
+      throw new Error(
+        'Маршрут заезда продолжает меняться после загрузки окружения.',
+      );
+    this.racePinnedChunks = new Map(
+      plan.map((chunk) => [chunk.key, chunk.lod]),
+    );
+    this.racePinnedTiles = this.raceTileKeys(plan);
+    this.refreshWanted();
+    const missing = plan.filter((chunk) =>
+      raceChunkNeedsPreparation(
+        this.chunks.get(chunk.key)?.lod,
+        chunk.lod,
+        this.staleChunks.has(chunk.key),
+      ),
+    );
+    if (!missing.length) return route;
+    const suspended = this.suspendPump;
+    this.suspendPump = true;
+    try {
+      const prepared: ChunkData[] = [];
+      let preparedBytes = raceInstalledChunkWeight(
+        plan.map((target) => target.key),
+        this.chunks,
+      );
+      if (!racePreloadWithinBudget(plan.length, preparedBytes))
+        throw new Error(
+          'Окружение этой трассы превышает безопасный бюджет памяти.',
+        );
+      for (let index = 0; index < missing.length; index++) {
+        if (this.disposed || this.paused)
+          throw new Error('Подготовка заезда отменена.');
+        const target = missing[index];
+        this.racePreparationStatus = `Строим окружение трассы · ${index + 1} из ${missing.length}`;
+        this.emit();
+        this.installQueue.delete(target.key);
+        const chunk = await this.worker.chunk(
+          target.key,
+          target.lod,
+          this.settings.quality === 'mobile' ? 8 : 32,
+          this.closeCourtyards,
+        );
+        if (this.disposed || this.paused)
+          throw new Error('Подготовка заезда отменена.');
+        preparedBytes += chunkCacheWeight(chunk);
+        if (!racePreloadWithinBudget(plan.length, preparedBytes))
+          throw new Error(
+            'Окружение этой трассы превышает безопасный бюджет памяти.',
+          );
+        prepared.push(chunk);
+      }
+      for (let index = 0; index < prepared.length; index++) {
+        this.racePreparationStatus = `Устанавливаем окружение трассы · ${index + 1} из ${prepared.length}`;
+        this.emit();
+        await this.installRaceChunk(prepared[index]);
+        this.installQueue.delete(prepared[index].key);
+      }
+    } finally {
+      this.suspendPump = suspended;
+    }
+    return route;
+  }
   async startRace(invitation: Route) {
     if (
       this.race ||
@@ -1784,7 +1960,7 @@ export class Game {
     this.clearControls();
     this.emit();
     try {
-      const route = await this.worker.raceRoute(
+      let route = await this.worker.raceRoute(
         edgeStableId(start),
         invitation.kind,
       );
@@ -1812,6 +1988,17 @@ export class Game {
         throw new Error(
           'Для этого заезда пока не хватает связанных загруженных дорог. Попробуйте другой старт или дождитесь подгрузки карты.',
         );
+      route = await this.prepareRaceEnvironment(
+        route,
+        edgeStableId(start),
+        invitation.kind,
+      );
+      if (this.disposed || this.paused) {
+        this.racePinnedChunks.clear();
+        this.racePinnedTiles.clear();
+        if (!this.disposed) this.refreshWanted();
+        return;
+      }
       this.race = makeRace(route);
       this.message = '';
       this.player.reset(
@@ -1826,6 +2013,9 @@ export class Game {
       this.refreshWanted();
       this.clearControls();
     } catch (error) {
+      this.racePinnedChunks.clear();
+      this.racePinnedTiles.clear();
+      this.refreshWanted();
       if (!this.disposed) {
         this.message =
           error instanceof Error
@@ -1835,11 +2025,15 @@ export class Game {
       }
     } finally {
       this.preparingRace = false;
+      this.racePreparationStatus = '';
       if (!this.disposed) this.emit();
     }
   }
   finishRace() {
     this.race = null;
+    this.racePinnedChunks.clear();
+    this.racePinnedTiles.clear();
+    this.refreshWanted();
     this.traffic.clearRacers();
     this.emit();
   }

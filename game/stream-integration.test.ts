@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   RegionStream,
+  mapTileAt,
   mapStreamingPolicy,
   startupTiles,
 } from './region-stream';
@@ -291,7 +292,7 @@ it('устанавливает готовую фоновую клетку, не 
       expect(load).toHaveBeenCalledTimes(stream.policy.maxUpdateTiles),
     );
     expect(
-      load.mock.calls.some(([id]) => id.y <= latLonToSourceTile(0, 0).y - 3),
+      load.mock.calls.some(([id]) => id.y < latLonToSourceTile(0, 0).y),
     ).toBe(true);
     const first = load.mock.calls[0][0];
     pending.get(sourceTileKey(first))!(tileFor(first));
@@ -554,6 +555,204 @@ it('старт отдаёт глобальное окно, затем фон о�
     expect(last.loadedTiles).not.toContain(startupTiles(first.center)[0]);
     expect(last.heightDatum).toBe(first.heightDatum);
     expect(stream.diagnostics().recent.length).toBeLessThanOrEqual(40);
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('предзагружает дальний source-тайл без перестройки активного мира', async () => {
+  // Arrange
+  const { cells } = mockedDownloads(),
+    center = { lat: 0, lon: 0 },
+    stream = new RegionStream(center, 'mobile');
+  await stream.start(new AbortController().signal, () => {});
+  const before = stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles!,
+    key = sourceTileKey(latLonToSourceTile(0, 0.08)),
+    calls = cells.mock.calls.length;
+  try {
+    // Act
+    const result = await stream.prefetchTiles([key]);
+    // Assert
+    expect(result).toEqual({ ready: [key], failed: [] });
+    expect(cells.mock.calls.length).toBe(calls + 1);
+    expect(stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles).toEqual(before);
+    expect(stream.diagnostics()).toMatchObject({ prefetchedTiles: 1 });
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('оставляет активный мир без изменений при ошибке предзагрузки', async () => {
+  // Arrange
+  const { cells } = mockedDownloads(),
+    center = { lat: 0, lon: 0 },
+    stream = new RegionStream(center, 'mobile');
+  await stream.start(new AbortController().signal, () => {});
+  const before = stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles!,
+    key = sourceTileKey(latLonToSourceTile(0, 0.08));
+  cells.mockRejectedValue(new Error('Нет сети'));
+  try {
+    // Act
+    const result = await stream.prefetchTiles([key]);
+    // Assert
+    expect(result.ready).toEqual([]);
+    expect(result.failed).toEqual([
+      {
+        key,
+        error: `Не удалось заранее загрузить участок карты ${key}.`,
+      },
+    ]);
+    expect(stream.snapshot({ x: 0, y: 0, z: 0 }).loadedTiles).toEqual(before);
+    cells.mockResolvedValue([{ type: 'node', id: 77, lat: 0, lon: 0.08 }]);
+    const active = await stream.next({ x: 8900, y: 0, z: 0 }, Math.PI / 2);
+    expect(active?.loadedTiles).toContain(key);
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('активирует заранее загруженный source-тайл без повторного обращения к сети', async () => {
+  // Arrange
+  mockedDownloads();
+  const center = { lat: 0, lon: 0 },
+    stream = new RegionStream(center, 'mobile');
+  await stream.start(new AbortController().signal, () => {});
+  const point = { x: 9000, y: 0, z: 0 },
+    key = mapTileAt(point, center);
+  await stream.prefetchTiles([key]);
+  const tileSource = (
+      stream as unknown as {
+        tileSource: {
+          load: (id: SourceTileId, signal: AbortSignal) => unknown;
+        };
+      }
+    ).tileSource,
+    load = vi.spyOn(tileSource, 'load');
+  try {
+    // Act
+    const result = await stream.next(point, Math.PI / 2);
+    // Assert
+    expect(result?.loadedTiles).toContain(key);
+    expect(load.mock.calls.some(([id]) => sourceTileKey(id) === key)).toBe(
+      false,
+    );
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('активирует закреплённый тайл трассы вне обычного окна машины', async () => {
+  // Arrange
+  mockedDownloads();
+  const center = { lat: 0, lon: 0 },
+    stream = new RegionStream(center, 'mobile'),
+    key = sourceTileKey(latLonToSourceTile(0, 0.08));
+  await stream.start(new AbortController().signal, () => {});
+  try {
+    // Act
+    const result = await stream.next(
+      { x: 0, y: 0, z: 0 },
+      0,
+      undefined,
+      0,
+      false,
+      [key],
+    );
+    // Assert
+    expect(result?.loadedTiles).toContain(key);
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('не снижает качество закреплённого окружения при превышении лимита объектов', async () => {
+  // Arrange
+  mockedDownloads();
+  const center = { lat: 0, lon: 0 },
+    stream = new RegionStream(center, 'mobile'),
+    key = sourceTileKey(latLonToSourceTile(0, 0.08));
+  await stream.start(new AbortController().signal, () => {});
+  (stream as unknown as { maxElements: number }).maxElements = 0;
+  try {
+    // Act
+    const result = await stream.next(
+      { x: 0, y: 0, z: 0 },
+      0,
+      undefined,
+      0,
+      false,
+      [key],
+    );
+    // Assert
+    expect(result).toBeNull();
+    expect(stream.diagnostics()).toMatchObject({
+      pinnedCapacityError:
+        'Окружение трассы превышает лимит объектов карты без снижения качества.',
+      filter: { mode: 'standard' },
+    });
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('не упрощает закреплённую трассу из-за обычного тайла за пределами бюджета', async () => {
+  // Arrange
+  const { cells } = mockedDownloads(),
+    center = { lat: 0, lon: 0 },
+    stream = new RegionStream(center, 'mobile'),
+    key = sourceTileKey(latLonToSourceTile(0, 0.08));
+  await stream.start(new AbortController().signal, () => {});
+  await stream.next({ x: 0, y: 0, z: 0 }, 0, undefined, 0, false, [key]);
+  (stream as unknown as { maxElements: number }).maxElements = 1;
+  cells.mockResolvedValue([{ type: 'node', id: 2, lat: 0.02, lon: 0 }]);
+  const reduceTileMap = vi.spyOn(
+    stream as unknown as {
+      reduceTileMap: (tiles: Map<string, MapTile>, mode: string) => unknown;
+    },
+    'reduceTileMap',
+  );
+  try {
+    // Act
+    const result = await stream.next(
+      { x: 0, y: 0, z: 0 },
+      0,
+      undefined,
+      12,
+      false,
+      [key],
+    );
+    // Assert
+    expect(result).toBeNull();
+    expect(reduceTileMap).not.toHaveBeenCalled();
+    expect(stream.diagnostics()).toMatchObject({
+      pinnedCapacityError: '',
+      filter: { mode: 'standard' },
+    });
+  } finally {
+    stream.dispose();
+  }
+});
+
+it('вытесняет дальний тайл после снятия закрепления трассы без новой загрузки', async () => {
+  // Arrange
+  mockedDownloads();
+  const center = { lat: 0, lon: 0 },
+    stream = new RegionStream(center, 'mobile'),
+    farKey = sourceTileKey(latLonToSourceTile(0, 0.08));
+  await stream.start(new AbortController().signal, () => {});
+  const internal = stream as unknown as {
+      tiles: Map<string, MapTile>;
+      policy: { maxUpdateTiles: number };
+    },
+    sample = internal.tiles.values().next().value as MapTile;
+  internal.tiles.set(farKey, sample);
+  internal.policy = { ...internal.policy, maxUpdateTiles: 0 };
+  try {
+    // Act
+    const result = await stream.next({ x: 0, y: 0, z: 0 }, 0);
+    // Assert
+    expect(result).not.toBeNull();
+    expect(result?.loadedTiles).not.toContain(farKey);
   } finally {
     stream.dispose();
   }

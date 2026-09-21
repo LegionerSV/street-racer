@@ -3,6 +3,7 @@ import {
   mapStreamCanUpdate,
   mapTransitionBlocksDriving,
   mapTransitionChunks,
+  raceChunkNeedsPreparation,
 } from './runtime';
 
 it('перед переключением карты готовит только грязные кварталы под машиной', () => {
@@ -31,6 +32,16 @@ it('автопроезд и гонка продолжают подгружать
   // Act / Assert
   expect(mapStreamCanUpdate(state)).toBe(true);
   expect(mapStreamCanUpdate({ ...state, raceActive: true })).toBe(true);
+  expect(
+    mapStreamCanUpdate({
+      ...state,
+      preparingRaceActive: true,
+      raceCoverageLoading: true,
+    }),
+  ).toBe(true);
+  expect(mapStreamCanUpdate({ ...state, preparingRaceActive: true })).toBe(
+    false,
+  );
   expect(mapStreamCanUpdate({ ...state, hidden: true })).toBe(false);
 });
 
@@ -41,3 +52,16 @@ it('не останавливает машину ради перестройки
   expect(mapTransitionBlocksDriving(['4,4', '5,4'], critical)).toBe(false);
   expect(mapTransitionBlocksDriving(['4,4', '0,1'], critical)).toBe(true);
 });
+
+it.each([
+  [undefined, 0, false, true],
+  [1, 0, false, true],
+  [0, 0, true, true],
+  [0, 0, false, false],
+])(
+  'готовность race-чанка: installed=%s target=%s stale=%s => rebuild=%s',
+  (installed, target, stale, expected) => {
+    // Arrange / Act / Assert
+    expect(raceChunkNeedsPreparation(installed, target, stale)).toBe(expected);
+  },
+);

@@ -22,6 +22,9 @@ function gameFixture() {
     player: { reset: vi.fn() },
     traffic: { startRace: vi.fn() },
     worker: { raceRoute: vi.fn() },
+    prepareRaceEnvironment: vi.fn(async (route: Route) => route),
+    racePinnedChunks: new Map<string, number>(),
+    racePinnedTiles: new Set<string>(),
   });
   return game;
 }
@@ -58,16 +61,88 @@ it('при старте запрашивает новый маршрут в work
     edgeStableId(start),
     'sprint',
   );
+  expect(game.prepareRaceEnvironment).not.toHaveBeenCalled();
   // Act
   finish(fresh);
   await request;
   // Assert
   expect(game.race.route).toBe(fresh);
+  expect(game.prepareRaceEnvironment).toHaveBeenCalledExactlyOnceWith(
+    fresh,
+    edgeStableId(current),
+    'sprint',
+  );
   expect(game.race.route.length).toBeGreaterThan(invitation.length);
   expect(game.traffic.startRace).toHaveBeenCalledWith(fresh);
   expect(game.player.reset).toHaveBeenCalledWith(current, 'right', 2);
   expect(game.preparingRace).toBe(false);
   expect(game.refreshWanted).toHaveBeenCalled();
+});
+
+it('не запускает отсчёт, пока окружение маршрута не подготовлено', async () => {
+  // Arrange
+  const game = gameFixture(),
+    route = game.world.routes[0];
+  let finish!: () => void;
+  game.worker.raceRoute.mockResolvedValue(route);
+  game.prepareRaceEnvironment.mockImplementation(
+    () =>
+      new Promise<Route>((resolve) => {
+        finish = () => resolve(route);
+      }),
+  );
+  // Act
+  const request = game.startRace(route);
+  await vi.waitFor(() =>
+    expect(game.prepareRaceEnvironment).toHaveBeenCalled(),
+  );
+  // Assert
+  expect(game.race).toBeNull();
+  expect(game.traffic.startRace).not.toHaveBeenCalled();
+  // Act
+  finish();
+  await request;
+  // Assert
+  expect(game.race.route).toBe(route);
+  expect(game.traffic.startRace).toHaveBeenCalledWith(route);
+});
+
+it('освобождает закреплённое окружение после ошибки подготовки', async () => {
+  // Arrange
+  const game = gameFixture(),
+    route = game.world.routes[0];
+  game.worker.raceRoute.mockResolvedValue(route);
+  game.racePinnedChunks.set('0,0', 0);
+  game.racePinnedTiles.add('15/1/1');
+  game.prepareRaceEnvironment.mockRejectedValue(
+    new Error('Не удалось подготовить окружение трассы.'),
+  );
+  // Act
+  await game.startRace(route);
+  // Assert
+  expect(game.race).toBeNull();
+  expect(game.racePinnedChunks.size).toBe(0);
+  expect(game.racePinnedTiles.size).toBe(0);
+  expect(game.paused).toBe(true);
+  expect(game.message).toBe('Не удалось подготовить окружение трассы.');
+  expect(game.refreshWanted).toHaveBeenCalled();
+});
+
+it('освобождает тайлы и чанки трассы после финиша', () => {
+  // Arrange
+  const game = gameFixture();
+  game.race = { route: game.world.routes[0] };
+  game.racePinnedChunks.set('0,0', 0);
+  game.racePinnedTiles.add('15/1/1');
+  game.traffic.clearRacers = vi.fn();
+  // Act
+  game.finishRace();
+  // Assert
+  expect(game.race).toBeNull();
+  expect(game.racePinnedChunks.size).toBe(0);
+  expect(game.racePinnedTiles.size).toBe(0);
+  expect(game.refreshWanted).toHaveBeenCalled();
+  expect(game.traffic.clearRacers).toHaveBeenCalledExactlyOnceWith();
 });
 it.each(['paused', 'disposed'])(
   'не запускает заезд, если во время расчёта изменилось состояние %s',
@@ -87,6 +162,52 @@ it.each(['paused', 'disposed'])(
     expect(game.preparingRace).toBe(false);
   },
 );
+
+it('снимает закрепление при паузе во время подготовки окружения', async () => {
+  // Arrange
+  const game = gameFixture(),
+    route = game.world.routes[0];
+  game.worker.raceRoute.mockResolvedValue(route);
+  game.prepareRaceEnvironment.mockImplementation(async () => {
+    game.racePinnedChunks.set('0,0', 0);
+    game.racePinnedTiles.add('15/1/1');
+    game.paused = true;
+  });
+  // Act
+  await game.startRace(route);
+  // Assert
+  expect(game.race).toBeNull();
+  expect(game.racePinnedChunks.size).toBe(0);
+  expect(game.racePinnedTiles.size).toBe(0);
+  expect(game.traffic.startRace).not.toHaveBeenCalled();
+});
+
+it('останавливает ожидание покрытия трассы после паузы', async () => {
+  // Arrange
+  const game = gameFixture() as unknown as {
+    paused: boolean;
+    mapCoverage: Set<string>;
+    mapStream: {
+      clearPinnedCapacityError: ReturnType<typeof vi.fn>;
+      diagnostics: ReturnType<typeof vi.fn>;
+    };
+    ensureRaceCoverage: (required: Set<string>) => Promise<boolean>;
+  };
+  game.paused = true;
+  game.mapCoverage = new Set();
+  game.mapStream = {
+    clearPinnedCapacityError: vi.fn(),
+    diagnostics: vi.fn(() => ({ pinnedCapacityError: '' })),
+  };
+  // Act / Assert
+  await expect(game.ensureRaceCoverage(new Set(['15/1/1']))).rejects.toThrow(
+    'Подготовка заезда отменена.',
+  );
+  expect(
+    game.mapStream.clearPinnedCapacityError,
+  ).toHaveBeenCalledExactlyOnceWith();
+});
+
 it('сообщает об отсутствии готового маршрута и не использует старую трассу', async () => {
   // Arrange
   const game = gameFixture();

@@ -96,16 +96,25 @@ export function mapForwardRows(
   policy: MapStreamingPolicy,
   speedMetersPerSecond: number,
 ) {
-  return speedMetersPerSecond > 2 ? policy.forwardTileRows : 0;
+  if (!Number.isFinite(speedMetersPerSecond) || speedMetersPerSecond < 0)
+    return 0;
+  if (speedMetersPerSecond <= 2) return 0;
+  const progress = Math.min(1, (speedMetersPerSecond - 2) / 28);
+  return Math.max(1, Math.ceil(policy.forwardTileRows * progress));
 }
 
 export function mapRadiusAtSpeed(
   policy: MapStreamingPolicy,
   speedMetersPerSecond: number,
 ) {
-  return speedMetersPerSecond > 2
-    ? policy.targetRadiusMeters
-    : policy.blockingRadiusMeters;
+  if (!Number.isFinite(speedMetersPerSecond) || speedMetersPerSecond < 0)
+    return policy.blockingRadiusMeters;
+  if (speedMetersPerSecond <= 2) return policy.blockingRadiusMeters;
+  const progress = Math.min(1, (speedMetersPerSecond - 2) / 28);
+  return (
+    policy.blockingRadiusMeters +
+    (policy.targetRadiusMeters - policy.blockingRadiusMeters) * progress
+  );
 }
 
 export function startupTiles(center: Center, radiusMeters = 1000) {
@@ -252,6 +261,8 @@ export class RegionStream {
   private tiles = new Map<string, MapTile>();
   private pendingTiles = new Map<string, Promise<void>>();
   private completedTiles: TileOutcome[] = [];
+  private prefetchedTiles = new Map<string, MapTile>();
+  private prefetchPending = new Map<string, Promise<boolean>>();
   private wakePending?: () => void;
   private source: MapSource;
   private tileSource: ReturnType<typeof createRegionTileSource>;
@@ -264,6 +275,7 @@ export class RegionStream {
   private sessionSidePromise?: Promise<RegionData['drivingSide']>;
   private datum?: number;
   private failures = new Map<string, number>();
+  private prefetchFailures = new Map<string, number>();
   private messages: {
     at: string;
     tile: string;
@@ -288,6 +300,7 @@ export class RegionStream {
   private startupKeptUnique = 0;
   private blockingTileCount = 0;
   private targetTileCount = 0;
+  private pinnedCapacityError = '';
   status = '';
 
   constructor(
@@ -488,6 +501,31 @@ export class RegionStream {
   }
 
   private requestTile(key: string) {
+    const prefetched = this.prefetchedTiles.get(key);
+    if (prefetched) {
+      this.prefetchedTiles.delete(key);
+      this.completedTiles.push({ key, status: 'fulfilled', tile: prefetched });
+      return;
+    }
+    const prefetching = this.prefetchPending.get(key);
+    if (prefetching) {
+      const pending = prefetching.then((ready) => {
+        this.pendingTiles.delete(key);
+        const tile = this.prefetchedTiles.get(key);
+        if (ready && tile) {
+          this.prefetchedTiles.delete(key);
+          this.completedTiles.push({ key, status: 'fulfilled', tile });
+        } else
+          this.completedTiles.push({
+            key,
+            status: 'rejected',
+            reason: new Error(`Не удалось получить участок карты ${key}.`),
+          });
+        this.wakePending?.();
+      });
+      this.pendingTiles.set(key, pending);
+      return;
+    }
     const pending = this.fetchTile(key)
       .then(
         (tile): TileOutcome => ({ key, status: 'fulfilled', tile }),
@@ -499,6 +537,98 @@ export class RegionStream {
         this.wakePending?.();
       });
     this.pendingTiles.set(key, pending);
+  }
+
+  private prefetchTile(key: string) {
+    const prefetching = this.prefetchPending.get(key);
+    if (prefetching) return prefetching;
+    const activating = this.pendingTiles.get(key);
+    if (activating)
+      return activating.then(() =>
+        this.completedTiles.some(
+          (result) => result.key === key && result.status === 'fulfilled',
+        ),
+      );
+    if (
+      this.tiles.has(key) ||
+      this.prefetchedTiles.has(key) ||
+      this.completedTiles.some(
+        (result) => result.key === key && result.status === 'fulfilled',
+      )
+    )
+      return Promise.resolve(true);
+    const pending = this.fetchTile(key)
+      .then((tile) => {
+        if (!this.control.signal.aborted) this.prefetchedTiles.set(key, tile);
+        this.failures.delete(key);
+        this.prefetchFailures.delete(key);
+        return true;
+      })
+      .catch((reason) => {
+        if (!this.control.signal.aborted) {
+          this.prefetchFailures.set(key, Date.now() + 30000);
+          this.record({
+            at: new Date().toISOString(),
+            tile: key,
+            source: this.tileDiagnostics.get(key)?.source,
+            fallback: this.tileDiagnostics.get(key)?.fallback,
+            error: reason instanceof Error ? reason.message : String(reason),
+          });
+        }
+        return false;
+      })
+      .finally(() => this.prefetchPending.delete(key));
+    this.prefetchPending.set(key, pending);
+    return pending;
+  }
+
+  async prefetchTiles(keys: Iterable<string>) {
+    this.control.signal.throwIfAborted();
+    const ready: string[] = [],
+      failed: { key: string; error: string }[] = [],
+      unique = [...new Set(keys)];
+    for (
+      let offset = 0;
+      offset < unique.length;
+      offset += this.policy.maxConcurrentTiles
+    ) {
+      const batch = unique.slice(
+          offset,
+          offset + this.policy.maxConcurrentTiles,
+        ),
+        results = await Promise.all(
+          batch.map(async (key) => ({ key, ok: await this.prefetchTile(key) })),
+        );
+      this.control.signal.throwIfAborted();
+      for (const result of results)
+        if (result.ok) ready.push(result.key);
+        else
+          failed.push({
+            key: result.key,
+            error: `Не удалось заранее загрузить участок карты ${result.key}.`,
+          });
+    }
+    return { ready, failed };
+  }
+
+  private schedulePrefetch(keys: string[]) {
+    const slots = Math.max(
+      0,
+      this.policy.maxConcurrentTiles -
+        this.pendingTiles.size -
+        this.prefetchPending.size,
+    );
+    for (const key of keys
+      .filter(
+        (candidate) =>
+          !this.tiles.has(candidate) &&
+          !this.prefetchedTiles.has(candidate) &&
+          !this.pendingTiles.has(candidate) &&
+          !this.prefetchPending.has(candidate) &&
+          (this.prefetchFailures.get(candidate) || 0) <= Date.now(),
+      )
+      .slice(0, slots))
+      void this.prefetchTile(key);
   }
 
   async start(
@@ -679,13 +809,19 @@ export class RegionStream {
     pinnedTileKeys: Iterable<string> = [],
   ): Promise<RegionData | null> {
     this.control.signal.throwIfAborted();
-    let order = tileOrder(
-      p,
-      heading,
-      mapRadiusAtSpeed(this.policy, speedMetersPerSecond),
-      mapForwardRows(this.policy, speedMetersPerSecond),
-      this.center,
-    );
+    const pinnedTileList = [...pinnedTileKeys];
+    let order = [
+      ...new Set([
+        ...pinnedTileList,
+        ...tileOrder(
+          p,
+          heading,
+          mapRadiusAtSpeed(this.policy, speedMetersPerSecond),
+          mapForwardRows(this.policy, speedMetersPerSecond),
+          this.center,
+        ),
+      ]),
+    ];
     this.targetTileCount = order.length;
     this.blockingTileCount = this.missingBlockingTiles(p, heading);
     const slots =
@@ -702,7 +838,50 @@ export class RegionStream {
         )
         .slice(0, Math.max(0, slots));
     for (const key of keys) this.requestTile(key);
-    if (!this.pendingTiles.size && !this.completedTiles.length) return null;
+    const activeKeys = new Set(order),
+      prefetchSpeed = Math.max(0, speedMetersPerSecond) * 1.75,
+      prefetchOrder = tileOrder(
+        p,
+        heading,
+        mapRadiusAtSpeed(this.policy, prefetchSpeed),
+        mapForwardRows(this.policy, prefetchSpeed),
+        this.center,
+      ),
+      retainedPrefetch = new Set(prefetchOrder);
+    for (const key of this.prefetchedTiles.keys())
+      if (!retainedPrefetch.has(key)) this.prefetchedTiles.delete(key);
+    this.schedulePrefetch(
+      prefetchOrder.filter((candidate) => !activeKeys.has(candidate)),
+    );
+    if (!this.pendingTiles.size && !this.completedTiles.length) {
+      const pinned = new Set([
+          ...sourceTileKeysForLocalBounds(this.center, {
+            minX: p.x - 350,
+            maxX: p.x + 350,
+            minZ: p.z - 350,
+            maxZ: p.z + 350,
+          }),
+          ...pinnedTileList,
+        ]),
+        kept = retainTiles(
+          this.tiles,
+          order,
+          pinned,
+          new Set([...order, ...pinned]).size,
+          this.maxElements,
+        ),
+        changed =
+          kept.size !== this.tiles.size ||
+          [...this.tiles.keys()].some((key) => !kept.has(key));
+      if (!changed) return null;
+      this.tiles = kept;
+      this.updateDetailMode();
+      for (const key of this.tileDiagnostics.keys())
+        if (!kept.has(key)) this.tileDiagnostics.delete(key);
+      this.blockingTileCount = this.missingBlockingTiles(p, heading);
+      this.status = '';
+      return this.snapshot(p, !compactUpdate);
+    }
     this.status = 'Загружаем улицы вокруг';
     try {
       if (!this.completedTiles.length)
@@ -717,19 +896,24 @@ export class RegionStream {
       if (current) {
         p = current.position;
         heading = current.heading;
-        order = tileOrder(
-          p,
-          heading,
-          mapRadiusAtSpeed(
-            this.policy,
-            current.speedMetersPerSecond ?? speedMetersPerSecond,
-          ),
-          mapForwardRows(
-            this.policy,
-            current.speedMetersPerSecond ?? speedMetersPerSecond,
-          ),
-          this.center,
-        );
+        order = [
+          ...new Set([
+            ...pinnedTileList,
+            ...tileOrder(
+              p,
+              heading,
+              mapRadiusAtSpeed(
+                this.policy,
+                current.speedMetersPerSecond ?? speedMetersPerSecond,
+              ),
+              mapForwardRows(
+                this.policy,
+                current.speedMetersPerSecond ?? speedMetersPerSecond,
+              ),
+              this.center,
+            ),
+          ]),
+        ];
       }
       this.targetTileCount = order.length;
       const wanted = new Set(order);
@@ -756,7 +940,7 @@ export class RegionStream {
           minZ: p.z - 350,
           maxZ: p.z + 350,
         }),
-        ...pinnedTileKeys,
+        ...pinnedTileList,
       ]);
       const retain = (tiles: Map<string, MapTile>) =>
           retainTiles(
@@ -779,7 +963,20 @@ export class RegionStream {
         };
       let kept = retain(candidate),
         accepted = newlyAccepted(kept);
+      const pinnedRaceTiles = pinnedTileList
+        .map((key) => candidate.get(key))
+        .filter((tile): tile is MapTile => !!tile);
       if (
+        pinnedTileList.length &&
+        loaded.some((result) => result.status === 'fulfilled') &&
+        uniqueElementCount(pinnedRaceTiles) > this.maxElements
+      ) {
+        this.pinnedCapacityError =
+          'Окружение трассы превышает лимит объектов карты без снижения качества.';
+        throw new Error(this.pinnedCapacityError);
+      }
+      if (
+        !pinnedTileList.length &&
         !accepted.length &&
         loaded.some((result) => result.status === 'fulfilled')
       ) {
@@ -868,10 +1065,13 @@ export class RegionStream {
       targetTiles: this.targetTileCount,
       pendingTiles: this.pendingTiles.size,
       completedTiles: this.completedTiles.length,
+      prefetchedTiles: this.prefetchedTiles.size,
+      prefetchPending: this.prefetchPending.size,
       retainedTiles: this.tiles.size,
       policy: this.policy,
       inputElements: uniqueElementCount(this.tiles.values()),
       elementLimit: this.maxElements,
+      pinnedCapacityError: this.pinnedCapacityError,
       filter: {
         mode: this.detailMode,
         startupRawUnique: this.startupRawUnique,
@@ -895,13 +1095,21 @@ export class RegionStream {
     };
   }
 
+  clearPinnedCapacityError() {
+    this.pinnedCapacityError = '';
+  }
+
   dispose() {
     this.control.abort();
     this.wakePending?.();
     this.pendingTiles.clear();
     this.completedTiles.length = 0;
+    this.prefetchedTiles.clear();
+    this.prefetchPending.clear();
     this.tiles.clear();
     this.failures.clear();
+    this.prefetchFailures.clear();
+    this.pinnedCapacityError = '';
     this.tileDiagnostics.clear();
   }
 }

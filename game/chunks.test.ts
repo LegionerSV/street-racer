@@ -6,6 +6,12 @@ import {
   ChunkBudget,
   ChunkInstallQueue,
   buildChunk,
+  mergePinnedChunks,
+  raceInstalledChunkWeight,
+  racePreloadWithinBudget,
+  RACE_PRELOAD_MAX_BYTES,
+  RACE_PRELOAD_MAX_CHUNKS,
+  routeChunkPlan,
 } from './chunks';
 
 it('оставляет полную детализацию рядом с машиной и ограничивает дальние кварталы', () => {
@@ -19,6 +25,75 @@ it('оставляет полную детализацию рядом с маш�
   expect(chunks.find((chunk) => chunk.key === '1,1')?.lod).toBe(0);
   expect(chunks.find((chunk) => chunk.key === '2,0')?.lod).toBe(1);
   expect(chunks.find((chunk) => chunk.key === '2,2')).toBeUndefined();
+});
+
+describe('Окружение маршрута', () => {
+  it('объединяет окна всего маршрута без потери выбранной детализации', () => {
+    // Arrange
+    const points = [
+      { x: 125, y: 0, z: 125 },
+      { x: 125, y: 0, z: 1125 },
+    ];
+    // Act
+    const plan = routeChunkPlan(points, 'high');
+    // Assert
+    expect(plan.find((chunk) => chunk.key === '0,0')?.lod).toBe(0);
+    expect(plan.find((chunk) => chunk.key === '0,4')?.lod).toBe(0);
+    expect(new Set(plan.map((chunk) => chunk.key)).size).toBe(plan.length);
+  });
+
+  it('возвращает пустой план для неизвестного маршрута', () => {
+    // Arrange / Act / Assert
+    expect(routeChunkPlan([], 'high')).toEqual([]);
+  });
+
+  it('закреплённый коридор дополняет обычное окно и повышает чанк до LOD0', () => {
+    // Arrange
+    const wanted = [
+      { key: '0,0', lod: 1, priority: 10 },
+      { key: '1,0', lod: 0, priority: 20 },
+    ];
+    // Act
+    const merged = mergePinnedChunks(wanted, new Set(['0,0', '2,0']));
+    // Assert
+    expect(merged).toEqual([
+      { key: '0,0', lod: 0, priority: -2_000_000 },
+      { key: '2,0', lod: 0, priority: -2_000_000 },
+      { key: '1,0', lod: 0, priority: 20 },
+    ]);
+  });
+
+  it('ограничивает полный коридор по числу чанков и памяти без снижения LOD', () => {
+    // Arrange / Act / Assert
+    expect(
+      racePreloadWithinBudget(RACE_PRELOAD_MAX_CHUNKS, RACE_PRELOAD_MAX_BYTES),
+    ).toBe(true);
+    expect(
+      racePreloadWithinBudget(
+        RACE_PRELOAD_MAX_CHUNKS + 1,
+        RACE_PRELOAD_MAX_BYTES,
+      ),
+    ).toBe(false);
+    expect(
+      racePreloadWithinBudget(
+        RACE_PRELOAD_MAX_CHUNKS,
+        RACE_PRELOAD_MAX_BYTES + 1,
+      ),
+    ).toBe(false);
+  });
+
+  it('учитывает память уже установленных чанков полного коридора', () => {
+    // Arrange
+    const installed = new Map([
+      ['0,0', { weight: 12 }],
+      ['1,0', { weight: 20 }],
+      ['9,9', { weight: 1000 }],
+    ]);
+    // Act
+    const weight = raceInstalledChunkWeight(['0,0', '1,0', '0,0'], installed);
+    // Assert
+    expect(weight).toBe(32);
+  });
 });
 import type { World } from './types';
 import { polygonContains } from './geo';
@@ -194,7 +269,11 @@ describe('Подготовка кварталов', () => {
         .filter((_, index) => index % 3 === 1)
         .every((y) => y > 0.03),
     ).toBe(true);
-    const covers = (mesh: NonNullable<typeof chunk.paved>, x: number, z: number) => {
+    const covers = (
+      mesh: NonNullable<typeof chunk.paved>,
+      x: number,
+      z: number,
+    ) => {
       const side = (a: number, b: number, c: number) => {
         const bx = mesh.positions[b * 3],
           bz = mesh.positions[b * 3 + 2],
