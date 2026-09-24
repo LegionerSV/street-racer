@@ -1,5 +1,7 @@
 import earcut from 'earcut';
 import { bridgeRailingSpans, embankmentRailingSpans } from './bridge-railings';
+import { appendParapet } from './parapet';
+import { ASPHALT_COLOUR } from './surface-textures';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
@@ -1044,7 +1046,7 @@ export function buildChunk(
           ? [0.52, 0.51, 0.47]
           : [0.48, 0.45, 0.41],
       );
-    else quad(result.road, ...surface, [0.18, 0.21, 0.24]);
+    else quad(result.road, ...surface, ASPHALT_COLOUR);
     // Площадки нужны только на перекрёстках. На склонах полотно сшивается боковыми вершинами.
     const junctionPoints = [
       s.index === 0 && index.junctions.has(edge.from) ? a : null,
@@ -1073,7 +1075,7 @@ export function buildChunk(
         );
         result.road.indices.push(base, base + 2, base + 1);
         for (let l = 0; l < 3; l++)
-          result.road.colors!.push(0.18, 0.21, 0.24, 1);
+          result.road.colors!.push(...ASPHALT_COLOUR, 1);
       }
     }
     const crossing = segments.some(
@@ -1169,19 +1171,26 @@ export function buildChunk(
             y: b.y,
             z: b.z + (s.nb?.z ?? nz) * outer * side,
           };
+        const normalAt = (p: Point) => {
+          const t = projectOnSegment(p, aa, bb).t;
+          return {
+            x: (s.na?.x ?? nx) * (1 - t) + (s.nb?.x ?? nx) * t,
+            z: (s.na?.z ?? nz) * (1 - t) + (s.nb?.z ?? nz) * t,
+          };
+        };
         for (const rail of bridgeRailingSpans(
           aa,
           bb,
           edge,
           index.spatial.query(boundsOf([aa, bb], 0.2)),
         ))
-          quad(
+          appendParapet(
             result.structures,
             rail.a,
             rail.b,
-            { ...rail.b, y: rail.b.y + 1.1 },
-            { ...rail.a, y: rail.a.y + 1.1 },
-            [0.37, 0.41, 0.41],
+            side,
+            normalAt(rail.a),
+            normalAt(rail.b),
           );
       }
       for (const d of periodicOffsets(
@@ -1329,7 +1338,8 @@ export function buildChunk(
             .filter((area) => area.railing === 'river');
           const score = Math.min(
             ...waters.map((area) =>
-              polygonContains(mid, area.points)
+              polygonContains(mid, area.points) &&
+              !(area.holes || []).some((hole) => polygonContains(mid, hole))
                 ? 0
                 : Math.min(
                     ...[area.points, ...(area.holes || [])].flatMap((ring) =>
@@ -1346,7 +1356,11 @@ export function buildChunk(
           return { aa, bb, score };
         })
         .sort((x, y) => x.score - y.score);
-      const banks = choices[0]?.score < 24 ? [choices[0]] : choices;
+      const banks =
+        choices[0]?.score < 24 &&
+        (!choices[1] || choices[1].score - choices[0].score > CURB_WIDTH)
+          ? [choices[0]]
+          : [];
       for (const bank of banks)
         for (const span of embankmentRailingSpans(
           bank.aa,
@@ -1574,7 +1588,7 @@ export function buildChunk(
       );
       const colour: Colour =
         area.surface === 'asphalt'
-          ? [0.24, 0.25, 0.25]
+          ? ASPHALT_COLOUR
           : area.surface === 'sett' || area.surface === 'cobblestone'
             ? [0.48, 0.45, 0.41]
             : [0.52, 0.51, 0.47];

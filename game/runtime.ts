@@ -468,20 +468,20 @@ export class Game {
     this.traffic.setDensity(settings.traffic || 'city');
     this.traffic.setMobile(settings.quality === 'mobile');
     this.lastSafeEdge = world.spawnEdge;
+    const street = streetMaterials(this.scene);
     this.materials = {
       shoulders: material(this.scene, 'shoulders', '#ffffff'),
       terrain: material(this.scene, 'terrain', '#ffffff'),
       road: material(this.scene, 'road', '#ffffff'),
       markings: material(this.scene, 'markings', '#ffffff'),
       structures: material(this.scene, 'structures', '#ffffff'),
-      embankment: material(this.scene, 'embankment-parapet', '#686b68'),
+      embankment: street.granite,
       buildings: material(this.scene, 'buildings', '#ffffff'),
       windows: material(this.scene, 'windows', '#ffffff', true),
       water: material(this.scene, 'water', '#326b80'),
-      tree: material(this.scene, 'foliage', '#214238'),
+      tree: material(this.scene, 'foliage', '#526d3d'),
       trunk: material(this.scene, 'trunk', '#3b3c34'),
     };
-    const street = streetMaterials(this.scene);
     this.facadeMaterials = street.facades;
     this.materials.sidewalks = street.sidewalks;
     this.materials.paved = street.sidewalks;
@@ -496,6 +496,8 @@ export class Game {
       m.maxSimultaneousLights = 8;
     });
     this.materials.terrain.emissiveColor = new Color3(0.025, 0.03, 0.035);
+    this.materials.tree.specularColor.setAll(0.015);
+    this.materials.trunk.specularColor.setAll(0.025);
     this.materials.road.emissiveColor = new Color3(0.015, 0.018, 0.025);
     this.materials.buildings.emissiveColor = new Color3(0.035, 0.04, 0.05);
     this.materials.structures.emissiveColor = new Color3(0.08, 0.1, 0.12);
@@ -503,9 +505,9 @@ export class Game {
     this.materials.windows.zOffset = -2;
     this.materials.road.specularColor = new Color3(0.22, 0.28, 0.31);
     this.materials.road.specularPower = 48;
-    this.materials.water.specularColor = new Color3(0.8, 0.85, 0.9);
+    this.materials.water.specularColor = new Color3(0.22, 0.25, 0.27);
     this.materials.water.specularPower = 80;
-    this.materials.water.emissiveColor = new Color3(0.035, 0.12, 0.16);
+    this.materials.water.emissiveColor = new Color3(0.015, 0.035, 0.04);
     this.atmosphere = new Atmosphere(
       this.scene,
       this.camera,

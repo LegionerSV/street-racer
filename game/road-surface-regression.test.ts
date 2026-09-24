@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { buildChunk } from './chunks';
+import { ASPHALT_COLOUR } from './surface-textures';
 import {
   boundsOf,
   footprintPrism,
@@ -162,7 +163,7 @@ it.each([0, 1, 2])(
     let roads = 0;
     for (const { road } of chunks)
       for (let i = 0; i < road.indices.length; i += 3) {
-        if (road.colors![road.indices[i] * 4] !== 0.18) continue;
+        if (road.colors![road.indices[i] * 4] !== ASPHALT_COLOUR[0]) continue;
         const triangle = triangleAt(road, i),
           [a, b, c] = triangle;
         if (area(triangle) < 1e-8) continue;

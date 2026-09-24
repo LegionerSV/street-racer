@@ -157,8 +157,8 @@ export class Atmosphere {
     materials.water.reflectionFresnelParameters = new FresnelParameters({
       bias: 0.25,
       power: 3,
-      leftColor: Color3.White(),
-      rightColor: new Color3(0.05, 0.12, 0.18),
+      leftColor: new Color3(0.35, 0.4, 0.43),
+      rightColor: new Color3(0.025, 0.045, 0.055),
     });
     for (const role of ['road', 'facade0', 'facade1', 'facade2'])
       if (materials[role])

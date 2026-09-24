@@ -6,6 +6,7 @@ import type { Edge, MeshData, OSMElement, Point, World } from './types';
 import roads from './fixtures/birzhevaya-roads.osm.json';
 import dem from './fixtures/birzhevaya-elevation.json';
 import { bridgeRailingSpans, embankmentRailingSpans } from './bridge-railings';
+import { PARAPET_COLOUR } from './parapet';
 import {
   NullEngine,
   Scene,
@@ -23,8 +24,8 @@ function railVertices(mesh: MeshData): Point[] {
   return Array.from({ length: mesh.positions.length / 3 }, (_, i) => i)
     .filter(
       (i) =>
-        Math.abs(mesh.colors![i * 4] - 0.37) < 1e-6 &&
-        Math.abs(mesh.colors![i * 4 + 1] - 0.41) < 1e-6,
+        Math.abs(mesh.colors![i * 4] - PARAPET_COLOUR[0]) < 1e-6 &&
+        Math.abs(mesh.colors![i * 4 + 1] - PARAPET_COLOUR[1]) < 1e-6,
     )
     .map((i) => ({
       x: mesh.positions[i * 3],
@@ -82,6 +83,36 @@ function fixture(separation = 8, height = 0, layer = 1): World {
     routes: [],
   };
 }
+it.each(['нет воды', 'далёкая вода', 'неоднозначный берег'])(
+  'не угадывает ограждение набережной: %s',
+  (state) => {
+    // Arrange
+    const world = fixture();
+    world.edges = [
+      { ...world.edges[0], bridge: false, layer: 0, name: 'Набережная' },
+    ];
+    if (state !== 'нет воды')
+      world.areas = [
+        {
+          id: 1,
+          kind: 'water',
+          railing: 'river',
+          points: [
+            { x: 0, y: 0, z: state === 'далёкая вода' ? 160 : 40 },
+            { x: 200, y: 0, z: state === 'далёкая вода' ? 160 : 40 },
+            { x: 200, y: 0, z: 200 },
+            { x: 0, y: 0, z: 200 },
+          ],
+        },
+      ];
+    // Act
+    const fences = buildChunk(world, '0,0', 0).breakables.filter(
+      (p) => p.fenceType === 'embankment',
+    );
+    // Assert
+    expect(fences).toEqual([]);
+  },
+);
 it.each([0, 0.8])(
   'оставляет только внешние перила общего моста при разнице высот %s м',
   (height) => {
@@ -93,10 +124,51 @@ it.each([0, 0.8])(
     expect(points.length).toBeGreaterThan(0);
     expect(
       points.every(
-        (p) => Math.abs(p.z - 73.8) < 1e-6 || Math.abs(p.z - 94.2) < 1e-6,
+        (p) =>
+          (p.z <= 73.8 + 1e-6 && p.z >= 73.34 - 1e-6) ||
+          (p.z >= 94.2 - 1e-6 && p.z <= 94.66 + 1e-6),
       ),
     ).toBe(true);
-    expect(new Set(points.map((p) => p.z)).size).toBe(2);
+    expect(new Set(points.map((p) => p.z)).size).toBe(4);
+  },
+);
+it.each([false, true])(
+  'добавляет ограждение после загрузки берега, остров: %s',
+  (island) => {
+    // Arrange
+    const world = fixture();
+    world.edges = [
+      { ...world.edges[0], bridge: false, layer: 0, name: 'Набережная' },
+    ];
+    const ring = (south: number, north: number) => [
+      { x: 0, y: 0, z: south },
+      { x: 200, y: 0, z: south },
+      { x: 200, y: 0, z: north },
+      { x: 0, y: 0, z: north },
+    ];
+    const loaded: World = {
+      ...world,
+      areas: [
+        {
+          id: 1,
+          kind: 'water',
+          railing: 'river',
+          points: ring(island ? -100 : 90, 300),
+          holes: island ? [ring(0, 90)] : [],
+        },
+      ],
+    };
+    // Act
+    const waiting = buildChunk(world, '0,0', 0).breakables.filter(
+      (p) => p.fenceType === 'embankment',
+    );
+    const ready = buildChunk(loaded, '0,0', 0).breakables.filter(
+      (p) => p.fenceType === 'embankment',
+    );
+    // Assert
+    expect(waiting).toEqual([]);
+    expect(ready.length).toBeGreaterThan(0);
+    expect(ready.every((p) => Math.abs(p.point.z - 86.2) < 1e-6)).toBe(true);
   },
 );
 it.each([
@@ -110,7 +182,7 @@ it.each([
       buildChunk(fixture(separation, height, layer), '0,0', 0).structures,
     );
     // Assert
-    expect(new Set(points.map((p) => p.z)).size).toBe(4);
+    expect(new Set(points.map((p) => p.z)).size).toBe(8);
   },
 );
 it.each([0, 6])(
@@ -147,14 +219,18 @@ it.each([0, 6])(
 it('прерывает ограждение набережной на поперечной дороге, но сохраняет над нижней дорогой', () => {
   // Arrange
   const edge = fixture().edges[0];
-  const bankA = { x: 20, y: 2.15, z: 20.7 }, bankB = { x: 120, y: 2.15, z: 20.7 };
+  const bankA = { x: 20, y: 2.15, z: 20.7 },
+    bankB = { x: 120, y: 2.15, z: 20.7 };
   const crossing = {
-    a: { x: 70, y: 2, z: 0 }, b: { x: 70, y: 2, z: 50 },
+    a: { x: 70, y: 2, z: 0 },
+    b: { x: 70, y: 2, z: 50 },
     edge: { ...edge, way: 30, bridge: false, width: 8, layer: 0 },
   };
   // Act
   const spans = embankmentRailingSpans(bankA, bankB, [crossing]);
-  const below = embankmentRailingSpans(bankA, bankB, [{ ...crossing, a: { ...crossing.a, y: -4 }, b: { ...crossing.b, y: -4 } }]);
+  const below = embankmentRailingSpans(bankA, bankB, [
+    { ...crossing, a: { ...crossing.a, y: -4 }, b: { ...crossing.b, y: -4 } },
+  ]);
   // Assert
   expect(spans).toHaveLength(2);
   expect(spans[0].b.x).toBeLessThan(66);

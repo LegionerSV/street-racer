@@ -15,13 +15,15 @@ function normals(positions: ArrayLike<number>, indices: ArrayLike<number>) {
       acx = positions[ci] - positions[ai],
       acy = positions[ci + 1] - positions[ai + 1],
       acz = positions[ci + 2] - positions[ai + 2],
-      nx = aby * acz - abz * acy,
-      ny = abz * acx - abx * acz,
-      nz = abx * acy - aby * acx;
+      nx = abz * acy - aby * acz,
+      ny = abx * acz - abz * acx,
+      nz = aby * acx - abx * acy,
+      faceLength = Math.hypot(nx, ny, nz) || 1;
+    // Babylon использует левую систему и равный вес нормализованных граней.
     for (const vertex of [ai, bi, ci]) {
-      result[vertex] += nx;
-      result[vertex + 1] += ny;
-      result[vertex + 2] += nz;
+      result[vertex] += nx / faceLength;
+      result[vertex + 1] += ny / faceLength;
+      result[vertex + 2] += nz / faceLength;
     }
   }
   for (let i = 0; i < result.length; i += 3) {
@@ -37,9 +39,10 @@ function prepareMesh(mesh: MeshData, transfer: ArrayBuffer[]): MeshData {
   if (!mesh.positions.length || !mesh.indices.length) return { ...mesh };
   const positions = float32(mesh.positions),
     indices = uint32(mesh.indices),
-    preparedNormals = mesh.normals?.length
-      ? float32(mesh.normals)
-      : normals(positions, indices),
+    preparedNormals =
+      mesh.normals?.length === positions.length
+        ? float32(mesh.normals)
+        : normals(positions, indices),
     colors = mesh.colors?.length ? float32(mesh.colors) : undefined,
     uvs = mesh.uvs?.length ? float32(mesh.uvs) : undefined;
   transfer.push(positions.buffer, indices.buffer, preparedNormals.buffer);

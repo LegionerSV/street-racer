@@ -1,5 +1,23 @@
 import { seeded } from './geo';
 
+export const ASPHALT_COLOUR: [number, number, number] = [0.34, 0.35, 0.36];
+
+export function graniteSurface(size: number) {
+  const pixels = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      const crystal = seeded(Math.floor(x / 2) + Math.floor(y / 2) * size);
+      const grain = seeded(i * 19);
+      const shade = Math.round(175 + crystal * 42 + grain * 24);
+      pixels[i * 4] = shade;
+      pixels[i * 4 + 1] = shade - 3;
+      pixels[i * 4 + 2] = shade - 7;
+      pixels[i * 4 + 3] = 255;
+    }
+  return pixels;
+}
+
 export function normalMap(
   height: Float32Array,
   size: number,

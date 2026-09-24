@@ -7,7 +7,7 @@ import {
   type Scene,
 } from '@babylonjs/core';
 import { seeded } from './geo';
-import { facadeSurface } from './surface-textures';
+import { facadeSurface, graniteSurface } from './surface-textures';
 function texture(scene: Scene, name: string, pixels: Uint8Array, size: number) {
   const t = new RawTexture(
     pixels,
@@ -78,5 +78,11 @@ export function streetMaterials(scene: Scene) {
   sidewalks.twoSidedLighting = true;
   sidewalks.maxSimultaneousLights = 8;
   sidewalks.specularColor.setAll(0.06);
-  return { facades, bareFacades, sidewalks };
+  const granite = new StandardMaterial('embankment-parapet', scene);
+  granite.diffuseColor = new Color3(0.58, 0.56, 0.53);
+  const grain = texture(scene, 'granite-grain', graniteSurface(size), size);
+  grain.uScale = grain.vScale = 4;
+  granite.diffuseTexture = grain;
+  granite.specularColor.setAll(0.035);
+  return { facades, bareFacades, sidewalks, granite };
 }

@@ -1,7 +1,30 @@
 import { expect, it } from 'vitest';
 import { NullEngine, Scene } from '@babylonjs/core';
 import { streetMaterials } from './street-materials';
-import { asphaltSurface, facadeSurface } from './surface-textures';
+import {
+  asphaltSurface,
+  facadeSurface,
+  graniteSurface,
+} from './surface-textures';
+
+it('гранит имеет нейтральное зерно и повторяется детерминированно', () => {
+  // Arrange
+  const size = 64;
+  // Act
+  const pixels = graniteSurface(size);
+  // Assert
+  expect(pixels).toEqual(graniteSurface(size));
+  expect(pixels).toHaveLength(size * size * 4);
+  const shades = Array.from({ length: size * size }, (_, i) => pixels[i * 4]);
+  expect(new Set(shades).size).toBeGreaterThan(15);
+  expect(Math.min(...shades)).toBeGreaterThan(100);
+  expect(Math.max(...shades)).toBeLessThan(255);
+  expect(
+    Array.from({ length: size * size }, (_, i) => pixels[i * 4 + 3]).every(
+      (a) => a === 255,
+    ),
+  ).toBe(true);
+});
 
 it('дневная отделка различима и не добавляет цвет поверх оттенка OSM', () => {
   // Arrange
