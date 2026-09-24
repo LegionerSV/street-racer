@@ -8,8 +8,32 @@ import {
   roadPitch,
   signalStopLine,
   Traffic,
+  trafficStep,
+  trafficVisibleAt,
 } from './traffic';
 import type { OSMElement, RegionData } from './types';
+
+it('дальний трафик обновляется раз в 100 мс без потери прошедшего времени', () => {
+  // Arrange / Act
+  const first = trafficStep(1 / 60, 0, true);
+  let pending = first.pending;
+  for (let i = 0; i < 4; i++) pending = trafficStep(1 / 60, pending, true).pending;
+  const sixth = trafficStep(1 / 60, pending, true);
+
+  // Assert
+  expect(first.dt).toBe(0);
+  expect(sixth.dt).toBeCloseTo(0.1);
+  expect(sixth.pending).toBe(0);
+  expect(trafficStep(1 / 60, 0.05, false)).toEqual({ dt: 0.05 + 1 / 60, pending: 0 });
+});
+
+it('дальние автомобили появляются и исчезают с запасом по расстоянию', () => {
+  // Arrange / Act / Assert
+  expect(trafficVisibleAt(220, false)).toBe(true);
+  expect(trafficVisibleAt(230, false)).toBe(false);
+  expect(trafficVisibleAt(230, true)).toBe(true);
+  expect(trafficVisibleAt(250, true)).toBe(false);
+});
 
 it('наклоняет машину вдоль дорожного профиля, а не оставляет её горизонтально в воздухе', () => {
   // Arrange
@@ -106,14 +130,15 @@ it('заполняет городской район плотным потоко
     // Assert
     expect(traffic.agents.length).toBeGreaterThan(80); expect(traffic.agents.length).toBeLessThanOrEqual(144);
     expect(traffic.agents.some(a=>Math.hypot(a.point.x,a.point.z)>300)).toBe(true);
-    expect(traffic.agents.filter(a=>a.visual).every(a=>Math.hypot(a.point.x,a.point.z)<330)).toBe(true);
+    expect(traffic.agents.filter(a=>a.visual).every(a=>Math.hypot(a.point.x,a.point.z)<260)).toBe(true);
     expect(traffic.agents.filter(a=>a.visual).length).toBeGreaterThan(0);
     expect(traffic.agents.filter(a=>a.visual).length).toBeLessThan(traffic.agents.length);
     const lanes = new Set(traffic.agents.map(a => Math.round((a.point.z-world.edges.find(e=>e.stableId===a.edge)!.points[0].z)*10)));
     expect(lanes.size).toBeGreaterThan(1);
     expect(scene.materials.length).toBeLessThan(60);
     const camera = new FreeCamera('verification', new Vector3(250, 350, -500), scene); camera.setTarget(new Vector3(250,0,0)); scene.activeCamera = camera; scene.render();
-    expect(scene.getActiveMeshes().length).toBeGreaterThan(250);
+    expect(scene.getActiveMeshes().length).toBeGreaterThan(0);
+    expect(scene.getActiveMeshes().length).toBeLessThan(250);
     // Act — смена качества убирает дальние лишние машины, сохраняя поток рядом.
     traffic.setMobile(true);traffic.update(1/60,16,{x:0,y:1,z:0},0,false);
     // Assert

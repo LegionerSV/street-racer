@@ -13,11 +13,14 @@ it('ближний свет имеет горизонтальную отсечк
   // Act
   const pixels = headlightPattern(size);
   const sample = (x: number, y: number) => pixels[(y * size + x) * 4];
+  const alpha = (x: number, y: number) => pixels[(y * size + x) * 4 + 3];
   // Assert
-  expect(sample(30, 35)).toBeLessThan(10);
-  expect(sample(30, 62)).toBeGreaterThan(100);
-  expect(sample(98, 44)).toBeGreaterThan(sample(30, 44) + 80);
-  expect(sample(98, 62)).toBeGreaterThan(100);
+  expect(sample(30, 35)).toBeGreaterThan(100);
+  expect(sample(30, 62)).toBeLessThan(10);
+  expect(sample(98, 54)).toBeGreaterThan(sample(30, 54) + 80);
+  expect(alpha(30, 35)).toBeGreaterThan(100);
+  expect(alpha(30, 62)).toBe(0);
+  expect(alpha(98, 54)).toBeGreaterThan(alpha(30, 54) + 80);
 });
 
 it('дневной свет фар не выбеливает асфальт, кузова и ограждения', () => {
@@ -32,8 +35,10 @@ it('дневной свет фар не выбеливает асфальт, к�
     const beam = scene.getLightByName('vehicle-beam-0')!;
     // Assert — в ясный день пучок не конкурирует с солнцем и не даёт белый блик.
     expect(beam.intensity).toBeLessThanOrEqual(0.5);
+    expect(beam.isEnabled()).toBe(false);
     expect(beam.specular.asArray()).toEqual([0, 0, 0]);
     expect(beam.shadowEnabled).toBe(false);
+    expect(scene.getMeshByName('vehicle-headlight-road-cutoff')?.isEnabled()).toBe(true);
     lights.update(1, car, [], 'medium', 0.45);
     expect(beam.isEnabled()).toBe(true);
     expect(beam.shadowEnabled).toBe(false);

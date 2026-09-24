@@ -35,11 +35,14 @@ import {
 } from './geo';
 import { structureProfiles } from './elevation';
 import {
+  alignBridgeApproaches,
+  alignBridgeCarriageways,
   alignCarriagewayElevations,
   alignGroundIntersections,
 } from './carriageways';
 import {
   fitBridgeClearance,
+  fitBridgeBuildingUnderDeck,
   fitTunnelDepth,
   validateClearance,
 } from './clearance';
@@ -875,7 +878,10 @@ export function buildWorld(region: RegionData): World {
     edge.length = pathLengths(edge.points).at(-1)!;
   }
   fitTunnelDepth(edges, elevation);
-  fitBridgeClearance(edges);
+  fitBridgeClearance(edges, buildings);
+  alignBridgeCarriageways(edges, roadNodes, elevation, region.drivingSide);
+  alignBridgeApproaches(edges, roadNodes, elevation, region.drivingSide);
+  fitBridgeBuildingUnderDeck(edges, buildings);
   alignGroundIntersections(edges);
   for (const edge of edges) {
     if (!edge.bridge && !edge.tunnel)

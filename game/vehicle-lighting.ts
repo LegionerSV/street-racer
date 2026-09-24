@@ -23,14 +23,14 @@ export function headlightPattern(size: number) {
       const u = (x + 0.5) / size,
         v = (y + 0.5) / size;
       const cutoff =
-        u < 0.52 ? 0.43 : 0.43 - 0.12 * Math.min(1, (u - 0.52) / 0.08);
-      const edge = Math.max(0, Math.min(1, (v - cutoff + 0.012) / 0.024));
+        u < 0.52 ? 0.37 : 0.37 + 0.18 * Math.min(1, (u - 0.52) / 0.08);
+      const edge = Math.max(0, Math.min(1, (cutoff - v + 0.012) / 0.024));
       const spread = Math.max(0, 1 - Math.pow(Math.abs(u - 0.5) / 0.52, 4));
       const reach = Math.max(0, 1 - Math.pow(Math.max(0, v - 0.83) / 0.17, 2));
       const brightness = Math.round(255 * edge * spread * reach);
       const i = (y * size + x) * 4;
       pixels[i] = pixels[i + 1] = pixels[i + 2] = brightness;
-      pixels[i + 3] = 255;
+      pixels[i + 3] = brightness;
     }
   return pixels;
 }
@@ -179,7 +179,7 @@ export class VehicleLighting {
           Vector3.DistanceSquared(b.root.position, player.root.position),
       )
       .slice(0, quality === 'mobile' ? 1 : 2);
-    const beamActive = daylight < 0.9 && player.root.isEnabled();
+    const beamActive = player.root.isEnabled();
     this.roadBeam.setEnabled(beamActive);
     if (beamActive) {
       const rawForward = player.root.getDirection(Vector3.Forward()),
@@ -201,14 +201,14 @@ export class VehicleLighting {
       this.roadBeam.updateVerticesData('position', vertices);
       this.roadBeam.refreshBoundingInfo();
       this.roadBeamMaterial.alpha =
-        0.5 * (1 - Math.max(0, Math.min(1, daylight)) * 0.85);
+        0.55 * (1 - Math.max(0, Math.min(1, daylight)) * 0.65);
     }
     this.clock -= dt;
     const refresh = this.clock <= 0;
     if (refresh) this.clock = 0.2;
     this.pool.forEach((entry, i) => {
       const car = i === 0 ? player : nearest[i - 1],
-        active = !!car && (i === 0 || daylight < 0.65),
+        active = !!car && daylight < (i === 0 ? 0.85 : 0.65),
         changed = entry.owner !== car;
       entry.owner = car;
       entry.light.setEnabled(active);
@@ -240,7 +240,7 @@ export class VehicleLighting {
       );
       entry.light.direction.normalize();
       entry.light.intensity =
-        (i === 0 ? 2.4 : 1.6) * (1 - Math.max(0, Math.min(1, daylight)) * 0.85);
+        (i === 0 ? 2.4 : 1.6) * (1 - Math.max(0, Math.min(1, daylight)));
       if (!entry.light.shadowEnabled)
         entry.shadow.getShadowMap()!.renderList = [];
       else if (refresh || changed)

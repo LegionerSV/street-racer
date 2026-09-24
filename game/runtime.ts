@@ -116,7 +116,7 @@ type BreakableLoaded = {
 export const isStaticCollisionRole = (role: string, lod: number) =>
   lod === 0 && role === 'collision';
 
-export function mergeStaticCollisionData(chunk: ChunkData): MeshData {
+export function* mergeStaticCollisionDataSteps(chunk: ChunkData): Generator<void, MeshData> {
   const meshes = [
       chunk.terrain,
       chunk.shoulders,
@@ -134,10 +134,42 @@ export function mergeStaticCollisionData(chunk: ChunkData): MeshData {
   for (const mesh of meshes) {
     if (!mesh?.positions.length || !mesh.indices.length) continue;
     const offset = merged.positions.length / 3;
-    for (const position of mesh.positions) merged.positions.push(position);
-    for (const index of mesh.indices) merged.indices.push(index + offset);
+    for (let i = 0; i < mesh.positions.length; i += 8192) {
+      for (let j = i; j < Math.min(i + 8192, mesh.positions.length); j++)
+        merged.positions.push(mesh.positions[j]);
+      yield;
+    }
+    for (let i = 0; i < mesh.indices.length; i += 8192) {
+      for (let j = i; j < Math.min(i + 8192, mesh.indices.length); j++)
+        merged.indices.push(mesh.indices[j] + offset);
+      yield;
+    }
   }
   return merged;
+}
+export function mergeStaticCollisionData(chunk: ChunkData): MeshData {
+  const steps = mergeStaticCollisionDataSteps(chunk);
+  let result = steps.next();
+  while (!result.done) result = steps.next();
+  return result.value;
+}
+export function stageChunkMesh<TMesh extends { isEnabled: () => boolean; setEnabled: (enabled: boolean) => void }>(
+  mesh: TMesh,
+  staged: { mesh: TMesh; enabled: boolean }[],
+) {
+  staged.push({ mesh, enabled: mesh.isEnabled() });
+  mesh.setEnabled(false);
+}
+export function swapChunkCollisionBodies<TMesh, TBody>(
+  meshes: readonly TMesh[],
+  create: (mesh: TMesh) => TBody,
+  bodies: TBody[],
+  previous?: { dispose: () => void },
+  activate?: () => void,
+) {
+  activate?.();
+  for (const mesh of meshes) bodies.push(create(mesh));
+  previous?.dispose();
 }
 type Loaded = {
   lod: number;
@@ -174,6 +206,17 @@ export function mapTransitionBlocksDriving(
 ) {
   const dirty = new Set(dirtyChunks);
   return [...criticalChunks].some((key) => dirty.has(key));
+}
+export function criticalChunkLoadingReason(
+  coverageReady: boolean,
+  stale: boolean,
+  installedLod: number | undefined,
+  wanted: boolean,
+) {
+  if (!coverageReady) return 'coverage';
+  if (stale && installedLod !== 0) return 'stale-chunk';
+  if (wanted && installedLod !== 0) return 'chunk';
+  return undefined;
 }
 export function mapStreamCanUpdate(state: {
   preparingRaceActive: boolean;
@@ -696,9 +739,20 @@ export class Game {
       bodies: PhysicsAggregate[] = [],
       breakables: BreakableLoaded[] = [],
       lamps = [...chunk.lamps],
-      collisionMeshes: Mesh[] = [];
-    const collision =
-      chunk.lod === 0 ? mergeStaticCollisionData(chunk) : undefined;
+      collisionMeshes: Mesh[] = [],
+      staged: { mesh: Mesh; enabled: boolean }[] = [];
+    let collision: MeshData | undefined;
+    if (chunk.lod === 0) {
+      const parts = mergeStaticCollisionDataSteps(chunk);
+      let part = parts.next();
+      while (!part.done) {
+        installMs += performance.now() - stepStarted;
+        yield;
+        stepStarted = performance.now();
+        part = parts.next();
+      }
+      collision = part.value;
+    }
     const surfaces: [string, MeshData | undefined, StandardMaterial][] = [
       'terrain',
       'shoulders',
@@ -739,22 +793,9 @@ export class Game {
           role === 'landmarks' ||
           role.startsWith('facade') ||
           role.startsWith('bareFacade');
+        stageChunkMesh(mesh, staged);
         meshes.push(mesh);
         if (isStaticCollisionRole(role, chunk.lod)) collisionMeshes.push(mesh);
-        installMs += performance.now() - stepStarted;
-        yield;
-        stepStarted = performance.now();
-      }
-      // Один MESH на чанк сохраняет геометрию поверхностей, но не раздувает broadphase Havok.
-      for (const mesh of collisionMeshes) {
-        bodies.push(
-          new PhysicsAggregate(
-            mesh,
-            PhysicsShapeType.MESH,
-            { mass: 0, friction: 0.65, restitution: 0.02 },
-            this.scene,
-          ),
-        );
         installMs += performance.now() - stepStarted;
         yield;
         stepStarted = performance.now();
@@ -798,6 +839,7 @@ export class Game {
           ? lamps.find((p) => p.x === prop.point.x && p.z === prop.point.z)
           : undefined;
         if (broken && lamp) lamps.splice(lamps.indexOf(lamp), 1);
+        stageChunkMesh(mesh, staged);
         meshes.push(mesh);
         breakables.push({
           key,
@@ -840,6 +882,7 @@ export class Game {
         branch.thinInstanceSetBuffer('matrix', shape.branches, 16);
         foliage.thinInstanceSetBuffer('matrix', shape.leaves, 16);
         trunk.isPickable = branch.isPickable = foliage.isPickable = false;
+        for (const mesh of [trunk, branch, foliage]) stageChunkMesh(mesh, staged);
         meshes.push(trunk, branch, foliage);
         installMs += performance.now() - stepStarted;
         yield;
@@ -863,7 +906,19 @@ export class Game {
             ),
           ),
       );
-      this.chunks.get(chunk.key)?.dispose();
+      // Коллайдеры меняются вместе с кварталом, без шага физики между версиями.
+      swapChunkCollisionBodies(
+        collisionMeshes,
+        (mesh) => new PhysicsAggregate(
+          mesh,
+          PhysicsShapeType.MESH,
+          { mass: 0, friction: 0.65, restitution: 0.02 },
+          this.scene,
+        ),
+        bodies,
+        this.chunks.get(chunk.key),
+        () => staged.forEach(({ mesh, enabled }) => mesh.setEnabled(enabled)),
+      );
       this.chunks.set(chunk.key, {
         lod: chunk.lod,
         weight: chunkCacheWeight(chunk),
@@ -1203,18 +1258,13 @@ export class Game {
     if (this.preparingRace) this.loadingReasons.push('race-preparation');
     if (this.applyingMap) this.loadingReasons.push('map-transition');
     for (const key of critical) {
-      if (
-        this.mapCoverage &&
-        !tileReady(this.mapCoverage, key, this.world.center)
-      )
-        this.loadingReasons.push(`coverage:${key}`);
-      else if (this.mapCoverage && this.staleChunks.has(key))
-        this.loadingReasons.push(`stale-chunk:${key}`);
-      else if (
-        (this.mapCoverage || this.wanted.some((c) => c.key === key)) &&
-        this.chunks.get(key)?.lod !== 0
-      )
-        this.loadingReasons.push(`chunk:${key}`);
+      const reason = criticalChunkLoadingReason(
+        !this.mapCoverage || tileReady(this.mapCoverage, key, this.world.center),
+        !!this.mapCoverage && this.staleChunks.has(key),
+        this.chunks.get(key)?.lod,
+        !!this.mapCoverage || this.wanted.some((c) => c.key === key),
+      );
+      if (reason) this.loadingReasons.push(`${reason}:${key}`);
     }
     this.loading = this.loadingReasons.length > 0;
     advanceDrivingPhysics(

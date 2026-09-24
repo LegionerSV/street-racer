@@ -1461,6 +1461,7 @@ export function buildChunk(
         tags['name:ru'] ||
         tags.historic ||
         tags.tourism ||
+        building.kind === 'bridge' ||
         building.kind === 'wall' ||
         ['cathedral', 'church', 'chapel', 'mosque', 'tower'].includes(
           building.kind || '',
@@ -1531,10 +1532,11 @@ export function buildChunk(
       });
     const foundationFloor = Math.min(
       ...[building.footprint, ...(building.holes || [])]
-        .flatMap(groundRing)
+        .flatMap(building.kind === 'bridge' ? (ring) => ring : groundRing)
         .map((p) => p.y),
     );
-    const groundVertex = (p: Point) => ({ ...p, y: terrainHeight(p.x, p.z) });
+    const groundVertex = (p: Point) =>
+      building.kind === 'bridge' ? p : { ...p, y: terrainHeight(p.x, p.z) };
     const grounded = {
       ...building,
       footprint: building.footprint.map(groundVertex),
@@ -1807,8 +1809,20 @@ export function buildChunk(
     );
     surfaceCuts.add(mask, mask.bounds);
   }
-  for (const s of segments)
-    if (!s.edge.bridge && !s.edge.tunnel) {
+  for (const s of segments) {
+    if (s.edge.bridge) {
+      const polygon = roadSurface(s, s.edge.width + 1);
+      const underside = BRIDGE_DECK_THICKNESS + 0.2;
+      for (const triangle of [
+        [polygon[0], polygon[1], polygon[2]],
+        [polygon[0], polygon[2], polygon[3]],
+      ] as [Point, Point, Point][]) {
+        const mask = surfacePrism(triangle, underside, 10000);
+        if (mask) surfaceCuts.add(mask, mask.bounds);
+      }
+      continue;
+    }
+    if (!s.edge.tunnel) {
       const length = distance2(s.a, s.b) || 1,
         aa = mixPoint(s.a, s.b, -0.3 / length),
         bb = mixPoint(s.a, s.b, 1 + 0.3 / length);
@@ -1843,6 +1857,7 @@ export function buildChunk(
           surfaceCuts.add(mask, mask.bounds);
         }
     }
+  }
   cutSoil(result.terrain, roadCuts);
   if (lod === 0) cutSoil(result.terrain, pavedCuts);
   // Откос одной улицы не может выступать на асфальт соседней или поперечной.

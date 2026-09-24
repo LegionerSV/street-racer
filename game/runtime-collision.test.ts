@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { isStaticCollisionRole, mergeStaticCollisionData } from './runtime';
+import { isStaticCollisionRole, mergeStaticCollisionData, mergeStaticCollisionDataSteps, stageChunkMesh, swapChunkCollisionBodies } from './runtime';
 import type { ChunkData, MeshData } from './types';
 
 it('создаёт один Havok-коллайдер на подробный чанк', () => {
@@ -42,6 +42,12 @@ it('объединяет разрозненные статические пов�
   expect(collision.indices).toHaveLength(10 * 3);
   expect(collision.indices.slice(-3)).toEqual([27, 28, 29]);
   expect(collision.positions).not.toContain(100);
+  const steps = mergeStaticCollisionDataSteps(chunk);
+  let count = 0;
+  let next = steps.next();
+  while (!next.done) { count++; next = steps.next(); }
+  expect(count).toBe(20);
+  expect(next.value).toEqual(collision);
 });
 
 
@@ -57,4 +63,33 @@ it('объединяет крупный чанк без превышения л�
   // Assert.
   expect(collision.positions).toHaveLength(positions.length);
   expect(collision.indices).toEqual([0, 1, 2]);
+});
+
+it('включает новый коллайдер и удаляет старый в одном шаге установки', () => {
+  // Arrange
+  const events: string[] = [], bodies: string[] = [];
+  const old = { dispose: () => { events.push('old-disposed'); } };
+  const staged: { mesh: { isEnabled: () => boolean; setEnabled: (enabled: boolean) => void }; enabled: boolean }[] = [];
+  const mesh = { isEnabled: () => true, setEnabled: (enabled: boolean) => { events.push(enabled ? 'new-visible' : 'new-hidden'); } };
+  stageChunkMesh(mesh, staged);
+
+  // Act
+  swapChunkCollisionBodies(['mesh'], (mesh) => {
+    events.push('new-active');
+    return mesh;
+  }, bodies, old, () => staged.forEach((item) => item.mesh.setEnabled(item.enabled)));
+
+  // Assert
+  expect(events).toEqual(['new-hidden', 'new-visible', 'new-active', 'old-disposed']);
+  expect(bodies).toEqual(['mesh']);
+});
+
+it('сохраняет старую коллизию, если новая не создалась', () => {
+  // Arrange
+  const events: string[] = [], bodies: string[] = [];
+  // Act / Assert
+  expect(() => swapChunkCollisionBodies(['mesh'], () => { throw new Error('shape'); }, bodies,
+    { dispose: () => { events.push('old-disposed'); } })).toThrow('shape');
+  expect(events).toEqual([]);
+  expect(bodies).toEqual([]);
 });

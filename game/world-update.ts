@@ -5,9 +5,12 @@ import { createRaceLocations, invalidateRaceRoutes } from './network';
 import { edgeById, edgeStableId, updateRoadMetrics } from './road-graph';
 import { distance, distance2, sampleElevation, smoother } from './geo';
 import {
+  alignBridgeApproaches,
+  alignBridgeCarriageways,
   alignCarriagewayElevations,
   alignGroundIntersections,
 } from './carriageways';
+import { fitBridgeBuildingUnderDeck } from './clearance';
 import { validateClearance } from './clearance';
 export const edgeKey = edgeStableId;
 // Уже построенную поверхность не меняем под автомобилями из-за нового
@@ -72,15 +75,17 @@ export function reconcileWorld(previous: World, next: World): World {
       .slice(1)
       .reduce((sum, point, i) => sum + distance(edge.points[i], point), 0);
   }
-  if (
-    alignCarriagewayElevations(
-      next.edges,
-      new Map(next.nodes.map((node) => [node.id, node])),
-      next.elevation,
-      next.drivingSide,
-      preserved,
-    )
-  ) {
+  const nodes = new Map(next.nodes.map((node) => [node.id, node]));
+  const alignedBridge = alignBridgeCarriageways(
+    next.edges, nodes, next.elevation, next.drivingSide, preserved,
+  );
+  const alignedGround = alignCarriagewayElevations(
+    next.edges, nodes, next.elevation, next.drivingSide, preserved,
+  );
+  const alignedApproaches = alignBridgeApproaches(
+    next.edges, nodes, next.elevation, next.drivingSide, preserved,
+  );
+  if (alignedBridge || alignedGround || alignedApproaches) {
     for (const edge of next.edges)
       if (!preserved.has(edgeKey(edge))) updateRoadMetrics(edge);
     next.warnings = [
@@ -90,6 +95,7 @@ export function reconcileWorld(previous: World, next: World): World {
   if (alignGroundIntersections(next.edges, preserved))
     for (const edge of next.edges)
       if (!preserved.has(edgeKey(edge))) updateRoadMetrics(edge);
+  fitBridgeBuildingUnderDeck(next.edges, next.buildings, preserved);
   for (const node of next.nodes) {
     const y = anchorHeight(node.id);
     if (y !== undefined) node.y = y;

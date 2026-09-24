@@ -4,7 +4,26 @@ import {
   mapTransitionBlocksDriving,
   mapTransitionChunks,
   raceChunkNeedsPreparation,
+  criticalChunkLoadingReason,
 } from './runtime';
+
+it.each([
+  [false, true, 0, true, 'coverage'],
+  [true, true, 0, true, undefined],
+  [true, true, 1, true, 'stale-chunk'],
+  [true, true, undefined, true, 'stale-chunk'],
+  [true, false, undefined, true, 'chunk'],
+  [true, false, 0, true, undefined],
+  [true, false, undefined, false, undefined],
+])(
+  'движение при обновлении: coverage=%s stale=%s lod=%s wanted=%s',
+  (coverageReady, stale, installedLod, wanted, expected) => {
+    // Arrange / Act / Assert
+    expect(
+      criticalChunkLoadingReason(coverageReady, stale, installedLod, wanted),
+    ).toBe(expected);
+  },
+);
 
 it('перед переключением карты готовит только грязные кварталы под машиной', () => {
   // Arrange

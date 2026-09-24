@@ -1113,4 +1113,55 @@ describe('Подготовка кварталов', () => {
     // Assert
     expect(covers).toBe(false);
   });
+  it.each([
+    { ground: 2, covered: false },
+    { ground: -4, covered: true },
+  ])('сохраняет подмостовое пространство и убирает грунт с проезда: $ground', ({ ground, covered }) => {
+    // Arrange
+    const world = {
+      center: { lat: 0, lon: 0 }, nodes: [], restrictions: [], buildings: [], areas: [], trees: [],
+      edges: [{ id: 0, stableId: '1/1/2/0', way: 1, from: 1, to: 2,
+        length: 100, width: 9, lanes: 2, speed: 14, name: 'Мост', bridge: true,
+        tunnel: false, layer: 1, blocked: false,
+        points: [{ x: 100, y: 0, z: 20 }, { x: 100, y: 0, z: 120 }] }],
+      elevation: { width: 2, size: 5600, values: new Float32Array([ground, ground, ground, ground]) },
+      drivingSide: 'right', warnings: [], spawnEdge: null, routes: [],
+    } as World;
+    // Act
+    const terrain = buildChunk(world, '0,0', 0).terrain;
+    const point = { x: 100, y: 0, z: 70 };
+    const covers = Array.from({ length: terrain.indices.length / 3 }, (_, i) =>
+      terrain.indices.slice(i * 3, i * 3 + 3).map((id) => ({
+        x: terrain.positions[id * 3], y: 0, z: terrain.positions[id * 3 + 2],
+      })),
+    ).some((triangle) => polygonContains(point, triangle));
+    // Assert
+    expect(covers).toBe(covered);
+  });
+  it('убирает пик рельефа внутри моста, даже когда углы полотна ниже асфальта', () => {
+    // Arrange
+    const values = new Float32Array(21 * 21).fill(-4);
+    values[16 * 21 + 18] = 10;
+    const world = {
+      center: { lat: 0, lon: 0 }, nodes: [], restrictions: [], buildings: [], areas: [], trees: [],
+      edges: [{ id: 0, stableId: '1/1/2/0', way: 1, from: 1, to: 2,
+        length: 100, width: 9, lanes: 2, speed: 14, name: 'Мост', bridge: true,
+        tunnel: false, layer: 1, blocked: false,
+        points: [{ x: 100, y: 0, z: 20 }, { x: 100, y: 0, z: 120 }] }],
+      elevation: { width: 21, size: 250, values },
+      drivingSide: 'right', warnings: [], spawnEdge: null, routes: [],
+    } as World;
+
+    // Act
+    const terrain = buildChunk(world, '0,0', 0).terrain;
+    const spike = { x: 100, y: 0, z: 75 };
+    const protrudes = Array.from({ length: terrain.indices.length / 3 }, (_, i) =>
+      terrain.indices.slice(i * 3, i * 3 + 3).map((id) => ({
+        x: terrain.positions[id * 3], y: terrain.positions[id * 3 + 1], z: terrain.positions[id * 3 + 2],
+      })),
+    ).some((triangle) => polygonContains(spike, triangle) && triangle.some((point) => point.y > 0.5));
+
+    // Assert
+    expect(protrudes).toBe(false);
+  });
 });

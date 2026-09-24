@@ -67,6 +67,7 @@ type Agent = {
   dynamic?: boolean;
   impact?: number;
   turn?: number;
+  farElapsed?: number;
   race?: {
     route: Route;
     index: number;
@@ -139,6 +140,15 @@ export function trafficBudget(
       ),
     ),
   );
+}
+export function trafficStep(frameDt: number, pending: number, far: boolean) {
+  const elapsed = pending + frameDt;
+  return far && elapsed < 0.1 - 1e-9
+    ? { dt: 0, pending: elapsed }
+    : { dt: elapsed, pending: 0 };
+}
+export function trafficVisibleAt(distance: number, visible: boolean) {
+  return distance <= (visible ? 245 : 220);
 }
 export class Traffic {
   agents: Agent[] = [];
@@ -467,7 +477,7 @@ export class Traffic {
     return this.agents.filter((a) => a.race);
   }
   update(
-    dt: number,
+    frameDt: number,
     time: number,
     player: Point,
     playerSpeed: number,
@@ -475,7 +485,7 @@ export class Traffic {
     raceElapsed = 0,
     playerHeading = 0,
   ) {
-    this.spawnTimer -= dt;
+    this.spawnTimer -= frameDt;
     if (this.spawnTimer <= 0) {
       this.spawnTimer = 1;
       this.agents = this.agents.filter((a) => {
@@ -564,6 +574,12 @@ export class Traffic {
     }));
     const neighborIndex = new TrafficNeighborIndex(snapshot);
     for (const a of this.agents) {
+      const far =
+        !a.race && !a.dynamic && distance2(a.point, player) > 245;
+      const step = trafficStep(frameDt, a.farElapsed || 0, far);
+      a.farElapsed = step.pending;
+      if (!step.dt) continue;
+      const dt = step.dt;
       const neighbors = neighborIndex.query(a.point, 130);
       if (!a.plan) this.makePlan(a);
       if (
@@ -857,9 +873,8 @@ export class Traffic {
           this.sample(a, dt);
         }
       }
-      // На 500 м детальные машины занимали тысячи мешей и физические тела,
-      // хотя с этой дистанции почти не различимы. Логика потока остаётся полной.
-      if (distance2(a.point, player) < (a.visual ? 330 : 300)) {
+      // Вдали поток обновляется реже и не создаёт меши и физические тела.
+      if (a.race || trafficVisibleAt(distance2(a.point, player), !!a.visual)) {
         this.show(a);
         const body = a.body!.body,
           mesh = a.visual!.root;

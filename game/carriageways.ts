@@ -208,12 +208,44 @@ const surfaceCarriageway = (edge: Edge) =>
   !edge.blocked &&
   edge.name !== 'Безымянная улица' &&
   !edge.category?.endsWith('_link');
+const bridgeCarriageway = (edge: Edge) =>
+  edge.oneWay &&
+  edge.bridge &&
+  !edge.tunnel &&
+  !edge.blocked &&
+  edge.name !== 'Безымянная улица' &&
+  !edge.category?.endsWith('_link');
 const sameStreet = (edge: Edge, other: Edge) =>
   other.way !== edge.way &&
   surfaceCarriageway(other) &&
   other.layer === edge.layer &&
   other.name === edge.name &&
   other.category === edge.category;
+const sameBridge = (edge: Edge, other: Edge) =>
+  other.way !== edge.way &&
+  bridgeCarriageway(other) &&
+  other.layer === edge.layer &&
+  other.name === edge.name &&
+  other.category === edge.category;
+
+export function alignBridgeCarriageways(
+  edges: Edge[],
+  nodes: Map<number, RoadNode>,
+  elevation: ElevationGrid,
+  drivingSide: 'left' | 'right',
+  preserved?: ReadonlySet<string>,
+) {
+  return alignCarriagewayElevations(edges, nodes, elevation, drivingSide, preserved, 'bridge');
+}
+export function alignBridgeApproaches(
+  edges: Edge[],
+  nodes: Map<number, RoadNode>,
+  elevation: ElevationGrid,
+  drivingSide: 'left' | 'right',
+  preserved?: ReadonlySet<string>,
+) {
+  return alignCarriagewayElevations(edges, nodes, elevation, drivingSide, preserved, 'approach');
+}
 
 function oppositeProjection(p: Point, s: Segment, candidate: Segment) {
   const { a, b } = s,
@@ -254,11 +286,24 @@ export function alignCarriagewayElevations(
   elevation: ElevationGrid,
   drivingSide: 'left' | 'right',
   preserved?: ReadonlySet<string>,
+  mode: 'ground' | 'bridge' | 'approach' = 'ground',
 ) {
+  const bridgeNodes = new Set(
+    edges.filter((edge) => edge.bridge).flatMap((edge) => [edge.from, edge.to]),
+  );
+  const eligible = mode === 'bridge'
+      ? bridgeCarriageway
+      : mode === 'approach'
+        ? (edge: Edge) =>
+            surfaceCarriageway(edge) &&
+            !edge.bridge &&
+            (bridgeNodes.has(edge.from) || bridgeNodes.has(edge.to))
+        : surfaceCarriageway,
+    matching = mode === 'bridge' ? sameBridge : sameStreet;
   const spatial = new SpatialGrid<Segment>(32),
     segments = new Map<Edge, Segment[]>();
   for (const edge of edges)
-    if (surfaceCarriageway(edge)) {
+    if (eligible(edge)) {
       const parts = edge.points
         .slice(1)
         .map((b, i) => ({ a: edge.points[i], b, edge }));
@@ -276,7 +321,7 @@ export function alignCarriagewayElevations(
         length = distance2(s.a, s.b);
       let best: { point: Point; distance: number; way: number } | undefined;
       for (const candidate of spatial.query(boundsOf([p], edge.width / 2))) {
-        if (!sameStreet(edge, candidate.edge)) continue;
+        if (!matching(edge, candidate.edge)) continue;
         if (preserved && !preserved.has(candidate.edge.stableId)) continue;
         const q = oppositeProjection(p, s, candidate);
         if (!q) continue;
@@ -297,6 +342,10 @@ export function alignCarriagewayElevations(
       if (!best) return;
       if (preserved) return best.point.y - p.y;
       const center = mixPoint(p, best.point, 0.5);
+      if (mode !== 'ground') {
+        const rise = Math.max(0, best.point.y - p.y);
+        return rise < 0.01 ? 0 : rise;
+      }
       return sampleRoadElevation(elevation, center.x, center.z) + 0.12 - p.y;
     });
     if (!offsets.some((v) => v !== undefined)) continue;
@@ -344,11 +393,13 @@ export function alignCarriagewayElevations(
   // Подгрузка подстраивает только новое полотно; открытая дорога и сооружения
   // остаются неподвижными, включая общие с ними узлы.
   const fixed = (edge: Edge) =>
-    preserved &&
-    (preserved.has(edge.stableId) ||
-      edge.bridge ||
-      edge.tunnel ||
-      edge.tunnelApproach);
+    (mode === 'approach' &&
+      (edge.bridge || edge.tunnel || edge.tunnelApproach)) ||
+    (preserved &&
+      (preserved.has(edge.stableId) ||
+        (mode !== 'bridge' && edge.bridge) ||
+        edge.tunnel ||
+        edge.tunnelApproach));
   for (const edge of edges)
     if (fixed(edge)) for (const id of [edge.from, edge.to]) shared.set(id, 0);
   const transitions = carriagewayTransitions(edges, shared);

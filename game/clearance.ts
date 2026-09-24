@@ -5,8 +5,9 @@ import {
   projectOnSegment,
   smoother,
   sampleRoadElevation,
+  polygonContains,
 } from './geo';
-import type { Edge, Point, ElevationGrid } from './types';
+import type { Building, Edge, Point, ElevationGrid } from './types';
 
 export const BRIDGE_DECK_THICKNESS = 0.55;
 export const MIN_ROAD_CLEARANCE = 3.5;
@@ -398,15 +399,91 @@ export function crossingClearance(c: RoadCrossing) {
   );
 }
 
+function roadHeightsOverBuilding(edge: Edge, building: Building) {
+  const heights: number[] = [],
+    footprint = building.footprint,
+    halfWidth = edge.width / 2;
+  const inside = (point: Point) =>
+    polygonContains(point, footprint) &&
+    !(building.holes || []).some((hole) => polygonContains(point, hole));
+  for (let i = 1; i < edge.points.length; i++) {
+    const a = edge.points[i - 1],
+      b = edge.points[i];
+    if (inside(a)) heights.push(a.y);
+    if (inside(b)) heights.push(b.y);
+    for (let j = 0; j < footprint.length; j++) {
+      const c = footprint[j],
+        d = footprint[(j + 1) % footprint.length],
+        hit = projectOnSegment(c, a, b);
+      if (hit.distance <= halfWidth) heights.push(hit.point.y);
+      const rx = b.x - a.x,
+        rz = b.z - a.z,
+        sx = d.x - c.x,
+        sz = d.z - c.z,
+        denominator = rx * sz - rz * sx;
+      if (Math.abs(denominator) < 1e-9) continue;
+      const cx = c.x - a.x,
+        cz = c.z - a.z,
+        t = (cx * sz - cz * sx) / denominator,
+        u = (cx * rz - cz * rx) / denominator;
+      if (t >= 0 && t <= 1 && u >= 0 && u <= 1)
+        heights.push(mixPoint(a, b, t).y);
+    }
+  }
+  return heights;
+}
+
 // Поднимаем связанную конструкцию целиком; поправка плавно затухает на подходах
 // по расстоянию вдоль дорожного графа, а не по близости соседней набережной.
-export function fitBridgeClearance(edges: Edge[]) {
-  fitStructureHeight(edges);
+export function fitBridgeClearance(edges: Edge[], buildings: Building[] = []) {
+  fitStructureHeight(edges, undefined, buildings);
+}
+export function fitBridgeBuildingUnderDeck(
+  edges: Edge[],
+  buildings: Building[],
+  preserved?: ReadonlySet<string>,
+) {
+  for (const building of buildings) {
+    const explicit =
+      building.osmTags?.height !== undefined ||
+      building.osmTags?.['building:levels'] !== undefined;
+    if (
+      building.kind !== 'bridge' ||
+      (explicit && !preserved) ||
+      building.footprint.length < 3
+    ) continue;
+    const layer = Number(building.osmTags?.layer ?? 0);
+    if (!Number.isFinite(layer)) continue;
+    const roofs = edges
+      .filter((edge) =>
+        edge.bridge &&
+        edge.layer > layer &&
+        (!explicit || preserved?.has(edge.stableId)),
+      )
+      .flatMap((edge) => roadHeightsOverBuilding(edge, building)
+        .map((height) => height - BRIDGE_DECK_THICKNESS - 0.2));
+    if (!roofs.length) continue;
+    const ceiling = Math.min(...roofs);
+    let ground = Math.max(...building.footprint.map((point) => point.y));
+    if (ground + 0.1 > ceiling) {
+      const lowering = ground + 0.1 - ceiling;
+      building.footprint = building.footprint.map((point) => ({ ...point, y: point.y - lowering }));
+      building.holes = building.holes?.map((hole) => hole.map((point) => ({ ...point, y: point.y - lowering })));
+      ground -= lowering;
+    }
+    building.height = Math.max(0.1, Math.min(building.height, ceiling - ground));
+    if (building.minHeight !== undefined)
+      building.minHeight = Math.min(building.minHeight, Math.max(0, building.height - 0.1));
+    if (building.supportMinHeight !== undefined)
+      building.supportMinHeight = Math.min(building.supportMinHeight, Math.max(0, building.height - 0.1));
+    if (building.envelopeHeight !== undefined)
+      building.envelopeHeight = Math.min(building.envelopeHeight, building.height);
+  }
 }
 export function fitTunnelDepth(edges: Edge[], elevation: ElevationGrid) {
   fitStructureHeight(edges, elevation);
 }
-function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
+function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid, buildings: Building[] = []) {
   const physical = physicalEdges(edges),
     peers = tunnelTerrain
       ? new Map<number, { id: number }[]>()
@@ -476,6 +553,18 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
     groups.push(group);
   }
   const crossings = roadCrossings(physical);
+  const lowerBridgeBuildings = buildings
+    .filter((building) =>
+      building.kind === 'bridge' &&
+      building.footprint.length >= 3 &&
+      (building.osmTags?.height !== undefined || building.osmTags?.['building:levels'] !== undefined),
+    )
+    .map((building) => ({
+      building,
+      layer: Number(building.osmTags?.layer ?? 0),
+      top: Math.max(...building.footprint.map((point) => point.y)) + building.height,
+    }))
+    .filter((item) => Number.isFinite(item.layer));
   for (const group of groups) {
     const members = new Set(group),
       contacts = crossings.filter((c) =>
@@ -497,6 +586,10 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid) {
           ...contacts.map(
             (c) => MIN_ROAD_CLEARANCE + 0.05 - crossingClearance(c),
           ),
+          ...group.flatMap((edge) => lowerBridgeBuildings
+            .filter(({ layer }) => layer < edge.layer)
+            .flatMap(({ building, top }) => roadHeightsOverBuilding(edge, building)
+              .map((height) => top + BRIDGE_DECK_THICKNESS + 0.2 - height))),
         );
     if (Math.abs(rise) < 1e-6) continue;
     const ramp = Math.max(100, (Math.abs(rise) * 1.875) / 0.06),
