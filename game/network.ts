@@ -341,6 +341,8 @@ export function buildWorld(region: RegionData): World {
         surface: tags.surface,
         oneWay: oneWay || reverse,
         passage: tags.tunnel === 'building_passage',
+        roundabout:
+          tags.junction === 'roundabout' || tags.junction === 'circular',
         bridge,
         tunnel,
         layer,
@@ -782,14 +784,41 @@ export function buildWorld(region: RegionData): World {
       });
     }
   addLandmarkSupplements(buildings, region.center);
+  const supportedBuildings = buildings.filter((b) => {
+    const tags = b.osmTags || {};
+    if (
+      b.part &&
+      b.group &&
+      tags['building:part'] === 'roof' &&
+      ![
+        'height',
+        'min_height',
+        'building:levels',
+        'building:min_level',
+        'roof:height',
+        'roof:levels',
+        'roof:angle',
+      ].some((key) => tags[key] !== undefined)
+    ) {
+      const supports = buildings.filter(
+        (other) =>
+          other !== b &&
+          other.group === b.group &&
+          other.osmTags?.['building:part'] !== 'roof',
+      );
+      // Неразмеченная крышка не дублирует уже построенный объём здания.
+      if (buildingCoveredByParts(b, supports)) return false;
+    }
+    return true;
+  });
   // Части здания заменяют общую оболочку только при полном покрытии у земли.
   // Надземные и перекрывающиеся части не должны удалять оставшиеся этажи/крылья.
   const parts = new SpatialGrid<Building>(250, objectBounds);
-  for (const b of buildings)
+  for (const b of supportedBuildings)
     if (b.part && (b.minHeight || 0) <= 0.3)
       parts.add(b, boundsOf(b.footprint));
-  resolveBuildingEnvelopes(buildings);
-  const filteredBuildings = buildings.filter((b) => {
+  resolveBuildingEnvelopes(supportedBuildings);
+  const filteredBuildings = supportedBuildings.filter((b) => {
     if (b.part) return true;
     const contained = parts
       .query(boundsOf(b.footprint))

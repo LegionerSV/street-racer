@@ -4,6 +4,20 @@ import { roadPrism, type Prism } from './geometry';
 import type { Edge, Point } from './types';
 
 type Segment = { a: Point; b: Point; edge: Edge };
+
+export function facesWater(
+  a: Point,
+  water: Point,
+  edge: Edge,
+  candidates: Segment[],
+) {
+  return !candidates.some((other) => {
+    if (other.edge.way === edge.way || other.edge.tunnel) return false;
+    const mask = roadPrism(other.a, other.b, other.edge.width + 0.5, 1.5, 1.5);
+    const interval = coveredInterval(a, { ...water, y: a.y }, mask);
+    return interval && interval[1] - interval[0] > 0.001;
+  });
+}
 // Вырезаем интервалы у основания, затем строим перила полной высоты.
 // Обрезание готовой вертикальной стенки оставляло бы висящие верхушки.
 function coveredInterval(
@@ -39,9 +53,21 @@ export function bridgeRailingSpans(
     if (other.edge.bridge && other.edge.layer !== edge.layer) continue;
     // На общем мосту перила не разделяют перекрывающиеся тротуары.
     // Наземный съезд вырезает только коридор проезда; дорога ниже моста не мешает.
+    const dx = b.x - a.x,
+      dz = b.z - a.z;
+    const ox = other.b.x - other.a.x,
+      oz = other.b.z - other.a.z;
+    const sharedDeck =
+      other.edge.bridge &&
+      edge.oneWay &&
+      other.edge.oneWay &&
+      edge.name === other.edge.name &&
+      (dx * ox + dz * oz) / (Math.hypot(dx, dz) * Math.hypot(ox, oz)) < -0.985;
     const width =
       other.edge.width +
-      (other.edge.bridge ? 2 * (SIDEWALK_WIDTH + CURB_WIDTH) : 0) +
+      (other.edge.bridge
+        ? (sharedDeck ? 4 : 2) * (SIDEWALK_WIDTH + CURB_WIDTH)
+        : 0) +
       0.3;
     const tolerance = other.edge.bridge ? 2 : 0.6;
     const length = distance2(other.a, other.b) || 1;
@@ -80,20 +106,30 @@ export function embankmentRailingSpans(
   // У моста секция заканчивается у устоя на любой высоте. У обычной дороги
   // вырезаем проезжую часть лишь тогда, когда она на уровне ограждения.
   let spans: [number, number][] = [[0, 1]];
-  const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
-  const minZ = Math.min(a.z, b.z), maxZ = Math.max(a.z, b.z);
+  const minX = Math.min(a.x, b.x),
+    maxX = Math.max(a.x, b.x);
+  const minZ = Math.min(a.z, b.z),
+    maxZ = Math.max(a.z, b.z);
   for (const other of candidates) {
     if (other.edge.tunnel) continue;
-    const extra = other.edge.width / 2 + (other.edge.bridge ? SIDEWALK_WIDTH + CURB_WIDTH : 0) + 0.4;
-    if (Math.max(other.a.x, other.b.x) + extra < minX ||
-        Math.min(other.a.x, other.b.x) - extra > maxX ||
-        Math.max(other.a.z, other.b.z) + extra < minZ ||
-        Math.min(other.a.z, other.b.z) - extra > maxZ) continue;
+    const extra =
+      other.edge.width / 2 +
+      (other.edge.bridge ? SIDEWALK_WIDTH + CURB_WIDTH : 0) +
+      0.4;
+    if (
+      Math.max(other.a.x, other.b.x) + extra < minX ||
+      Math.min(other.a.x, other.b.x) - extra > maxX ||
+      Math.max(other.a.z, other.b.z) + extra < minZ ||
+      Math.min(other.a.z, other.b.z) - extra > maxZ
+    )
+      continue;
     const length = distance2(other.a, other.b) || 1;
     const mask = roadPrism(
       mixPoint(other.a, other.b, -0.15 / length),
       mixPoint(other.a, other.b, 1 + 0.15 / length),
-      other.edge.width + (other.edge.bridge ? 2 * (SIDEWALK_WIDTH + CURB_WIDTH) : 0) + 0.8,
+      other.edge.width +
+        (other.edge.bridge ? 2 * (SIDEWALK_WIDTH + CURB_WIDTH) : 0) +
+        0.8,
       other.edge.bridge ? 10_000 : 1.5,
       other.edge.bridge ? 10_000 : 1.5,
     );

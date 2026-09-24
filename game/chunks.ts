@@ -1,10 +1,15 @@
 import earcut from 'earcut';
-import { bridgeRailingSpans, embankmentRailingSpans } from './bridge-railings';
+import {
+  bridgeRailingSpans,
+  embankmentRailingSpans,
+  facesWater,
+} from './bridge-railings';
 import { appendParapet } from './parapet';
 import { ASPHALT_COLOUR } from './surface-textures';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
 import { cutSoil } from './terrain-cutouts';
+import { junctionSurfaces } from './junction-surfaces';
 import { blendGroundHeight } from './ground-height';
 import {
   SpatialGrid,
@@ -515,6 +520,7 @@ function roadSurface(
 }
 type Paving = { id: string; segment: Segment; side: number; mask: Prism };
 const isEmbankment = (edge: Pick<Edge, 'name'>) => /набережн/iu.test(edge.name);
+const WATERFRONT_REACH = 60;
 const sidewalkOn = (edge: Edge, side: number) =>
   isEmbankment(edge) ||
   (side < 0 ? edge.sidewalkLeft !== false : edge.sidewalkRight !== false);
@@ -592,6 +598,7 @@ type Index = {
   owned: Map<string, Segment[]>;
   buildings: Map<string, Building[]>;
   junctions: Set<number>;
+  crossings: SpatialGrid<{ points: Point[]; mask: Prism }>;
   spatial: SpatialGrid<Segment>;
   paving: SpatialGrid<Paving>;
   cavities: SpatialGrid<Prism>;
@@ -629,6 +636,7 @@ export function indexWorld(world: World): Index {
       owned: new Map(),
       buildings: new Map(),
       junctions: new Set(),
+      crossings: new SpatialGrid(32, coverage),
       spatial: new SpatialGrid(32, coverage),
       paving: new SpatialGrid(32, coverage),
       cavities: new SpatialGrid(32, coverage),
@@ -727,6 +735,15 @@ export function indexWorld(world: World): Index {
   }
   for (const [id, neighbours] of links)
     if (neighbours.size > 2) index.junctions.add(id);
+  for (const points of junctionSurfaces(world.edges)) {
+    const mask = footprintPrism(
+      points,
+      { x: 0, y: 1, z: 0, w: -points[0].y },
+      0.6,
+      0.6,
+    );
+    index.crossings.add({ points, mask }, mask.bounds);
+  }
   for (const normal of normals.values()) {
     normal.x /= normal.count;
     normal.z /= normal.count;
@@ -850,8 +867,23 @@ export function buildChunk(
     lamps: [],
     breakables: [],
   };
-  const waterLevel = (area: World['areas'][number]) =>
-    Math.min(...area.points.map((p) => p.y)) - 0.4;
+  const waterLevel = (area: World['areas'][number], point: Point) =>
+    (area.railing === 'river'
+      ? sampleElevation(world.elevation, point.x, point.z)
+      : Math.min(...area.points.map((p) => p.y))) - 0.4;
+  const quayHeight = (point: Point) => {
+    let distance = WATERFRONT_REACH,
+      height: number | undefined;
+    for (const s of index.spatial.query(boundsOf([point], WATERFRONT_REACH))) {
+      if (s.edge.bridge || s.edge.tunnel || !isEmbankment(s.edge)) continue;
+      const projected = projectOnSegment(point, s.a, s.b);
+      if (projected.distance < distance) {
+        distance = projected.distance;
+        height = projected.point.y - 0.3;
+      }
+    }
+    return height;
+  };
   // Одинаковая сетка на обоих LOD сохраняет стыки; различается детализация объектов.
   const n = 20,
     terrain = result.terrain;
@@ -889,8 +921,10 @@ export function buildChunk(
             projectOnSegment(p, a, ring[(i + 1) % ring.length]).distance < 18,
         ),
       );
-      if ((inside || bank) && !roadSamples.length)
-        roadHeight = Math.min(roadHeight, waterLevel(area) - 3);
+      const quay = bank && area.railing === 'river' ? quayHeight(p) : undefined;
+      if (quay !== undefined) roadHeight = quay;
+      else if ((inside || bank) && !roadSamples.length)
+        roadHeight = Math.min(roadHeight, waterLevel(area, p) - 3);
     }
     index.ground.set(cacheKey, roadHeight);
     return roadHeight;
@@ -947,6 +981,7 @@ export function buildChunk(
         .map((other) =>
           roadPrism(other.a, other.b, other.edge.width + 0.5, 0.6, 0.6),
         );
+      roads.push(...index.crossings.query(bounds).map((c) => c.mask));
       const tops = [
         ...roads,
         ...candidates.filter((p) => p.id < own.id).map((p) => p.mask),
@@ -1334,54 +1369,71 @@ export function buildChunk(
             },
             mid = mixPoint(aa, bb, 0.5);
           const waters = index.waters
-            .query(boundsOf([aa, bb], 24))
+            .query(boundsOf([aa, bb], WATERFRONT_REACH))
             .filter((area) => area.railing === 'river');
-          const score = Math.min(
-            ...waters.map((area) =>
+          let score = Infinity,
+            shoreDistance = Infinity,
+            shore: Point | undefined;
+          for (const area of waters) {
+            const inside =
               polygonContains(mid, area.points) &&
-              !(area.holes || []).some((hole) => polygonContains(mid, hole))
-                ? 0
-                : Math.min(
-                    ...[area.points, ...(area.holes || [])].flatMap((ring) =>
-                      ring.map(
-                        (p, i) =>
-                          projectOnSegment(mid, p, ring[(i + 1) % ring.length])
-                            .distance,
-                      ),
-                    ),
-                  ),
-            ),
-            Infinity,
-          );
-          return { aa, bb, score };
+              !(area.holes || []).some((hole) => polygonContains(mid, hole));
+            for (const ring of [area.points, ...(area.holes || [])])
+              for (let i = 0; i < ring.length; i++) {
+                const nearest = projectOnSegment(
+                  mid,
+                  ring[i],
+                  ring[(i + 1) % ring.length],
+                );
+                const distance = inside ? 0 : nearest.distance;
+                if (
+                  distance < score ||
+                  (distance === score && nearest.distance < shoreDistance)
+                ) {
+                  score = distance;
+                  shoreDistance = nearest.distance;
+                  shore = nearest.point;
+                }
+              }
+          }
+          return { aa, bb, score, mid, shore };
         })
         .sort((x, y) => x.score - y.score);
       const banks =
-        choices[0]?.score < 24 &&
+        choices[0]?.score < WATERFRONT_REACH &&
         (!choices[1] || choices[1].score - choices[0].score > CURB_WIDTH)
           ? [choices[0]]
           : [];
       for (const bank of banks)
-        for (const span of embankmentRailingSpans(
-          bank.aa,
-          bank.bb,
-          index.spatial.query(boundsOf([bank.aa, bank.bb], 20)),
-        )) {
-          const spanLength = distance2(span.a, span.b),
-            parts = Math.max(1, Math.ceil(spanLength / 10));
-          for (let j = 0; j < parts; j++) {
-            const p = mixPoint(span.a, span.b, j / parts),
-              q = mixPoint(span.a, span.b, (j + 1) / parts),
-              mid = mixPoint(p, q, 0.5);
-            result.breakables.push({
-              kind: 'fence',
-              fenceType: 'embankment',
-              point: mid,
-              heading: Math.atan2(q.x - p.x, q.z - p.z),
-              length: distance2(p, q),
-            });
+        if (
+          bank.shore &&
+          facesWater(
+            bank.mid,
+            bank.shore,
+            edge,
+            index.spatial.query(boundsOf([bank.mid, bank.shore], 1)),
+          )
+        )
+          for (const span of embankmentRailingSpans(
+            bank.aa,
+            bank.bb,
+            index.spatial.query(boundsOf([bank.aa, bank.bb], 20)),
+          )) {
+            const spanLength = distance2(span.a, span.b),
+              parts = Math.max(1, Math.ceil(spanLength / 10));
+            for (let j = 0; j < parts; j++) {
+              const p = mixPoint(span.a, span.b, j / parts),
+                q = mixPoint(span.a, span.b, (j + 1) / parts),
+                mid = mixPoint(p, q, 0.5);
+              result.breakables.push({
+                kind: 'fence',
+                fenceType: 'embankment',
+                point: mid,
+                heading: Math.atan2(q.x - p.x, q.z - p.z),
+                length: distance2(p, q),
+              });
+            }
           }
-        }
     }
   }
   const models = worldLandmarks(world).filter(
@@ -1540,6 +1592,35 @@ export function buildChunk(
     }
   }
   const pavedCuts = new SpatialGrid<Prism>(32);
+  const crossingMasks = index.crossings.query({
+    minX: x0,
+    maxX: x0 + 250,
+    minZ: z0,
+    maxZ: z0 + 250,
+  });
+  for (const crossing of crossingMasks) {
+    const points = clipToChunk(
+      crossing.points.map((p) => ({ ...p, y: p.y - 0.02 })),
+      x0,
+      z0,
+    );
+    sidewalkPolygon(result.road, points, ASPHALT_COLOUR, []);
+  }
+  result.breakables = result.breakables.filter(
+    (b) =>
+      !crossingMasks.some(
+        (c) =>
+          Math.abs(b.point.y - c.points[0].y) < 1.5 &&
+          polygonContains(b.point, c.points),
+      ),
+  );
+  const lampPoles = new Set(
+    result.breakables
+      .filter((b) => b.kind === 'pole')
+      .map((b) => `${b.point.x},${b.point.z}`),
+  );
+  result.lamps = result.lamps.filter((p) => lampPoles.has(`${p.x},${p.z}`));
+  const waterCuts = new SpatialGrid<Prism>(32);
   for (const area of world.areas) {
     const minx = Math.min(...area.points.map((p) => p.x)),
       maxx = Math.max(...area.points.map((p) => p.x)),
@@ -1547,7 +1628,7 @@ export function buildChunk(
       maxz = Math.max(...area.points.map((p) => p.z));
     if (maxx < x0 || minx > x0 + 250 || maxz < z0 || minz > z0 + 250) continue;
     if (area.kind === 'water') {
-      const y = waterLevel(area),
+      const y = waterLevel(area, { x: x0, y: 0, z: z0 }),
         rings = [area.points, ...(area.holes || [])],
         vertices = rings.flat(),
         holes: number[] = [];
@@ -1569,10 +1650,51 @@ export function buildChunk(
             z0,
           ),
           base = result.water.positions.length / 3;
-        for (const p of clipped) result.water.positions.push(p.x, p.y, p.z);
+        for (const p of clipped)
+          result.water.positions.push(p.x, waterLevel(area, p), p.z);
         for (let j = 1; j < clipped.length - 1; j++)
           result.water.indices.push(base, base + j, base + j + 1);
+        if (clipped.length >= 3) {
+          const mask = footprintPrism(
+            clipped,
+            { x: 0, y: 1, z: 0, w: -y },
+            10000,
+            10000,
+          );
+          waterCuts.add(mask, mask.bounds);
+        }
       }
+      if (area.railing === 'river')
+        for (const ring of rings)
+          for (let i = 0; i < ring.length; i++) {
+            const a = ring[i],
+              b = ring[(i + 1) % ring.length];
+            if (
+              Math.max(a.x, b.x) < x0 ||
+              Math.min(a.x, b.x) > x0 + 250 ||
+              Math.max(a.z, b.z) < z0 ||
+              Math.min(a.z, b.z) > z0 + 250
+            )
+              continue;
+            const parts = Math.max(1, Math.ceil(distance2(a, b) / 12.5));
+            for (let j = 0; j < parts; j++) {
+              const p = mixPoint(a, b, j / parts),
+                q = mixPoint(a, b, (j + 1) / parts);
+              const mid = mixPoint(p, q, 0.5);
+              if (tileKey(mid.x, mid.z) !== key) continue;
+              const py = quayHeight(p),
+                qy = quayHeight(q);
+              if (py === undefined || qy === undefined) continue;
+              quad(
+                result.structures,
+                { ...p, y: waterLevel(area, p) - 3 },
+                { ...q, y: waterLevel(area, q) - 3 },
+                { ...q, y: qy },
+                { ...p, y: py },
+                [0.46, 0.44, 0.41],
+              );
+            }
+          }
     } else if (area.kind === 'paved') {
       const rings = [area.points, ...(area.holes || [])],
         vertices = rings.flat(),
@@ -1676,6 +1798,15 @@ export function buildChunk(
       box(result.treeTrunks, tree, 0.55, 7, 0.55, [0.23, 0.24, 0.2]);
   const roadCuts = new SpatialGrid<Prism>(32),
     surfaceCuts = new SpatialGrid<Prism>(32);
+  for (const crossing of crossingMasks) {
+    const mask = footprintPrism(
+      crossing.points,
+      { x: 0, y: 1, z: 0, w: -crossing.points[0].y },
+      0.1,
+      10000,
+    );
+    surfaceCuts.add(mask, mask.bounds);
+  }
   for (const s of segments)
     if (!s.edge.bridge && !s.edge.tunnel) {
       const length = distance2(s.a, s.b) || 1,
@@ -1716,8 +1847,10 @@ export function buildChunk(
   if (lod === 0) cutSoil(result.terrain, pavedCuts);
   // Откос одной улицы не может выступать на асфальт соседней или поперечной.
   // Вырезаем только проезжую часть: широкая маска земли удалила бы сам откос.
-  for (const mesh of [result.terrain, result.shoulders])
+  for (const mesh of [result.terrain, result.shoulders]) {
     cutSoil(mesh, surfaceCuts);
+    cutSoil(mesh, waterCuts);
+  }
   if (segments.some((s) => s.edge.tunnel || s.edge.tunnelApproach)) {
     cutSoil(result.terrain, index.cavities);
     cutSoil(result.shoulders, index.cavities);

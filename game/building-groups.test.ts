@@ -3,7 +3,70 @@ import { buildingGroups, resolveBuildingEnvelopes } from './building-groups';
 import { reduceMapElements } from './map-element-filter';
 import { buildWorld } from './network';
 import type { Building, OSMElement } from './types';
+import fortress from './fixtures/fortress-roofs.osm.json';
 const center = { lat: 0, lon: 0 };
+
+it('сохраняет оболочку под полностью совпадающей неразмеченной крышей', () => {
+  // Arrange
+  const elements = [
+    ...square(1, 0, 0, 100, { building: 'cathedral', height: '12' }),
+    ...square(2, 0, 0, 100, { 'building:part': 'roof' }),
+  ];
+  // Act
+  const world = buildWorld({
+    center,
+    elements,
+    drivingSide: 'right',
+    fetchedAt: 'test',
+    elevation: { width: 2, size: 5600, values: new Float32Array(4) },
+  });
+  // Assert
+  expect(world.buildings.map((b) => b.id)).toEqual([1]);
+  expect(world.buildings[0].height).toBe(12);
+});
+
+it.each([false, true])(
+  'не создаёт случайную крышу поверх размеченных частей, явная высота: %s',
+  (explicit) => {
+    // Arrange
+    const elements = [
+      ...square(1, 0, 0, 100, { building: 'cathedral', height: '12' }),
+      ...square(2, 20, 20, 10, { 'building:part': 'yes', height: '18' }),
+      ...square(3, 20, 20, 10, {
+        'building:part': 'roof',
+        ...(explicit ? { height: '20', min_height: '18' } : {}),
+      }),
+    ];
+    // Act
+    const world = buildWorld({
+      center,
+      elements,
+      drivingSide: 'right',
+      fetchedAt: 'test',
+      elevation: { width: 2, size: 5600, values: new Float32Array(4) },
+    });
+    // Assert
+    expect(world.buildings.some((b) => b.id === 3)).toBe(explicit);
+    expect(world.buildings.some((b) => b.id === 2)).toBe(true);
+  },
+);
+
+it('не создаёт висящую пластину и дублирующие стены на реальных частях Петропавловского собора', () => {
+  // Arrange / Act
+  const world = buildWorld({
+    center: fortress.center,
+    elements: fortress.elements as OSMElement[],
+    elevation: { width: 2, size: 5600, values: new Float32Array(4) },
+    drivingSide: 'right',
+    fetchedAt: 'test',
+  });
+  // Assert
+  expect(
+    world.buildings.filter((b) => [14293057, 14293059].includes(b.id)),
+  ).toEqual([]);
+  expect(world.buildings.find((b) => b.id === 3080925)?.height).toBe(18);
+  expect(world.buildings.find((b) => b.id === 3080921)?.height).toBe(122.5);
+});
 function square(
   id: number,
   x: number,

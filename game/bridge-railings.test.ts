@@ -83,6 +83,41 @@ function fixture(separation = 8, height = 0, layer = 1): World {
     routes: [],
   };
 }
+it('выбирает ближайший берег независимо от начала контура воды', () => {
+  // Arrange
+  const fences = (rotation: number) => {
+    const world = fixture(60);
+    world.edges[0] = {
+      ...world.edges[0],
+      bridge: false,
+      layer: 0,
+      name: 'Набережная',
+    };
+    const points = [
+      { x: 0, y: 0, z: 85 },
+      { x: 200, y: 0, z: 85 },
+      { x: 200, y: 0, z: 240 },
+      { x: 0, y: 0, z: 240 },
+    ];
+    world.areas = [
+      {
+        id: 1,
+        kind: 'water',
+        railing: 'river',
+        points: [...points.slice(rotation), ...points.slice(0, rotation)],
+      },
+    ];
+    return buildChunk(world, '0,0', 0).breakables.filter(
+      (b) => b.fenceType === 'embankment',
+    );
+  };
+  // Act
+  const first = fences(0),
+    rotated = fences(2);
+  // Assert
+  expect(first.length).toBeGreaterThan(0);
+  expect(rotated).toEqual(first);
+});
 it.each(['нет воды', 'далёкая вода', 'неоднозначный берег'])(
   'не угадывает ограждение набережной: %s',
   (state) => {
@@ -132,6 +167,170 @@ it.each([0, 0.8])(
     expect(new Set(points.map((p) => p.z)).size).toBe(4);
   },
 );
+
+it('сохраняет внешний парапет за широким променадом, исключая внутренний проезд', () => {
+  // Arrange
+  const world = fixture(14);
+  world.edges = world.edges.map((e) => ({
+    ...e,
+    bridge: false,
+    layer: 0,
+    name: 'Набережная',
+  }));
+  world.areas = [
+    {
+      id: 1,
+      kind: 'water',
+      railing: 'river',
+      points: [
+        { x: 0, y: 0, z: 128 },
+        { x: 200, y: 0, z: 128 },
+        { x: 200, y: 0, z: 240 },
+        { x: 0, y: 0, z: 240 },
+      ],
+    },
+  ];
+  // Act
+  const fences = buildChunk(world, '0,0', 0).breakables.filter(
+    (p) => p.fenceType === 'embankment',
+  );
+  // Assert
+  expect(fences.length).toBeGreaterThan(0);
+  expect(fences.every((p) => Math.abs(p.point.z - 100.2) < 1e-6)).toBe(true);
+});
+
+it('убирает внутренние парапеты встречных половин общего моста с зазором между OSM-осями', () => {
+  // Arrange
+  const world = fixture(14);
+  world.edges = world.edges.map((e) => ({
+    ...e,
+    width: 10.2,
+    oneWay: true,
+    sidewalkLeft: false,
+    sidewalkRight: false,
+  }));
+  // Act
+  const points = railVertices(buildChunk(world, '0,0', 0).structures);
+  // Assert
+  expect(points.length).toBeGreaterThan(0);
+  expect(points.every((p) => p.z < 80 || p.z > 94)).toBe(true);
+});
+
+it.each([0, 2])(
+  'не оставляет откосы над водой на LOD %s и сохраняет остров',
+  (lod) => {
+    // Arrange
+    const world = fixture();
+    world.edges = [
+      { ...world.edges[0], bridge: false, layer: 0, name: 'Набережная' },
+    ];
+    const ring = (x0: number, z0: number, x1: number, z1: number) => [
+      { x: x0, y: 0, z: z0 },
+      { x: x1, y: 0, z: z0 },
+      { x: x1, y: 0, z: z1 },
+      { x: x0, y: 0, z: z1 },
+    ];
+    world.areas = [
+      {
+        id: 1,
+        kind: 'water',
+        railing: 'river',
+        points: ring(0, 87, 200, 200),
+        holes: [ring(150, 120, 180, 150)],
+      },
+    ];
+    // Act
+    const chunk = buildChunk(world, '0,0', lod);
+    const centers = (mesh: MeshData) =>
+      Array.from({ length: mesh.indices.length / 3 }, (_, i) => {
+        const ids = mesh.indices.slice(i * 3, i * 3 + 3);
+        return {
+          x: ids.reduce((s, id) => s + mesh.positions[id * 3], 0) / 3,
+          z: ids.reduce((s, id) => s + mesh.positions[id * 3 + 2], 0) / 3,
+        };
+      });
+    // Assert
+    for (const mesh of [chunk.terrain, chunk.shoulders])
+      expect(
+        centers(mesh).filter(
+          (p) => p.x > 0 && p.x < 140 && p.z > 87 && p.z < 200,
+        ),
+      ).toEqual([]);
+    expect(
+      centers(chunk.terrain).some(
+        (p) => p.x > 150 && p.x < 180 && p.z > 120 && p.z < 150,
+      ),
+    ).toBe(true);
+  },
+);
+
+it('не опускает местную поверхность реки к далёкой низкой вершине её контура', () => {
+  // Arrange
+  const world = fixture();
+  world.edges = [];
+  world.areas = [
+    {
+      id: 1,
+      kind: 'water',
+      railing: 'river',
+      points: [
+        { x: -1000, y: -40, z: -1000 },
+        { x: 1000, y: 0, z: -1000 },
+        { x: 1000, y: 0, z: 1000 },
+        { x: -1000, y: 0, z: 1000 },
+      ],
+    },
+  ];
+  // Act
+  const meshes = ['0,0', '1,0'].map((key) => buildChunk(world, key, 0).water);
+  // Assert
+  for (const mesh of meshes) {
+    expect(mesh.indices.length).toBeGreaterThan(0);
+    expect(
+      mesh.positions
+        .filter((_, i) => i % 3 === 1)
+        .every((y) => Math.abs(y + 0.4) < 1e-6),
+    ).toBe(true);
+  }
+});
+
+it('сохраняет ровный верх укреплённого берега вместо провала под набережной', () => {
+  // Arrange
+  const world = fixture();
+  world.edges = [
+    { ...world.edges[0], bridge: false, layer: 0, name: 'Набережная' },
+  ];
+  world.areas = [
+    {
+      id: 1,
+      kind: 'water',
+      railing: 'river',
+      points: [
+        { x: 0, y: 0, z: 100 },
+        { x: 200, y: 0, z: 100 },
+        { x: 200, y: 0, z: 240 },
+        { x: 0, y: 0, z: 240 },
+      ],
+    },
+  ];
+  // Act
+  const terrain = buildChunk(world, '0,0', 0).terrain;
+  const coastal = new Set(
+    terrain.indices.filter(
+      (i) =>
+        terrain.positions[i * 3] > 40 &&
+        terrain.positions[i * 3] < 120 &&
+        Math.abs(terrain.positions[i * 3 + 2] - 100) < 1e-5,
+    ),
+  );
+  // Assert
+  expect(coastal.size).toBeGreaterThan(0);
+  expect(
+    [...coastal].every(
+      (i) => Math.abs(terrain.positions[i * 3 + 1] - 5.7) < 1e-5,
+    ),
+  ).toBe(true);
+});
 it.each([false, true])(
   'добавляет ограждение после загрузки берега, остров: %s',
   (island) => {

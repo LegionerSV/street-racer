@@ -82,6 +82,7 @@ export type Edge = {
   sidewalkLeft?: boolean;
   sidewalkRight?: boolean;
   oneWay?: boolean;
+  roundabout?: boolean;
   passage?: boolean;
   bridge: boolean;
   tunnel: boolean;
