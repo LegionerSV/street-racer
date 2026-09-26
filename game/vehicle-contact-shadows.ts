@@ -105,7 +105,10 @@ export class VehicleContactShadows {
           car.root.position.x,
           car.root.position.z,
           car.root.position.y,
-        ) ?? { height: car.root.position.y - 0.83, normal: Vector3.Up() },
+        ) ?? {
+          height: car.root.position.y - car.profile.rideHeight,
+          normal: Vector3.Up(),
+        },
         bias = this.surface ? 0.018 : 0;
       const rawForward = car.root.getDirection(Vector3.Forward()),
         forward = rawForward
@@ -113,22 +116,28 @@ export class VehicleContactShadows {
             contact.normal.scale(Vector3.Dot(rawForward, contact.normal)),
           )
           .normalize();
-      const right = Vector3.Cross(contact.normal, forward).normalize(),
-        rotation = Quaternion.FromLookDirectionLH(forward, contact.normal),
+      const rotation = Quaternion.FromLookDirectionLH(forward, contact.normal),
         center = new Vector3(
           car.root.position.x,
           contact.height + bias,
           car.root.position.z,
         );
       entry.body.position.copyFrom(center);
+      entry.body.scaling.set(
+        car.profile.width / 1.84,
+        1,
+        car.profile.length / 4.34,
+      );
       entry.body.rotationQuaternion!.copyFrom(rotation);
       entry.body.computeWorldMatrix(true);
       entry.wheels.forEach((mesh, index) => {
-        const side = index < 2 ? -1 : 1,
-          end = index % 2 ? -1 : 1;
-        mesh.position.copyFrom(
-          center.add(right.scale(side * 0.88)).add(forward.scale(end * 1.15)),
-        );
+        const wheel = car.wheels[index];
+        wheel.computeWorldMatrix(true);
+        const position = wheel.getAbsolutePosition();
+        const wheelContact =
+          this.surface?.(position.x, position.z, car.root.position.y) ??
+          contact;
+        mesh.position.set(position.x, wheelContact.height + bias, position.z);
         mesh.rotationQuaternion!.copyFrom(rotation);
         mesh.computeWorldMatrix(true);
       });

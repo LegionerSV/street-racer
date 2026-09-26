@@ -1,3 +1,4 @@
+import { updateVehicleEnvironment } from './vehicle-environment';
 import {
   Scene,
   MeshBuilder,
@@ -279,7 +280,8 @@ export class Atmosphere {
       new Color3(0.74, 0.85, 1),
       s.daylight,
     );
-    this.scene.environmentIntensity = 0.25 + s.daylight * 0.65;
+    updateVehicleEnvironment(this.scene, s.daylight, s.clouds);
+    this.scene.environmentIntensity = 0.35 + s.daylight * 0.45;
     this.scene.fogColor = Color3.Lerp(
       new Color3(0.045, 0.065, 0.11),
       new Color3(0.55, 0.64, 0.7),

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ru">
+  <meta charset="utf-8" /><title>Автопарк — варианты</title>
+  <style>
+    body {
+      margin: 0;
+      background: #101820;
+      color: #e7edf0;
+      font: 16px system-ui;
+      padding: 32px;
+    }
+    h1 {
+      font-size: 30px;
+    }
+    p {
+      color: #b5c4ce;
+      max-width: 1000px;
+      line-height: 1.6;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+    article {
+      border: 1px solid #41505b;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #19252e;
+    }
+    h2,
+    article p {
+      margin: 18px;
+    }
+    h2 {
+      font-size: 20px;
+    }
+    svg {
+      width: 100%;
+      display: block;
+    }
+    .tag {
+      color: #8eddbb;
+    }
+    footer {
+      margin-top: 28px;
+    }
+    button {
+      background: #304955;
+      color: white;
+      border: 1px solid #708591;
+      border-radius: 7px;
+      padding: 9px 18px;
+      margin: 8px;
+      cursor: pointer;
+    }
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+  <h1>Знакомые машины на знакомых улицах</h1>
+  <p>
+    Концептуальный мок перед реализацией. Один и тот же седан в потоке:
+    различаются характер поверхности и степень детализации. Без эмблем и точного
+    копирования кузовов. Это эскиз направления, не снимок игрового рендера.
+  </p>
+  <div>
+    <button onclick="weather('day')">День</button
+    ><button onclick="weather('rain')">Пасмурно / мокро</button
+    ><button onclick="weather('night')">Ночь</button>
+  </div>
+  <div class="grid" id="grid"></div>
+  <footer>
+    <p>
+      Автопарк: компактные седаны, лифтбек, хэтчбек, универсал, четыре семейства
+      кроссоверов, фургон и два грузовика. У каждой машины свои свесы, колёсная
+      база, линия остекления и светотехника.
+    </p>
+    <p>
+      Опора: на ровной дороге все колёса касаются покрытия; на уклоне кузов
+      наклонён вместе с дорогой; при неполных данных используется высота дороги;
+      после удара машина возвращается к покрытию. Ночь меняет свет и отражения,
+      а не цвет краски.
+    </p>
+  </footer>
+  <script>
+    const variants = [
+      [
+        'A · Спокойный реализм',
+        'Мой голос за A: читаемые силуэты, умеренный лак, тёмные шины, отражения неба и городских масс. Общая карта отражений, без шести дополнительных рендеров на каждую машину.',
+      ],
+      [
+        'B · Глянцевый автосалон',
+        'Резкие блики и яркий лак. Силуэт читается, но в обычном потоке машины выглядят слишком новыми. Цена: та же геометрия и число проходов.',
+      ],
+      [
+        'C · Матовый городской',
+        'Мягкие блики и приглушённые материалы. Хорош для старых машин и коммерческого транспорта; на спортивных кузовах теряется объём. Цена: та же геометрия.',
+      ],
+    ];
+    function car(x, y, scale, color, mode, hatch = false) {
+      return `<g transform="translate(${x} ${y}) scale(${scale})"><ellipse cx="175" cy="124" rx="159" ry="15" fill="#000" opacity=".45"/><path d="M18 102 L27 73 L88 61 L126 25 Q158 15 207 26 L254 60 L310 73 L330 99 L327 115 L20 115Z" fill="${color}" stroke="#17232a" stroke-width="2"/><path d="M96 61 L133 30 L160 27 L159 61Z M166 27 L203 30 L241 61 L166 61Z" fill="url(#glass)"/><path d="M27 77 Q155 62 309 78" fill="none" stroke="${mode === 1 ? '#fff' : '#b9d1d9'}" stroke-width="${mode === 1 ? 7 : 2}" opacity="${mode === 2 ? 0.2 : 0.65}"/><path d="M164 66 L164 110 M249 65 L258 107" stroke="#263e49" fill="none"/><path d="M24 90 L54 86 L53 94 L24 97" fill="#d94942"/><path d="M292 84 L317 87 L323 95 L292 94" fill="#eaf5fd"/><path d="M22 109 H326" stroke="#243239" stroke-width="9"/><path d="M171 70 h15 M115 70 h15" stroke="#c1c9cb" stroke-width="3"/><g fill="#11171b" stroke="#43505a" stroke-width="2"><circle cx="78" cy="110" r="26"/><circle cx="267" cy="110" r="26"/></g><g fill="#9ea9af" stroke="#343e43" stroke-width="7"><circle cx="78" cy="110" r="16"/><circle cx="267" cy="110" r="16"/></g><g fill="#394349"><circle cx="78" cy="110" r="5"/><circle cx="267" cy="110" r="5"/></g>${mode === 1 ? '<path d="M40 80 Q165 69 300 81" stroke="white" stroke-width="3" fill="none"/>' : ''}</g>`;
+    }
+    grid.innerHTML = variants
+      .map(
+        ([title, desc], i) =>
+          `<article><svg viewBox="0 0 430 340"><defs><linearGradient id="glass" x2="0" y2="1"><stop stop-color="#99aeb8"/><stop offset=".5" stop-color="#425d6d"/><stop offset="1" stop-color="#172932"/></linearGradient></defs><rect class="sky" width="430" height="340" fill="#9eafbb"/><path d="M0 20H82V155H0 M90 40H194V155H90 M200 0H310V155H200 M317 55H430V155H317" fill="#6d787d"/><path d="M18 50H65 M18 80H65 M107 69H173 M221 29H290 M221 63H290 M340 80H410" stroke="#acb7ba" stroke-width="16"/><path d="M0 157H430V340H0" class="road" fill="#414e55"/><path d="M0 221H430 M0 329H430" stroke="#a7abac" stroke-width="2"/><path d="M0 270H45 M120 270H187 M260 270H330 M398 270H430" stroke="#c8c5b5" stroke-width="4"/>${car(192, 137, 0.59, '#82908b', i)}${car(12, 196, 1.14, i === 2 ? '#536e7b' : '#3a7897', i)}</svg><h2>${title}</h2><p>${desc}</p></article>`,
+      )
+      .join('');
+    function weather(mode) {
+      document
+        .querySelectorAll('.sky')
+        .forEach((e) =>
+          e.setAttribute(
+            'fill',
+            mode === 'night'
+              ? '#172637'
+              : mode === 'rain'
+                ? '#788890'
+                : '#9eafbb',
+          ),
+        );
+      document
+        .querySelectorAll('.road')
+        .forEach((e) =>
+          e.setAttribute(
+            'fill',
+            mode === 'night'
+              ? '#162129'
+              : mode === 'rain'
+                ? '#293b47'
+                : '#414e55',
+          ),
+        );
+      document
+        .querySelectorAll('svg')
+        .forEach(
+          (e) =>
+            (e.style.filter =
+              mode === 'night'
+                ? 'brightness(.65)'
+                : mode === 'rain'
+                  ? 'saturate(.65)'
+                  : 'none'),
+        );
+    }
+  </script>
+</html>

@@ -220,7 +220,9 @@ export class VehicleLighting {
         entry.shadow.getShadowMap()!.renderList = [];
         return;
       }
-      const headlights = car.lamps.filter((m) => m.name.includes('headlight'));
+      const headlights = car.lamps.filter(
+        (m) => m.name.includes('headlight') && !m.name.includes('wrap'),
+      );
       // Источник принадлежит пулу: выгрузка машины не должна уничтожить его.
       entry.light.position.set(
         0,

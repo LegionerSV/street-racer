@@ -1,3 +1,6 @@
+import { trafficAppearance, VEHICLE_PROFILES } from './vehicle-profiles';
+import { vehicleGroundPose, settleVehicleWheels } from './vehicle-grounding';
+import { worldSurfaceSampler } from './surface-contact';
 import { RACER_COLOURS } from './race-map-markers';
 import {
   PhysicsAggregate,
@@ -21,12 +24,7 @@ import { clamp, distance2, pathLengths, pointAt, seeded } from './geo';
 import { laneOffsets } from './lanes';
 import { signalPhase } from './simulation';
 import { smoothPath, samplePath, type DrivingPath } from './driving-path';
-import {
-  createTrafficCar,
-  setCarLights,
-  type CarVisual,
-  type CarKind,
-} from './visuals';
+import { createTrafficCar, setCarLights, type CarVisual } from './visuals';
 import { edgeById, edgeStableId } from './road-graph';
 import {
   createRacerTraits,
@@ -56,6 +54,7 @@ type Agent = {
   point: Point;
   heading: number;
   pitch?: number;
+  roll?: number;
   stuck: number;
   visual?: CarVisual;
   body?: PhysicsAggregate;
@@ -387,7 +386,25 @@ export class Traffic {
       z: s.point.z - Math.sin(s.heading) * agent.laneOffset,
     };
     agent.heading = s.heading;
-    agent.pitch = roadPitch(plan.path.points, d, plan.path.stations);
+    const profile = this.profile(agent);
+    const edge = edgeById(this.world, agent.edge)!;
+    const roadY = pointAt(edge.points, pathLengths(edge.points), agent.distance)
+      .point.y;
+    const pose = vehicleGroundPose(
+      profile,
+      { ...agent.point, y: roadY },
+      agent.heading,
+      worldSurfaceSampler(
+        this.world,
+        agent.point.x,
+        agent.point.z,
+        roadY + 0.8,
+        profile.length / 2 + 1,
+      ),
+    );
+    agent.point.y = pose.y;
+    agent.pitch = pose.pitch;
+    agent.roll = pose.roll;
     if (agent.race) {
       const r = agent.race,
         graphLength = r.route.edges.reduce(
@@ -402,24 +419,39 @@ export class Traffic {
       );
     }
   }
+  private profile(a: Agent) {
+    return (
+      a.visual?.profile ??
+      VEHICLE_PROFILES[
+        a.race
+          ? 'sport-coupe'
+          : trafficAppearance(
+              a.id,
+              this.world.center.lat > 58 ? 'spb' : 'moscow',
+            ).model
+      ]
+    );
+  }
   private show(a: Agent) {
     if (a.visual) return;
-    const colors = a.race
-      ? RACER_COLOURS
-      : ['#657b88', '#c6cac6', '#43565c', '#824b48', '#b1a783', '#4e6f6b'];
-    const kinds: CarKind[] = ['sedan', 'hatch', 'suv', 'sedan', 'van', 'hatch'];
+    const appearance = trafficAppearance(
+      a.id,
+      this.world.center.lat > 58 ? 'spb' : 'moscow',
+    );
     a.visual = createTrafficCar(
       this.scene,
-      colors[a.id % colors.length],
+      a.race ? RACER_COLOURS[a.id % RACER_COLOURS.length] : appearance.color,
       'traffic-' + a.id,
-      a.race ? 'sport' : kinds[a.id % kinds.length],
+      a.race ? 'sport' : appearance.kind,
       !!a.race,
+      a.race ? 'sport-coupe' : appearance.model,
+      a.race ? 'standard' : appearance.finish,
     );
     a.visual.root.position.copyFromFloats(a.point.x, a.point.y, a.point.z);
     a.visual.root.rotationQuaternion = Quaternion.RotationYawPitchRoll(
       a.heading,
       a.pitch || 0,
-      0,
+      a.roll || 0,
     );
     a.body = new PhysicsAggregate(
       a.visual.root,
@@ -574,8 +606,7 @@ export class Traffic {
     }));
     const neighborIndex = new TrafficNeighborIndex(snapshot);
     for (const a of this.agents) {
-      const far =
-        !a.race && !a.dynamic && distance2(a.point, player) > 245;
+      const far = !a.race && !a.dynamic && distance2(a.point, player) > 245;
       const step = trafficStep(frameDt, a.farElapsed || 0, far);
       a.farElapsed = step.pending;
       if (!step.dt) continue;
@@ -894,30 +925,64 @@ export class Traffic {
         if (a.dynamic) {
           if (stoppedAtSignal && !a.impact)
             body.setLinearVelocity(Vector3.Zero());
+          const profile = this.profile(a);
+          const roadY = a.point.y - profile.rideHeight;
+          const contact = vehicleGroundPose(
+            profile,
+            { x: mesh.position.x, y: roadY, z: mesh.position.z },
+            a.heading,
+            worldSurfaceSampler(
+              this.world,
+              mesh.position.x,
+              mesh.position.z,
+              roadY + 0.8,
+              profile.length / 2 + 1,
+            ),
+          );
           const velocity = body.getLinearVelocity(),
+            centerOfMass = Vector3.TransformCoordinates(
+              new Vector3(0, -0.38, 0),
+              mesh.computeWorldMatrix(true),
+            ),
             error = new Vector3(
               a.point.x - mesh.position.x,
-              a.point.y - mesh.position.y,
+              contact.y - mesh.position.y,
               a.point.z - mesh.position.z,
             );
           body.applyForce(
             new Vector3(
               0,
-              clamp(error.y * 32000 - velocity.y * 8000, -24000, 24000),
+              clamp(
+                error.y * 48000 -
+                  (velocity.y +
+                    (velocity.x * Math.sin(a.heading) +
+                      velocity.z * Math.cos(a.heading)) *
+                      Math.tan(contact.pitch)) *
+                    11000,
+                -36000,
+                36000,
+              ),
               0,
             ),
-            mesh.position,
+            centerOfMass,
           );
           const angular = body.getAngularVelocity(),
             up = mesh.getDirection(Vector3.Up()),
-            upright = Vector3.Cross(up, Vector3.Up()).scale(
-              a.impact ? 1200 : 5000,
-            );
+            upright = Vector3.Cross(
+              up,
+              Vector3.Up().applyRotationQuaternion(
+                Quaternion.RotationYawPitchRoll(
+                  a.heading,
+                  contact.pitch,
+                  contact.roll,
+                ),
+              ),
+            ).scale(a.impact ? 1200 : 120000);
           body.applyTorque(
             new Vector3(
-              upright.x - angular.x * 1700,
+              upright.x - angular.x * (a.impact ? 1700 : 16000),
               0,
-              upright.z - angular.z * 1400,
+              upright.z - angular.z * (a.impact ? 1400 : 10000),
             ),
           );
           if (!a.impact && !(blockedByPlayer && !a.race)) {
@@ -931,7 +996,8 @@ export class Traffic {
                 .scale(2200)
                 .add(new Vector3(error.x, 0, error.z).scale(900));
             if (force.length() > 14000) force.normalize().scaleInPlace(14000);
-            body.applyForce(force, mesh.position);
+            force.y = 0;
+            body.applyForce(force, centerOfMass);
             const f = mesh.getDirection(Vector3.Forward()),
               yaw = Math.atan2(f.x, f.z),
               angle = Math.atan2(
@@ -962,12 +1028,26 @@ export class Traffic {
         if (!a.dynamic)
           body.setTargetTransform(
             new Vector3(a.point.x, a.point.y, a.point.z),
-            Quaternion.RotationYawPitchRoll(a.heading, a.pitch || 0, 0),
+            Quaternion.RotationYawPitchRoll(
+              a.heading,
+              a.pitch || 0,
+              a.roll || 0,
+            ),
           );
+        settleVehicleWheels(
+          a.visual!,
+          worldSurfaceSampler(
+            this.world,
+            mesh.position.x,
+            mesh.position.z,
+            a.point.y - a.visual!.profile.rideHeight + 0.8,
+            a.visual!.profile.length / 2 + 1,
+          ),
+        );
         for (const [wheelIndex, wheel] of a.visual!.wheels.entries()) {
           wheel.rotation.y = wheelIndex < 2 ? a.turn! * 0.22 : 0;
           for (const child of wheel.getChildMeshes())
-            child.rotation.x += (a.speed / 0.37) * dt;
+            child.rotation.x += (a.speed / a.visual!.profile.wheelRadius) * dt;
         }
         setCarLights(
           a.visual!,

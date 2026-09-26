@@ -1,0 +1,107 @@
+{
+  "executive-sedan": {
+    "image": "https://files2.aster.kz/market/aster/2024-9/276432_d45e0c0c-c944-490a-82e2-c085fa74dc71_L_resolution2085x1173.webp",
+    "source": "https://aster.kz/catalog/276432",
+    "color": "#252c37"
+  },
+  "trail-suv": {
+    "image": "https://images.clickdealer.co.uk/vehicles/5779/5779043/large2/135532756.jpg",
+    "source": "https://www.cargem.co.uk/used-nissan-x-trail-beckton-london-5779043",
+    "color": "#e0e0dc"
+  },
+  "angular-suv": {
+    "image": "https://www.grupocompostela.com/Archivos/Fotos/Coches_fotos/toyota-rav_4-2016-nuevo-santiago-compostela-coruna-080216_15-145492887399.jpg",
+    "source": "https://www.grupocompostela.com/coches/2338/toyota-rav-4-nuevo-santiago-coruna/",
+    "color": "#e3e3df"
+  },
+  "compact-suv": {
+    "image": "https://images.caricos.com/n/nissan/2014_nissan_qashqai/images/1920x1080/2014_nissan_qashqai_87_1920x1080.jpg",
+    "source": "https://www.caricos.com/cars/n/nissan/2014_nissan_qashqai/images/87.html",
+    "color": "#154ea0"
+  },
+  "budget-sedan": {
+    "image": "https://carango.nyc3.digitaloceanspaces.com/images/veiculos/2024/08/renault-logan-2012-1-0-authentique-16v-flex-4p-manual-flex-125421-ur1e63.jpg",
+    "source": "https://carango.com.br/veiculo/renault-logan-2012-1-0-authentique-16v-flex-4p-manual-flex-125421",
+    "color": "#b6b8b6"
+  },
+  "utility-suv": {
+    "image": "https://www.static-src.com/wcsstore/Indraprastha/images/catalog/full/118/MTA-59569768/renault_renault_duster_1-5_dci_4x4_mt_2015_putih_full03_q4u57ql9.jpg",
+    "source": "https://www.blibli.com/p/renault-duster-1-5-dci-4x4-mt-2015-putih/ps--CAA-70036-03569",
+    "color": "#e5e4de"
+  },
+  "touring-suv": {
+    "image": "https://carsales.pxcrush.net/carsales/car/dealer/cbf6e6250be2cf41a9035dd9bc9a5a0b.jpg?pxc_bgtype=self&pxc_method=fitfill&pxc_size=720%2C480",
+    "source": "https://www.carsales.com.au/cars/2016/mitsubishi/outlander/western-australia-state/",
+    "color": "#e5e5e0"
+  },
+  "short-suv": {
+    "image": "https://galaxytoyotautrust.com/cdn/shop/files/Creta2_84a1cf79-f713-4fb7-8eac-9883d746d251.jpg?v=1767000695&width=1440",
+    "source": "https://galaxytoyotautrust.com/products/hyundai-creta-1-6-crdi-sx-2017-4978",
+    "color": "#deded8"
+  },
+  "family-wagon": {
+    "image": "https://files2.aster.kz/market/aster/2026-4/606606_7dfb81c3-057c-4785-bb6c-a28f47b93e74_S_resolution810x495.webp",
+    "source": "https://aster.kz/cars/used/astana/vaz/largus",
+    "color": "#25272b"
+  },
+  "domestic-sedan": {
+    "image": "https://www.motor16.com/images/4000/4210/4210_lada-vesta-sedan-2016-imagenes-exterior_1_1.jpg",
+    "source": "https://www.motor16.com/galerias/imagenes-del-lada-vesta-sedan-2016/",
+    "color": "#b73d18"
+  },
+  "metro-suv": {
+    "image": "https://editorial.pxcrush.net/carsales/general/editorial/210616_haval_jolion_29.jpg?height=682&width=1024",
+    "source": "https://www.carsales.com.au/editorial/details/haval-jolion-2021-review-130761/",
+    "color": "#e3e3df"
+  },
+  "coupe-suv": {
+    "image": "https://www.carspin.ru/geely/2020-geely-coolray-sx11-1-gen-9.jpg",
+    "source": "https://www.carspin.ru/2020-geely-coolray-sx11-1-5-amt-flagship-sport-1-gen/",
+    "color": "#e5e5df"
+  },
+  "delivery-van": {
+    "image": "https://cfwww.hgregoire.com/photos/by-size/616567/3648x2048/7020761.JPG",
+    "source": "https://www.hgregoire.com/auto-usage/ford-transit-2015-a-vendre-82894070",
+    "color": "#e5e4df"
+  },
+  "box-truck": {
+    "image": "https://autogaz-ural.ru/public/gallery/549-wtgn4hcq4mmfvtrdvmbut32.png",
+    "source": "https://autogaz-ural.ru/models/avtomobili-gazon-next/izotermicheskiy-furgon-gazon-next.html",
+    "color": "#e5e5e1"
+  },
+  "city-sedan": {
+    "image": "https://s9.auto.drom.ru/photo/v2/fAdalplDPUa-TYcZoghlxHPDpnfrl9OXCAqDPUBjHPy-kyZfvWH63lTBsiPpi9ARHaxs3G_DhOK5ot1t/gen1200.jpg",
+    "source": "https://auto.drom.ru/moscow/kia/rio/156506996.html",
+    "color": "#939ca8"
+  },
+  "square-suv": {
+    "image": "https://www.motownindia.com/images/Auto-Pit-Cars/1000-2-New-2017-Volkswagen-Tiguan-India.jpg",
+    "source": "https://www.motownindia.com/Bureau/Auto-Pit-Cars/1000/Volkswagen-India-launching-Tiguan-in-May-2017-Joshua-David-Luther",
+    "color": "#e94b18"
+  },
+  "stream-sedan": {
+    "image": "https://files2.aster.kz/market/aster/2023-7/258057_da051485-f8b9-412d-96f1-9b131b28e9dc_L_resolution2238x1173.webp",
+    "source": "https://aster.kz/catalog/258057",
+    "color": "#195db9"
+  },
+  "classic-sedan": {
+    "image": "https://images.coches.com/_vn_/volkswagen/Polo-Sedan-2015/volkswagen_polo-sedan-2015_r10.jpg?func=fit&h=508&w=768",
+    "source": "https://www.coches.com/noticias/fotos-de-coches/volkswagen-polo-sedan-2015/231460",
+    "color": "#998e7b"
+  },
+  "urban-hatch": {
+    "image": "https://cdn.justauto.com.au/ad-assets%2F22290--913457%2Ffield_images%2F22290_913457_13.jpg",
+    "source": "https://www.justauto.com.au/new-and-used-cars-for-sale/2012-ford-focus-lw-mkii-titanium-sports-automatic-dual-clutch-hatchback/JACFD5310527",
+    "color": "#555862"
+  },
+  "long-liftback": {
+    "image": "https://imgd-ct.aeplcdn.com/1056x660/cw/ec/21023/Skoda-Octavia-Right-Side-77811.jpg?q=80&v=201711021421",
+    "source": "https://www.cartrade.com/skoda-cars/octavia-2015-2017/images/octavia-2015-2017-exterior-77810/",
+    "color": "#b9bec1"
+  },
+  "small-truck": {
+    "image": "https://autogpbl.ru/upload/resize_cache/1366x768/creonit_automarket/993/qszjg21594tu9h4g96d6f79e1zsfq31q.png",
+    "source": "https://autogpbl.ru/lizing-gruzovoj-tekhniki/gaz/gazelle-next-4-6-bortovoy-evrobort/153446/",
+    "color": "#e6e6e2"
+  }
+}

@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ru">
+  <meta charset="utf-8" /><title>Автопарк — игровой рендер</title>
+  <style>
+    body {
+      margin: 0;
+      background: #182028;
+      color: #eee;
+      font: 15px system-ui;
+    }
+    header {
+      padding: 16px 24px;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 12px;
+    }
+    button,
+    select {
+      font: inherit;
+      background: #2a3c48;
+      color: #eee;
+      border: 1px solid #607480;
+      padding: 7px 12px;
+      border-radius: 5px;
+      margin: 4px;
+    }
+    canvas {
+      width: 100%;
+      height: 75vh;
+      display: block;
+      touch-action: none;
+    }
+    p {
+      margin: 8px 4px;
+      color: #adbdc8;
+    }
+    .comparison {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      background: #e1e5e7;
+      color: #24323d;
+      padding: 16px;
+    }
+    .comparison h2 {
+      font-size: 16px;
+      margin: 0 0 10px;
+    }
+    .comparison img {
+      width: 100%;
+      height: 370px;
+      object-fit: contain;
+      background: white;
+    }
+    .comparison canvas {
+      height: 370px;
+    }
+    .comparison p {
+      color: #45535b;
+      font-size: 12px;
+    }
+    @media (max-width: 900px) {
+      .comparison {
+        grid-template-columns: 1fr;
+      }
+      .comparison img,
+      .comparison canvas {
+        height: 290px;
+      }
+    }
+    .reference-frame {
+      height: 370px;
+      overflow: hidden;
+      position: relative;
+      background: #e1e5e7;
+    }
+    .reference-frame #reference {
+      position: absolute;
+      max-width: none;
+      height: auto;
+      top: 50%;
+      object-fit: initial;
+    }
+    @media (max-width: 900px) {
+      .reference-frame {
+        height: 290px;
+      }
+    }
+  </style>
+  <header>
+    <h1>Автопарк · реальные игровые модели</h1>
+    <select id="model" aria-label="Модель"></select
+    ><button id="finish">Покрытие: спокойный реализм</button
+    ><button id="day">День</button><button id="overcast">Пасмурно</button
+    ><button id="night">Ночь</button><button id="rotate">Повернуть</button
+    ><button id="side">Строго сбоку</button
+    ><button id="perspective">Три четверти</button>
+    <p id="caption"></p>
+    <p>
+      Перетаскивание — вращение камеры, колесо — приближение. Названия
+      прототипов используются только здесь для проверки силуэтов.
+    </p>
+  </header>
+  <div class="comparison">
+    <section>
+      <h2>Фотография для сравнения</h2>
+      <div class="reference-frame">
+        <img id="reference" alt="Фотореференс в боковом ракурсе" />
+      </div>
+      <p id="source"></p>
+    </section>
+    <section>
+      <h2>Игровая модель</h2>
+      <canvas id="render"></canvas>
+    </section>
+  </div>
+  <script type="module">
+    import {
+      Engine,
+      Scene,
+      ArcRotateCamera,
+      Vector3,
+      Color3,
+      Color4,
+      HemisphericLight,
+      DirectionalLight,
+      MeshBuilder,
+      StandardMaterial,
+      ShadowGenerator,
+      Camera,
+    } from '@babylonjs/core';
+    import { createCar, makeEnvironment } from '../game/visuals.ts';
+    import { updateVehicleEnvironment } from '../game/vehicle-environment.ts';
+    import references from './vehicle-references.json';
+    import { VEHICLE_PROFILES } from '../game/vehicle-profiles.ts';
+    const engine = new Engine(document.querySelector('canvas'), true),
+      scene = new Scene(engine);
+    makeEnvironment(scene);
+    const camera = new ArcRotateCamera(
+      'camera',
+      -1.03,
+      1.18,
+      8,
+      new Vector3(0, 0.7, 0),
+      scene,
+    );
+    camera.attachControl(document.querySelector('canvas'), true);
+    camera.lowerRadiusLimit = 3;
+    camera.upperRadiusLimit = 18;
+    const ambient = new HemisphericLight('sky', Vector3.Up(), scene);
+    ambient.intensity = 0.75;
+    ambient.groundColor = new Color3(0.18, 0.16, 0.14);
+    const sun = new DirectionalLight('sun', new Vector3(0.5, -1, 0.4), scene);
+    sun.intensity = 2.2;
+    sun.position.set(8, 14, -8);
+    const shadow = new ShadowGenerator(1024, sun);
+    shadow.useBlurExponentialShadowMap = true;
+    shadow.blurKernel = 24;
+    shadow.bias = 0.002;
+    shadow.normalBias = 0.025;
+    const road = MeshBuilder.CreateGround(
+        'road',
+        { width: 120, height: 120 },
+        scene,
+      ),
+      asphalt = new StandardMaterial('asphalt', scene);
+    asphalt.diffuseColor = new Color3(0.18, 0.2, 0.21);
+    asphalt.specularColor.setAll(0.03);
+    road.material = asphalt;
+    road.receiveShadows = true;
+    const line = new StandardMaterial('line', scene);
+    line.diffuseColor = new Color3(0.7, 0.69, 0.6);
+    for (let z = -30; z < 30; z += 6) {
+      const m = MeshBuilder.CreateBox(
+        'mark',
+        { width: 0.12, height: 0.01, depth: 3 },
+        scene,
+      );
+      m.position.set(2.9, 0.007, z);
+      m.material = line;
+    }
+    const buildings = new StandardMaterial('buildings', scene);
+    buildings.diffuseColor = new Color3(0.4, 0.43, 0.44);
+    for (let i = 0; i < 12; i++) {
+      const m = MeshBuilder.CreateBox(
+        'building',
+        { width: 6, height: 5 + (i % 3) * 3, depth: 6 },
+        scene,
+      );
+      m.position.set(
+        (i < 6 ? -1 : 1) * 14,
+        2.5 + (i % 3) * 1.5,
+        (i % 6) * 9 - 25,
+      );
+      m.material = buildings;
+      shadow.addShadowCaster(m);
+      m.setEnabled(false);
+    }
+    const select = document.querySelector('#model');
+    for (const [id, p] of Object.entries(VEHICLE_PROFILES)) {
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = p.label + ' · ' + p.reference;
+      select.append(o);
+    }
+    select.value =
+      sessionStorage.getItem('vehicle-showroom-model') || 'city-sedan';
+    let car,
+      aged = false;
+    function rebuild() {
+      car?.dispose();
+      const p = VEHICLE_PROFILES[select.value];
+      car = createCar(
+        scene,
+        references[select.value]?.color || '#268fba',
+        'showroom',
+        p.kind,
+        false,
+        select.value,
+        aged ? 'aged' : 'standard',
+      );
+      car.root.position.y = p.rideHeight;
+      const ref = references[select.value];
+      document.querySelector('#reference').src = ref?.image || '';
+      Object.assign(
+        document.querySelector('#reference').style,
+        select.value === 'city-sedan'
+          ? { width: '124.7%', left: '-14.9%', transform: 'translateY(-56.2%)' }
+          : select.value === 'square-suv'
+            ? {
+                width: '107.1%',
+                left: '-5.6%',
+                transform: 'translateY(-50.8%)',
+              }
+            : { width: '100%', left: '0', transform: 'translateY(-50%)' },
+      );
+      document.querySelector('#reference').style.display = ref
+        ? 'block'
+        : 'none';
+      document.querySelector('#source').innerHTML = ref
+        ? `<a href="${ref.source}" target="_blank">${p.reference} — источник фотографии</a>`
+        : 'Для этой модели отдельное сравнение ещё не подготовлено.';
+      shadow.getShadowMap().renderList = car.root
+        .getChildMeshes()
+        .filter((m) => !m.name.includes('light'));
+      document.querySelector('#caption').textContent =
+        `${p.label} · ${p.length} × ${p.width} × ${p.height} м · база ${p.wheelbase} м · ${car.root.getChildMeshes().length} деталей после объединения`;
+    }
+    select.onchange = () => {
+      sessionStorage.setItem('vehicle-showroom-model', select.value);
+      rebuild();
+      document.querySelector('#side').click();
+    };
+    document.querySelector('#finish').onclick = () => {
+      aged = !aged;
+      document.querySelector('#finish').textContent =
+        'Покрытие: ' + (aged ? 'матовый городской' : 'спокойный реализм');
+      rebuild();
+    };
+    document.querySelector('#day').onclick = () => {
+      updateVehicleEnvironment(scene, 1, 0);
+      sun.intensity = 2.2;
+      ambient.intensity = 0.75;
+      scene.environmentIntensity = 0.8;
+      scene.clearColor = new Color4(0.62, 0.71, 0.78, 1);
+    };
+    document.querySelector('#overcast').onclick = () => {
+      updateVehicleEnvironment(scene, 1, 1);
+      sun.intensity = 0.35;
+      ambient.intensity = 0.8;
+      scene.environmentIntensity = 0.65;
+      scene.clearColor = new Color4(0.45, 0.51, 0.55, 1);
+    };
+    document.querySelector('#night').onclick = () => {
+      updateVehicleEnvironment(scene, 0, 0);
+      sun.intensity = 0.1;
+      ambient.intensity = 0.1;
+      scene.environmentIntensity = 0.12;
+      scene.clearColor = new Color4(0.015, 0.025, 0.04, 1);
+    };
+    document.querySelector('#rotate').onclick = () =>
+      (camera.alpha += Math.PI / 2);
+    document.querySelector('#side').onclick = () => {
+      camera.mode = Camera.ORTHOGRAPHIC_CAMERA;
+      camera.alpha = Math.PI;
+      camera.beta = Math.PI / 2;
+      camera.target.set(0, VEHICLE_PROFILES[select.value].height / 2, 0);
+      const halfWidth = VEHICLE_PROFILES[select.value].length * 0.61;
+      camera.orthoLeft = -halfWidth;
+      camera.orthoRight = halfWidth;
+      const halfHeight =
+        (halfWidth * engine.getRenderHeight()) / engine.getRenderWidth();
+      camera.orthoTop = halfHeight;
+      camera.orthoBottom = -halfHeight;
+    };
+    document.querySelector('#perspective').onclick = () => {
+      camera.mode = Camera.PERSPECTIVE_CAMERA;
+      camera.alpha = 0.9;
+      camera.beta = 1.35;
+      camera.radius = VEHICLE_PROFILES[select.value].length * 1.3;
+    };
+    rebuild();
+    document.querySelector('#day').click();
+    document.querySelector('#side').click();
+    engine.runRenderLoop(() => scene.render());
+    window.addEventListener('resize', () => {
+      engine.resize();
+      if (camera.mode === Camera.ORTHOGRAPHIC_CAMERA)
+        document.querySelector('#side').click();
+    });
+  </script>
+</html>

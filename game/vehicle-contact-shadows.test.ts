@@ -17,7 +17,7 @@ it('оставляет видимую мягкую тень под машино�
     // Assert
     expect(mesh.isEnabled()).toBe(true);
     expect(mesh.position.x).toBe(4);
-    expect(mesh.position.y).toBeCloseTo(0.07);
+    expect(mesh.position.y).toBeCloseTo(0.9 - player.profile.rideHeight);
     expect(mesh.position.z).toBe(12);
     expect(mesh.material!.alpha).toBeGreaterThan(0.3);
     shadows.update(player, [], 0);
