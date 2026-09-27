@@ -4,6 +4,8 @@ import {
   chooseTrafficSpawn,
   laneSpawnClearance,
   prepareTrafficSpawnIndex,
+  trafficEntryFrontier,
+  trafficEntryAllowed,
 } from './traffic-spawn';
 import type { Edge } from './types';
 const road = (way: number, x: number, name = 'Главная'): Edge =>
@@ -22,6 +24,31 @@ const road = (way: number, x: number, name = 'Главная'): Edge =>
     from: way,
     to: way + 1,
   }) as Edge;
+
+it('новая машина появляется за видимым потоком, а не в промежутке перед игроком', () => {
+  // Arrange
+  const player = { x: 0, y: 0, z: 0 };
+  const visible = [{ x: 0, y: 0, z: 320 }, { x: 0, y: 0, z: 180 }];
+  const frontier = trafficEntryFrontier(player, 0, visible, false);
+  // Act / Assert
+  expect(frontier).toBe(345);
+  expect(trafficEntryAllowed({ x: 0, y: 0, z: 200 }, player, 0, frontier)).toBe(false);
+  expect(trafficEntryAllowed({ x: 0, y: 0, z: 340 }, player, 0, frontier)).toBe(false);
+  expect(trafficEntryAllowed({ x: 0, y: 0, z: 350 }, player, 0, frontier)).toBe(true);
+  expect(trafficEntryAllowed({ x: 0, y: 0, z: -100 }, player, 0, frontier)).toBe(true);
+  expect(trafficEntryAllowed({ x: 180, y: 0, z: 50 }, player, 0, frontier)).toBe(true);
+});
+
+it('граница появления учитывает поворот, пустой поток и другой уровень развязки', () => {
+  // Arrange
+  const player = { x: 10, y: 12, z: 20 };
+  // Act / Assert
+  expect(trafficEntryFrontier(player, Math.PI / 2, [], false)).toBe(280);
+  expect(trafficEntryFrontier(player, 0, [], true)).toBe(180);
+  expect(trafficEntryFrontier(player, 0, [{ x: 10, y: -5, z: 400 }], false)).toBe(280);
+  expect(trafficEntryAllowed({ x: 150, y: 12, z: 20 }, player, Math.PI / 2, 280)).toBe(false);
+  expect(trafficEntryAllowed({ x: 10, y: 12, z: 200 }, player, Math.PI / 2, 280)).toBe(true);
+});
 it('прерванная подготовка спавна не публикует частичный индекс', () => {
   // Arrange
   const edges = Array.from({ length: 80 }, (_, i) => road(i, i));

@@ -2,6 +2,9 @@ import {
   trafficSpawnSegments,
   chooseTrafficSpawn,
   laneSpawnClearance,
+  trafficEntryFrontier,
+  trafficEntryAllowed,
+  trafficAhead,
 } from './traffic-spawn';
 import { trafficAppearance, VEHICLE_PROFILES } from './vehicle-profiles';
 import { vehicleGroundPose, settleVehicleWheels } from './vehicle-grounding';
@@ -153,8 +156,13 @@ export function trafficStep(frameDt: number, pending: number, far: boolean) {
     ? { dt: 0, pending: elapsed }
     : { dt: elapsed, pending: 0 };
 }
-export function trafficVisibleAt(distance: number, visible: boolean) {
-  return distance <= (visible ? 245 : 220);
+export function trafficVisibleAt(
+  distance: number,
+  visible: boolean,
+  ahead = false,
+  mobile = false,
+) {
+  return distance <= (ahead ? (mobile ? 280 : 420) : visible ? 245 : 220);
 }
 export class Traffic {
   private pool: TrafficCarPool;
@@ -543,8 +551,7 @@ export class Traffic {
     });
     return {
       total: traffic.length,
-      visible: traffic.filter((agent) => distance2(agent.point, player) <= 245)
-        .length,
+      visible: traffic.filter((agent) => !!agent.visual).length,
       sameRoad: sameRoad.length,
       aheadOnRoad: sameRoad.filter(
         (agent) =>
@@ -620,7 +627,12 @@ export class Traffic {
             : 16;
       const sideRoads = near.filter((segment) => !segment.main);
       const missing = budget - this.agents.filter((a) => !a.race).length;
-      for (let i = 0; i < Math.min(24, missing); i++)
+      const frontier = trafficEntryFrontier(
+        player, playerHeading,
+        this.agents.filter(a => !!a.visual).map(a => a.point), this.mobile,
+      );
+      let spawned = 0;
+      for (let i = 0; i < 96 && spawned < Math.min(24, missing); i++)
         if (near.length) {
           const candidates = mainCount >= mainLimit ? sideRoads : near;
           if (!candidates.length) break;
@@ -631,6 +643,10 @@ export class Traffic {
               seeded(id * 113),
             )!,
             edge = spawn.edge;
+          const entry = pointAt(
+            edge.points, pathLengths(edge.points), spawn.distance,
+          ).point;
+          if (!trafficEntryAllowed(entry, player, playerHeading, frontier)) continue;
           const a: Agent = {
             id,
             edge: edgeStableId(edge),
@@ -642,6 +658,7 @@ export class Traffic {
           };
           this.sample(a);
           if (
+            trafficEntryAllowed(a.point, player, playerHeading, frontier) &&
             laneSpawnClearance(
               a,
               player,
@@ -664,6 +681,7 @@ export class Traffic {
             )
           ) {
             this.agents.push(a);
+            spawned++;
             if (mainIds.has(a.edge)) mainCount++;
           }
         }
@@ -678,7 +696,7 @@ export class Traffic {
     }));
     const neighborIndex = new TrafficNeighborIndex(snapshot);
     for (const a of this.agents) {
-      const far = !a.race && !a.dynamic && distance2(a.point, player) > 245;
+      const far = !a.race && !a.dynamic && !a.visual && distance2(a.point, player) > 245;
       const step = trafficStep(frameDt, a.farElapsed || 0, far);
       a.farElapsed = step.pending;
       if (!step.dt) continue;
@@ -985,8 +1003,11 @@ export class Traffic {
           this.sample(a, dt);
         }
       }
-      // Вдали поток обновляется реже и не создаёт меши и физические тела.
-      if (a.race || trafficVisibleAt(distance2(a.point, player), !!a.visual)) {
+      // За границей видимости машины остаются виртуальными.
+      if (a.race || trafficVisibleAt(
+        distance2(a.point, player), !!a.visual,
+        trafficAhead(a.point, player, playerHeading), this.mobile,
+      )) {
         this.show(a);
         const body = a.body!.body,
           mesh = a.visual!.root;

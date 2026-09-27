@@ -74,7 +74,8 @@ import {
 } from './driving-index';
 import { isLightQuality, resolutionScale } from './quality';
 import { streetMaterials } from './street-materials';
-import { FrameTimings, FrameWorkTimings } from './performance';
+import { FrameTimings, FrameWorkTimings, RenderWorkTimings } from './performance';
+import { skipHiddenRenderCandidates } from './render-candidates';
 import { VehicleLighting } from './vehicle-lighting';
 import { VehicleContactShadows } from './vehicle-contact-shadows';
 import { treeInstances } from './tree-instances';
@@ -271,6 +272,7 @@ export class Game {
   private sceneStats: SceneInstrumentation;
   private frameTimings = new FrameTimings();
   private frameWork = new FrameWorkTimings();
+  private renderWork = new RenderWorkTimings();
   private trafficWorkMs = 0;
   private installTimings = new FrameTimings(120);
   private odometer = 0;
@@ -506,6 +508,7 @@ export class Game {
       ),
     );
     this.scene = new Scene(this.engine);
+    skipHiddenRenderCandidates(this.scene);
     this.scene.clearColor = new Color4(0.105, 0.15, 0.2, 1);
     this.engineStats = new EngineInstrumentation(this.engine);
     this.engineStats.captureGPUFrameTime = true;
@@ -1474,7 +1477,7 @@ export class Game {
       this.activeWallSeconds += this.engine.getDeltaTime() / 1000;
     const renderStarted = performance.now();
     this.scene.render();
-    if (!this.paused && !document.hidden)
+    if (!this.paused && !document.hidden) {
       this.frameWork.add({
         physics: physicsMs,
         traffic: this.trafficWorkMs,
@@ -1482,6 +1485,15 @@ export class Game {
         render: performance.now() - renderStarted,
         install: installMs,
       });
+      this.renderWork.add({
+        activeMeshesEvaluation: this.sceneStats.activeMeshesEvaluationTimeCounter.count
+          ? this.sceneStats.activeMeshesEvaluationTimeCounter.current : null,
+        renderTargets: this.sceneStats.renderTargetsRenderTimeCounter.count
+          ? this.sceneStats.renderTargetsRenderTimeCounter.current : null,
+        mainPass: this.sceneStats.renderTimeCounter.count
+          ? this.sceneStats.renderTimeCounter.current : null,
+      });
+    }
     if (this.hudClock <= 0) {
       this.hudClock = 0.1;
       this.emit();
@@ -2255,6 +2267,7 @@ export class Game {
     return {
       ...this.frameTimings.summary(),
       cpuWork: this.frameWork.summary(),
+      renderWork: this.renderWork.summary(),
       mainThreadHeapMiB: memory
         ? Math.round(memory.usedJSHeapSize / 1048576)
         : null,
@@ -2313,6 +2326,7 @@ export class Game {
   resetPerformance() {
     this.frameTimings.reset();
     this.frameWork.reset();
+    this.renderWork.reset();
     this.installTimings.reset();
   }
   exportPerformance() {

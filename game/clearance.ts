@@ -363,6 +363,7 @@ export function roadCrossings(edges: Edge[]): RoadCrossing[] {
           // Плоское примыкание у торцов обеих дорог не является путепроводом.
           if (
             upper.edge.bridge &&
+            !lower.edge.bridge &&
             Math.abs(upperPoint.y - lowerPoint.y) < 1.5
           ) {
             if (
@@ -508,6 +509,67 @@ export function fitBridgeBuildingUnderDeck(
 export function fitTunnelDepth(edges: Edge[], elevation: ElevationGrid) {
   fitStructureHeight(edges, elevation);
 }
+
+function protectLowerCrossings(
+  crossings: RoadCrossing[],
+  layer: number,
+  approaches: Set<Edge>,
+  links: Map<number, Edge[]>,
+  ramp: number,
+) {
+  const points = new Map<Edge, Set<Point>>();
+  for (const crossing of crossings) {
+    const { upper, lower } = crossing;
+    if (upper.edge.layer < layer || lower.edge.layer >= layer) continue;
+    const anchors = points.get(lower.edge) ?? new Set<Point>();
+    anchors.add(lower.a);
+    anchors.add(lower.b);
+    points.set(lower.edge, anchors);
+  }
+  const stations = new Map<Edge, number[]>(),
+    distances = new Map<number, number>();
+  const queue = new MinHeap<{ id: number; d: number }>((a, b) => a.d - b.d);
+  const seed = (id: number, d: number) => {
+    if (d < ramp && d < (distances.get(id) ?? Infinity)) {
+      distances.set(id, d);
+      queue.push({ id, d });
+    }
+  };
+  for (const [edge, anchors] of points) {
+    let at = 0;
+    const positions: number[] = [];
+    edge.points.forEach((point, i) => {
+      if (i) at += distance2(edge.points[i - 1], point);
+      if (anchors.has(point)) positions.push(at);
+    });
+    stations.set(edge, positions);
+    seed(edge.from, positions[0]);
+    seed(edge.to, at - positions.at(-1)!);
+  }
+  while (queue.size) {
+    const { id, d } = queue.pop()!;
+    if (d !== distances.get(id)) continue;
+    for (const edge of links.get(id) ?? [])
+      if (approaches.has(edge))
+        seed(edge.from === id ? edge.to : edge.from, d + edgeDistance(edge));
+  }
+  return (
+    edge: Edge,
+    station: number,
+    total: number,
+    fromStructure: number,
+  ) => {
+    if (!fromStructure || !Number.isFinite(fromStructure)) return 1;
+    const fromCrossing = Math.min(
+      (distances.get(edge.from) ?? Infinity) + station,
+      (distances.get(edge.to) ?? Infinity) + total - station,
+      ...(stations.get(edge) ?? []).map((anchor) => Math.abs(anchor - station)),
+    );
+    return Number.isFinite(fromCrossing)
+      ? smoother(fromCrossing / (fromCrossing + fromStructure))
+      : 1;
+  };
+}
 function fitStructureHeight(
   edges: Edge[],
   tunnelTerrain?: ElevationGrid,
@@ -575,6 +637,7 @@ function fitStructureHeight(
           if (
             (tunnelTerrain ? next.tunnel : next.bridge) &&
             next.layer === seed.layer &&
+            (tunnelTerrain || next.category === seed.category) &&
             !visited.has(next)
           )
             queue.push(next);
@@ -662,6 +725,16 @@ function fitStructureHeight(
         }
       }
     }
+    // Подъезд может вернуться под ту же эстакаду: её подъём не переносим в нижнее пересечение.
+    const protection = tunnelTerrain
+      ? undefined
+      : protectLowerCrossings(
+          crossings,
+          group[0].layer,
+          approaches,
+          links,
+          ramp,
+        );
     const changed = new Map<string, number[]>();
     for (const e of physical) {
       if (!members.has(e) && !approaches.has(e)) continue;
@@ -686,7 +759,13 @@ function fitStructureHeight(
         const bridgeProtection = tunnelTerrain
           ? smoother(bridgeDistance / 100)
           : 1;
-        return p.y + rise * (1 - smoother(d / ramp)) * bridgeProtection;
+        return (
+          p.y +
+          rise *
+            (1 - smoother(d / ramp)) *
+            bridgeProtection *
+            (protection?.(e, station, total, d) ?? 1)
+        );
       });
       changed.set(
         physicalKey(e),

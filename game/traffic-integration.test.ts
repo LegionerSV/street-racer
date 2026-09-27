@@ -4,14 +4,77 @@ import HavokPhysics from '@babylonjs/havok';
 import { readFile } from 'node:fs/promises';
 import { Traffic } from './traffic';
 import { PlayerCar } from './vehicle';
+import { skipHiddenRenderCandidates } from './render-candidates';
 import type { World, Edge, Route } from './types';
 const setup=async()=>{
   const engine=new NullEngine(),scene=new Scene(engine);
+  skipHiddenRenderCandidates(scene);
   const havok=await HavokPhysics({wasmBinary:Uint8Array.from(await readFile(new URL('../node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm',import.meta.url))).buffer});
   scene.enablePhysics(new Vector3(0,-9.81,0),new HavokPlugin(true,havok));return{engine,scene};
 };
 const road=(id:number,from:number,to:number,z:number,length:number):Edge=>({id,stableId:`edge-${id}`,from,to,way:1,length,width:6.8,lanes:2,oneWay:true,speed:25,name:'Испытательная улица',bridge:false,tunnel:false,layer:0,blocked:false,points:[{x:0,y:.12,z},{x:0,y:.12,z:z+length}]});
 const world=(edges:Edge[]):World=>({center:{lat:0,lon:0},nodes:[],edges,restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:edges[0]?.stableId??null,routes:[]});
+it('добавляет поток за видимыми машинами и сохраняет модель при приближении', async () => {
+  // Arrange
+  const { engine, scene } = await setup();
+  const traffic = new Traffic(scene, world([road(0, 1, 2, -500, 1000)]));
+  traffic.agents.push({ id: 12, edge: 'edge-0', distance: 830, speed: 0, point: { x: -1.7, y: .96, z: 330 }, heading: 0, stuck: 0 });
+  const state = traffic as unknown as { spawnTimer: number };
+  state.spawnTimer = Infinity;
+  const player = { x: -1.7, y: .96, z: 0 };
+  try {
+    // Act
+    traffic.update(.1, 0, player, 0, false);
+    const lead = traffic.agents[0], visual = lead.visual;
+    state.spawnTimer = 0;
+    traffic.update(1 / 60, 1 / 60, player, 0, false);
+    // Assert
+    expect(visual).toBeDefined();
+    const additions = traffic.agents.filter(agent => agent !== lead);
+    expect(additions.length).toBeGreaterThan(0);
+    expect(additions.every(agent => agent.point.z < 0 || agent.point.z >= 355)).toBe(true);
+    // Act
+    state.spawnTimer = Infinity;
+    traffic.update(1 / 60, 2 / 60, { ...player, z: 130 }, 0, false);
+    // Assert
+    expect(lead.visual).toBe(visual);
+    expect(traffic.diagnostics(player, 0).visible).toBe(traffic.agents.filter(agent => !!agent.visual).length);
+  } finally { traffic.dispose(); scene.dispose(); engine.dispose(); }
+});
+
+it.each([
+  { mobile: false, distance: 330 },
+  { mobile: true, distance: 260 },
+])('дальний видимый поток движется плавно между решениями ИИ, mobile=$mobile', async ({ mobile, distance }) => {
+  // Arrange
+  const { engine, scene } = await setup();
+  const traffic = new Traffic(scene, world([road(0, 1, 2, 0, 1000)]));
+  traffic.setMobile(mobile);
+  traffic.agents.push({ id: 12, edge: 'edge-0', distance, speed: 10, point: { x: -1.7, y: .96, z: distance }, heading: 0, stuck: 0 });
+  (traffic as unknown as { spawnTimer: number }).spawnTimer = Infinity;
+  let previousZ: number | undefined;
+  const decisions = new Set<number | undefined>();
+  try {
+    // Act / Assert
+    for (let frame = 0; frame < 60; frame++) {
+      traffic.update(1 / 60, frame / 60, { x: -1.7, y: .96, z: 0 }, 0, false);
+      scene.getPhysicsEngine()!._step(1 / 60);
+      const agent = traffic.agents[0];
+      if (!agent.visual) continue;
+      const z = agent.visual.root.position.z;
+      decisions.add(agent.laneDecisionAt);
+      expect(Math.abs(z - agent.point.z)).toBeLessThan(.05);
+      if (previousZ !== undefined) {
+        expect(z - previousZ).toBeGreaterThanOrEqual(0);
+        expect(z - previousZ).toBeLessThan(.4);
+      }
+      previousZ = z;
+    }
+    expect(previousZ).toBeGreaterThan(distance + 8);
+    expect(decisions.size).toBeLessThan(25);
+  } finally { traffic.dispose(); scene.dispose(); engine.dispose(); }
+});
+
 it('разделяет решения дальнего потока и движение, немедленно реагируя рядом с игроком', async () => {
   // Arrange
   const { engine, scene } = await setup(), map = world([road(0, 1, 2, 0, 400)]), traffic = new Traffic(scene, map);

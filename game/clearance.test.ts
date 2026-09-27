@@ -26,6 +26,125 @@ const road = (id: number, points: Edge['points'], bridge = false): Edge => ({
   blocked: false,
 });
 
+it('подъём верхней эстакады не подтягивает пересекающий её нижний съезд', () => {
+  // Arrange
+  const upper = {
+    ...road(
+      1,
+      Array.from({ length: 19 }, (_, i) => ({ x: -60 + i * 10, y: 0, z: 0 })),
+      true,
+    ),
+    layer: 2,
+    from: 1,
+    to: 2,
+  };
+  const approach = {
+    ...road(
+      4,
+      [
+        { x: -60, y: 0, z: 0 },
+        { x: -30, y: 0, z: -20 },
+        { x: 0, y: 0, z: -20 },
+      ],
+      true,
+    ),
+    layer: 1,
+    from: 1,
+    to: 4,
+  };
+  const lower = {
+    ...road(
+      2,
+      [
+        { x: 0, y: 0, z: -20 },
+        { x: 0, y: 0, z: 0 },
+        { x: 0, y: 0, z: 20 },
+        { x: 0, y: 0, z: 50 },
+      ],
+      true,
+    ),
+    layer: 1,
+    from: 4,
+    to: 3,
+  };
+  const reverse = {
+    ...lower,
+    id: 3,
+    from: 3,
+    to: 4,
+    points: [...lower.points].reverse(),
+  };
+  // Act
+  fitBridgeClearance([upper, approach, lower, reverse]);
+  // Assert
+  const crossings = roadCrossings([upper, lower]);
+  expect(crossings.length).toBeGreaterThan(0);
+  expect(
+    crossings.every((crossing) => crossingClearance(crossing) >= 3.5 - 0.02),
+  ).toBe(true);
+  expect(validateClearance([upper, approach, lower, reverse])).toEqual([]);
+  expect(approach.points[0].y).toBeCloseTo(upper.points[0].y, 8);
+  expect(approach.points.at(-1)!.y).toBeCloseTo(lower.points[0].y, 8);
+  expect(reverse.points.map((point) => point.y)).toEqual(
+    lower.points.map((point) => point.y).reverse(),
+  );
+});
+
+it('съезд другой категории сохраняет плавный переход с верхней магистрали на нижний уровень', () => {
+  // Arrange
+  const upper = {
+    ...road(
+      1,
+      Array.from({ length: 31 }, (_, i) => ({ x: -150 + i * 10, y: 0, z: 0 })),
+      true,
+    ),
+    layer: 2,
+    from: 1,
+    to: 2,
+    category: 'motorway',
+  };
+  const ramp = {
+    ...road(
+      2,
+      Array.from({ length: 31 }, (_, i) => ({ x: -150 + i * 5, y: 0, z: -i })),
+      true,
+    ),
+    layer: 2,
+    from: 1,
+    to: 3,
+    category: 'primary',
+  };
+  const lower = {
+    ...road(
+      3,
+      Array.from({ length: 21 }, (_, i) => ({ x: 0, y: 0, z: -30 + i * 5 })),
+      true,
+    ),
+    layer: 1,
+    from: 3,
+    to: 4,
+    category: 'primary',
+  };
+  const ground = road(4, [
+    { x: 100, y: 10, z: -50 },
+    { x: 100, y: 10, z: 50 },
+  ]);
+  // Act
+  fitBridgeClearance([upper, ramp, lower, ground]);
+  // Assert
+  expect(validateClearance([upper, ramp, lower, ground])).toEqual([]);
+  expect(ramp.points[0].y).toBeCloseTo(upper.points[0].y, 8);
+  expect(ramp.points.at(-1)!.y).toBeCloseTo(lower.points[0].y, 8);
+  for (const edge of [ramp, lower])
+    for (let i = 1; i < edge.points.length; i++) {
+      const a = edge.points[i - 1],
+        b = edge.points[i];
+      expect(
+        Math.abs(b.y - a.y) / Math.hypot(b.x - a.x, b.z - a.z),
+      ).toBeLessThan(0.2);
+    }
+});
+
 it('заглубление тоннеля не тянет соседний мост и его торец под воду', () => {
   // Arrange
   const tunnel = {
@@ -238,6 +357,35 @@ it('не закрывает плоский въезд на мост из сос�
   // Assert
   expect(warnings).toEqual([]);
   expect(bridge.blocked).toBe(false);
+});
+
+it('поднимает верхний мост над торцом нижней эстакады даже при одинаковой исходной высоте', () => {
+  // Arrange
+  const lower = road(
+    1,
+    [
+      { x: -20, y: 0, z: 2 },
+      { x: 2, y: 0, z: 2 },
+    ],
+    true,
+  );
+  const upper = road(
+    2,
+    [
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: 0, z: 40 },
+    ],
+    true,
+  );
+  lower.layer = 1;
+  upper.layer = 2;
+  // Act
+  fitBridgeClearance([lower, upper]);
+  const crossings = roadCrossings([lower, upper]);
+  // Assert
+  expect(crossings.length).toBeGreaterThan(0);
+  expect(crossings.every((c) => crossingClearance(c) >= 3.5)).toBe(true);
+  expect(validateClearance([lower, upper])).toEqual([]);
 });
 
 it('не закрывает соседнее полотно Московского проспекта у Ново-Московского моста', () => {

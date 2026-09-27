@@ -1,5 +1,45 @@
 import { expect, it } from 'vitest';
-import { FrameTimings, FrameWorkTimings } from './performance';
+import {
+  FrameTimings,
+  FrameWorkTimings,
+  RenderWorkTimings,
+} from './performance';
+
+it('различает неизвестные этапы рендера и измеренный ноль в ограниченной истории', () => {
+  // Arrange
+  const timings = new RenderWorkTimings(2);
+  expect(timings.summary()).toBeNull();
+  // Act
+  timings.add({
+    activeMeshesEvaluation: 100,
+    renderTargets: 100,
+    mainPass: 100,
+  });
+  timings.add({ activeMeshesEvaluation: 8, renderTargets: 0, mainPass: null });
+  timings.add({ activeMeshesEvaluation: 4, renderTargets: NaN, mainPass: -1 });
+  // Assert
+  expect(timings.summary()).toEqual({
+    frames: 2,
+    activeMeshesEvaluation: { samples: 2, meanMs: 6, p95Ms: 8 },
+    renderTargets: { samples: 1, meanMs: 0, p95Ms: 0 },
+    mainPass: null,
+  });
+  // Act
+  timings.reset();
+  // Assert
+  expect(timings.summary()).toBeNull();
+  timings.add({
+    activeMeshesEvaluation: null,
+    renderTargets: null,
+    mainPass: null,
+  });
+  expect(timings.summary()).toEqual({
+    frames: 1,
+    activeMeshesEvaluation: null,
+    renderTargets: null,
+    mainPass: null,
+  });
+});
 
 it('замеры работы кадра учитывают нулевую нагрузку и ограничивают историю', () => {
   // Arrange

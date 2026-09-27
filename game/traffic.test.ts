@@ -15,6 +15,16 @@ import {
 } from './traffic';
 import type { OSMElement, RegionData } from './types';
 
+it('показывает передний поток от дальнего края спавна до ближней зоны', () => {
+  // Arrange / Act / Assert
+  expect(trafficVisibleAt(400, false, true)).toBe(true);
+  expect(trafficVisibleAt(300, true, true)).toBe(true);
+  expect(trafficVisibleAt(421, false, true)).toBe(false);
+  expect(trafficVisibleAt(300, false, false)).toBe(false);
+  expect(trafficVisibleAt(270, false, true, true)).toBe(true);
+  expect(trafficVisibleAt(281, false, true, true)).toBe(false);
+});
+
 it('дальний трафик обновляется раз в 100 мс без потери прошедшего времени', () => {
   // Arrange / Act
   const first = trafficStep(1 / 60, 0, true);
@@ -134,7 +144,7 @@ it('заполняет городской район плотным потоко
     // Assert
     expect(traffic.agents.length).toBeGreaterThan(80); expect(traffic.agents.length).toBeLessThanOrEqual(144);
     expect(traffic.agents.some(a=>Math.hypot(a.point.x,a.point.z)>300)).toBe(true);
-    expect(traffic.agents.filter(a=>a.visual).every(a=>Math.hypot(a.point.x,a.point.z)<260)).toBe(true);
+    expect(traffic.agents.filter(a=>a.visual).every(a=>Math.hypot(a.point.x,a.point.z)<=420)).toBe(true);
     expect(traffic.agents.filter(a=>a.visual).length).toBeGreaterThan(0);
     expect(traffic.agents.filter(a=>a.visual).length).toBeLessThan(traffic.agents.length);
     const lanes = new Set(traffic.agents.map(a => Math.round((a.point.z-world.edges.find(e=>e.stableId===a.edge)!.points[0].z)*10)));

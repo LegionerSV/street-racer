@@ -21,6 +21,48 @@ const spawnIndices = new WeakMap<
   { spatial: SpatialGrid<IndexedSegment>; segments: IndexedSegment[] }
 >();
 
+function viewPosition(point: Point, player: Point, heading: number) {
+  const dx = point.x - player.x,
+    dz = point.z - player.z;
+  return {
+    ahead: dx * Math.sin(heading) + dz * Math.cos(heading),
+    across: dx * Math.cos(heading) - dz * Math.sin(heading),
+  };
+}
+
+export function trafficEntryFrontier(
+  player: Point,
+  heading: number,
+  visible: Point[],
+  mobile: boolean,
+) {
+  let frontier = mobile ? 180 : 280;
+  for (const point of visible) {
+    if (Math.abs(point.y - player.y) > 6) continue;
+    const { ahead, across } = viewPosition(point, player, heading);
+    if (ahead > 0 && Math.abs(across) <= ahead * 1.25 + 25)
+      frontier = Math.max(frontier, ahead + 25);
+  }
+  return frontier;
+}
+
+export function trafficEntryAllowed(
+  point: Point,
+  player: Point,
+  heading: number,
+  frontier: number,
+) {
+  const { ahead, across } = viewPosition(point, player, heading);
+  return (
+    ahead <= 0 || Math.abs(across) > ahead * 1.25 + 25 || ahead >= frontier
+  );
+}
+
+export function trafficAhead(point: Point, player: Point, heading: number) {
+  const { ahead } = viewPosition(point, player, heading);
+  return ahead >= distance2(point, player) * 0.3;
+}
+
 function spawnIndex(edges: Edge[]) {
   const cached = spawnIndices.get(edges);
   if (cached) return cached;
