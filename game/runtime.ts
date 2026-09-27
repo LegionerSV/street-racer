@@ -510,6 +510,9 @@ export class Game {
     this.engineStats = new EngineInstrumentation(this.engine);
     this.engineStats.captureGPUFrameTime = true;
     this.sceneStats = new SceneInstrumentation(this.scene);
+    this.sceneStats.captureActiveMeshesEvaluationTime = true;
+    this.sceneStats.captureRenderTargetsRenderTime = true;
+    this.sceneStats.captureRenderTime = true;
     // После фонового ограничения браузера не выполняем секунду физики за один кадр.
     Scene.MaxDeltaTime = 100;
     this.scene.fogMode = Scene.FOGMODE_EXP2;
@@ -2261,6 +2264,17 @@ export class Game {
       activeMeshes: this.scene.getActiveMeshes().length,
       triangles: Math.round(this.scene.getActiveIndices() / 3),
       drawCalls: this.sceneStats.drawCallsCounter.current,
+      renderLastFrame: {
+        activeMeshesEvaluationMs: this.sceneStats.activeMeshesEvaluationTimeCounter.count
+          ? this.sceneStats.activeMeshesEvaluationTimeCounter.current
+          : null,
+        renderTargetsMs: this.sceneStats.renderTargetsRenderTimeCounter.count
+          ? this.sceneStats.renderTargetsRenderTimeCounter.current
+          : null,
+        mainPassMs: this.sceneStats.renderTimeCounter.count
+          ? this.sceneStats.renderTimeCounter.current
+          : null,
+      },
       gpuFrameMs: gpu?.count && gpu.current > 0 ? gpu.current / 1e6 : null,
       chunkInstallP95Ms: this.installTimings.summary().p95FrameMs,
       physicsSurfaces: [...this.chunks.values()].reduce(

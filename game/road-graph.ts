@@ -1,17 +1,21 @@
-import type { Edge, EdgeStableId, World } from './types';
+import type { Edge, EdgeStableId, RoadNode, World } from './types';
 
 // Длина и проходимость всегда относятся к окончательному профилю, в том числе
 // после согласования подгруженной дороги с уже открытым соседним направлением.
 export function updateRoadMetrics(edge: Edge) {
-  let length = 0, steep = false;
+  let length = 0,
+    steep = false;
   for (let i = 1; i < edge.points.length; i++) {
-    const a = edge.points[i - 1], b = edge.points[i];
+    const a = edge.points[i - 1],
+      b = edge.points[i];
     const horizontal = Math.hypot(b.x - a.x, b.z - a.z);
     length += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-    if (Math.abs(b.y - a.y) / (horizontal || 1) > .38) steep = true;
+    if (Math.abs(b.y - a.y) / (horizontal || 1) > 0.38) steep = true;
   }
   edge.length = length;
-  edge.blockedReasons = (edge.blockedReasons ?? []).filter(reason => reason !== 'grade');
+  edge.blockedReasons = (edge.blockedReasons ?? []).filter(
+    (reason) => reason !== 'grade',
+  );
   if (steep) edge.blockedReasons.push('grade');
   edge.blocked = edge.blockedReasons.length > 0;
 }
@@ -30,8 +34,21 @@ export function edgeStableId(edge: Edge): EdgeStableId {
 }
 
 const edgeIndexes = new WeakMap<World, Map<EdgeStableId, number>>();
+const nodeIndexes = new WeakMap<RoadNode[], Map<number, RoadNode>>();
 
-export function edgeIndex(world: World, stableId: EdgeStableId): number | undefined {
+export function nodeById(world: World, id: number): RoadNode | undefined {
+  let index = nodeIndexes.get(world.nodes);
+  if (!index) {
+    index = new Map(world.nodes.map((node) => [node.id, node]));
+    nodeIndexes.set(world.nodes, index);
+  }
+  return index.get(id);
+}
+
+export function edgeIndex(
+  world: World,
+  stableId: EdgeStableId,
+): number | undefined {
   let index = edgeIndexes.get(world);
   let result = index?.get(stableId);
   if (
@@ -47,7 +64,10 @@ export function edgeIndex(world: World, stableId: EdgeStableId): number | undefi
   return result;
 }
 
-export function edgeById(world: World, stableId: EdgeStableId): Edge | undefined {
+export function edgeById(
+  world: World,
+  stableId: EdgeStableId,
+): Edge | undefined {
   const index = edgeIndex(world, stableId);
   return index === undefined ? undefined : world.edges[index];
 }

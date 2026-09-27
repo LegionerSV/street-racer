@@ -1,5 +1,6 @@
 import type { Edge, Point } from './types';
 import { distance2, projectOnSegment } from './geo';
+import { boundsOf, SpatialGrid } from './geometry';
 type SpawnSegment = {
   edge: Edge;
   start: number;
@@ -7,6 +8,50 @@ type SpawnSegment = {
   main: boolean;
   weight: number;
 };
+type IndexedSegment = {
+  edge: Edge;
+  a: Point;
+  b: Point;
+  station: number;
+  length: number;
+  order: number;
+};
+const spawnIndices = new WeakMap<
+  Edge[],
+  { spatial: SpatialGrid<IndexedSegment>; segments: IndexedSegment[] }
+>();
+
+function spawnIndex(edges: Edge[]) {
+  const cached = spawnIndices.get(edges);
+  if (cached) return cached;
+  const steps = prepareTrafficSpawnIndex(edges);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+export function* prepareTrafficSpawnIndex(edges: Edge[]) {
+  const cached = spawnIndices.get(edges);
+  if (cached) return cached;
+  const spatial = new SpatialGrid<IndexedSegment>(128),
+    segments: IndexedSegment[] = [];
+  for (const edge of edges) {
+    let station = 0;
+    for (let i = 1; i < edge.points.length; i++) {
+      if (segments.length % 32 === 0) yield;
+      const a = edge.points[i - 1],
+        b = edge.points[i],
+        length = distance2(a, b);
+      const segment = { edge, a, b, station, length, order: segments.length };
+      segments.push(segment);
+      spatial.add(segment, boundsOf([a, b]));
+      station += length;
+    }
+  }
+  const index = { spatial, segments };
+  spawnIndices.set(edges, index);
+  return index;
+}
 export function trafficSpawnSegments(
   edges: Edge[],
   player: Point,
@@ -15,14 +60,14 @@ export function trafficSpawnSegments(
 ): SpawnSegment[] {
   let current: Edge | undefined,
     nearest = Infinity;
-  for (const edge of edges)
-    if (!edge.blocked)
-      for (let i = 1; i < edge.points.length; i++) {
-        const projection = projectOnSegment(
-          player,
-          edge.points[i - 1],
-          edge.points[i],
-        );
+  const index = spawnIndex(edges);
+  const nearby = index.spatial
+    .query(boundsOf([player], radius))
+    .sort((a, b) => a.order - b.order);
+  const findCurrent = (segments: IndexedSegment[]) => {
+    for (const { edge, a, b } of segments)
+      if (!edge.blocked) {
+        const projection = projectOnSegment(player, a, b);
         const score =
           projection.distance + Math.abs(projection.point.y - player.y) * 5;
         if (score < nearest) {
@@ -30,54 +75,52 @@ export function trafficSpawnSegments(
           current = edge;
         }
       }
+  };
+  findCurrent(nearby);
+  // Высота может сделать далёкую дорогу ближе по оценке, чем мост над игроком.
+  if (nearest > radius) {
+    nearest = Infinity;
+    findCurrent(index.segments);
+  }
   const result: SpawnSegment[] = [];
-  for (const edge of edges) {
+  for (const { edge, a, b, station, length } of nearby) {
     if (edge.blocked || edge.length < 8) continue;
-    let station = 0;
-    for (let i = 1; i < edge.points.length; i++) {
-      const a = edge.points[i - 1],
-        b = edge.points[i],
-        length = distance2(a, b);
-      if (!length) continue;
-      const projection = projectOnSegment(player, a, b);
-      if (
-        projection.distance < radius &&
-        Math.abs(projection.point.y - player.y) < 8
-      ) {
-        const along =
-          ((player.x - a.x) * (b.x - a.x) + (player.z - a.z) * (b.z - a.z)) /
-          length;
-        const perpendicularSquared = Math.max(
-          0,
-          (player.x - a.x) ** 2 + (player.z - a.z) ** 2 - along * along,
-        );
-        const reach = Math.sqrt(
-          Math.max(0, radius * radius - perpendicularSquared),
-        );
-        const start = Math.max(0, along - reach),
-          end = Math.min(length, along + reach);
-        const main =
-          !!current &&
-          (edge.way === current.way ||
-            (!!current.name &&
-              current.name !== 'Безымянная улица' &&
-              edge.name === current.name));
-        const forward =
-          (projection.point.x - player.x) * Math.sin(heading) +
-          (projection.point.z - player.z) * Math.cos(heading);
-        if (end - start > 8)
-          result.push({
-            edge,
-            start: station + start,
-            end: station + end,
-            main,
-            weight:
-              (end - start) *
-              Math.max(1, edge.lanes) *
-              (forward >= 0 ? 1.5 : 1),
-          });
-      }
-      station += length;
+    if (!length) continue;
+    const projection = projectOnSegment(player, a, b);
+    if (
+      projection.distance < radius &&
+      Math.abs(projection.point.y - player.y) < 8
+    ) {
+      const along =
+        ((player.x - a.x) * (b.x - a.x) + (player.z - a.z) * (b.z - a.z)) /
+        length;
+      const perpendicularSquared = Math.max(
+        0,
+        (player.x - a.x) ** 2 + (player.z - a.z) ** 2 - along * along,
+      );
+      const reach = Math.sqrt(
+        Math.max(0, radius * radius - perpendicularSquared),
+      );
+      const start = Math.max(0, along - reach),
+        end = Math.min(length, along + reach);
+      const main =
+        !!current &&
+        (edge.way === current.way ||
+          (!!current.name &&
+            current.name !== 'Безымянная улица' &&
+            edge.name === current.name));
+      const forward =
+        (projection.point.x - player.x) * Math.sin(heading) +
+        (projection.point.z - player.z) * Math.cos(heading);
+      if (end - start > 8)
+        result.push({
+          edge,
+          start: station + start,
+          end: station + end,
+          main,
+          weight:
+            (end - start) * Math.max(1, edge.lanes) * (forward >= 0 ? 1.5 : 1),
+        });
     }
   }
   return result;

@@ -12,6 +12,33 @@ const setup=async()=>{
 };
 const road=(id:number,from:number,to:number,z:number,length:number):Edge=>({id,stableId:`edge-${id}`,from,to,way:1,length,width:6.8,lanes:2,oneWay:true,speed:25,name:'Испытательная улица',bridge:false,tunnel:false,layer:0,blocked:false,points:[{x:0,y:.12,z},{x:0,y:.12,z:z+length}]});
 const world=(edges:Edge[]):World=>({center:{lat:0,lon:0},nodes:[],edges,restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:edges[0]?.stableId??null,routes:[]});
+it('разделяет решения дальнего потока и движение, немедленно реагируя рядом с игроком', async () => {
+  // Arrange
+  const { engine, scene } = await setup(), map = world([road(0, 1, 2, 0, 400)]), traffic = new Traffic(scene, map);
+  traffic.agents.push({ id: 12, edge: 'edge-0', distance: 40, speed: 10, point: { x: 0, y: .96, z: 40 }, heading: 0, stuck: 0 });
+  (traffic as unknown as { spawnTimer: number }).spawnTimer = Infinity;
+  const player = { x: 180, y: 1, z: 40 };
+  try {
+    // Act
+    traffic.update(1 / 60, 0, player, 0, false);
+    const first = traffic.agents[0].travel!;
+    traffic.update(1 / 60, 1 / 60, player, 0, false);
+    const second = traffic.agents[0].travel!;
+    // Assert
+    expect(second).toBeGreaterThan(first);
+    expect(traffic.agents[0].laneDecisionAt).toBe(0);
+    // Act
+    traffic.update(1 / 60, 2 / 60, { ...player, x: 50 }, 0, false);
+    // Assert
+    expect(traffic.agents[0].laneDecisionAt).toBe(2 / 60);
+    expect(traffic.agents[0].travel).toBeGreaterThan(second);
+    // Act
+    traffic.replaceWorld({ ...map, nodes: [] });
+    traffic.update(1 / 60, 2 / 60 + .001, player, 0, false);
+    // Assert
+    expect(traffic.agents[0].laneDecisionAt).toBe(2 / 60 + .001);
+  } finally { traffic.dispose(); scene.dispose(); engine.dispose(); }
+});
 it('обновляет колёса один раз за кадр и сохраняет вращение всех шагов физики', async () => {
   // Arrange
   const { engine, scene } = await setup(), traffic = new Traffic(scene, world([road(0, 1, 2, 0, 400)]));

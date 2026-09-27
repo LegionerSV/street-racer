@@ -29,7 +29,7 @@ import { laneOffsets } from './lanes';
 import { signalPhase } from './simulation';
 import { smoothPath, samplePath, type DrivingPath } from './driving-path';
 import { createTrafficCar, setCarLights, type CarVisual } from './visuals';
-import { edgeById, edgeStableId } from './road-graph';
+import { edgeById, edgeStableId, nodeById } from './road-graph';
 import {
   createRacerTraits,
   DEFAULT_RACER_TRAITS,
@@ -39,6 +39,7 @@ import { TrafficNeighborIndex } from './traffic-neighbors';
 import { signalApproaches } from './signal-approaches';
 import { trafficClearancePoint, trajectoryConflict } from './traffic-conflicts';
 import { TrafficCarPool, type TrafficCarLease } from './traffic-pool';
+import { trafficDecisionDue } from './traffic-decisions';
 
 type Plan = {
   ids: EdgeStableId[];
@@ -72,6 +73,7 @@ type Agent = {
   impact?: number;
   turn?: number;
   farElapsed?: number;
+  laneDecisionAt?: number;
   race?: {
     route: Route;
     index: number;
@@ -180,6 +182,7 @@ export class Traffic {
     this.refreshSignalApproaches();
   }
   private refreshSignalApproaches() {
+    for (const agent of this.agents) agent.laneDecisionAt = undefined;
     this.signalAxes.clear();
     for (const node of this.world.nodes)
       for (const approach of signalApproaches(this.world, node.id))
@@ -266,6 +269,7 @@ export class Traffic {
     this.spawnTimer = 0;
   }
   private makePlan(agent: Agent) {
+    agent.laneDecisionAt = undefined;
     const ids = agent.race
       ? Array.from(
           { length: agent.race.route.laps },
@@ -794,21 +798,30 @@ export class Traffic {
           Math.abs(playerLateral) > margin;
         return clear && playerClear;
       };
-      if (
-        leadSpeed < a.speed + 3 &&
-        gap < (a.race ? 16 + traits.reaction * 30 : 36)
-      ) {
-        const lane = this.avoidanceLanes(a, edge).find(laneClear);
-        if (lane !== undefined) {
-          a.avoidanceOffset = lane;
-          a.avoidanceWay = edge.way;
+      const urgentDecision =
+        !!a.race ||
+        !!a.dynamic ||
+        blockedByPlayer ||
+        distance2(a.point, player) < 80 ||
+        gap < Math.max(12, a.speed);
+      if (trafficDecisionDue(time, a.laneDecisionAt, urgentDecision)) {
+        a.laneDecisionAt = time;
+        if (
+          leadSpeed < a.speed + 3 &&
+          gap < (a.race ? 16 + traits.reaction * 30 : 36)
+        ) {
+          const lane = this.avoidanceLanes(a, edge).find(laneClear);
+          if (lane !== undefined) {
+            a.avoidanceOffset = lane;
+            a.avoidanceWay = edge.way;
+          }
+        } else if (
+          a.avoidanceOffset !== undefined &&
+          laneClear(this.preferredLane(a, edge))
+        ) {
+          a.avoidanceOffset = undefined;
+          a.avoidanceWay = undefined;
         }
-      } else if (
-        a.avoidanceOffset !== undefined &&
-        laneClear(this.preferredLane(a, edge))
-      ) {
-        a.avoidanceOffset = undefined;
-        a.avoidanceWay = undefined;
       }
       let stop = plan.total - (a.travel || 0) - 3,
         signalLimit: number | undefined;
@@ -864,7 +877,7 @@ export class Traffic {
           else if (
             distance2(
               player,
-              this.world.nodes.find((node) => node.id === approaching.to)!,
+              nodeById(this.world, approaching.to) ?? approaching.points.at(-1)!,
             ) < 9
           ) {
             stop = Math.min(stop, dist - 5);

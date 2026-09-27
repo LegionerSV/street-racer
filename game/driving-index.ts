@@ -2,6 +2,7 @@ import { SpatialGrid, boundsOf } from './geometry';
 import { tileKey } from './geo';
 import { coverageBounds } from './stream-coverage';
 import type { Building, Edge, Point, World } from './types';
+import { prepareTrafficSpawnIndex } from './traffic-spawn';
 
 export type DrivingSegment = { a: Point; b: Point; edge: Edge };
 type DrivingIndex = {
@@ -13,6 +14,8 @@ type DrivingIndex = {
 const indices = new WeakMap<World, DrivingIndex>();
 
 export function indexDrivingWorld(world: World): DrivingIndex {
+  const existing = indices.get(world);
+  if (existing) return existing;
   const steps = prepareDrivingIndex(world);
   let step = steps.next();
   while (!step.done) step = steps.next();
@@ -86,6 +89,7 @@ export function* prepareDrivingIndex(
     cell.push(building);
     index.buildings.set(key, cell);
   }
+  yield* prepareTrafficSpawnIndex(world.edges);
   indices.set(world, index);
   return index;
 }

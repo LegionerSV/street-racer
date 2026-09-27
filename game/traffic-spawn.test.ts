@@ -3,6 +3,7 @@ import {
   trafficSpawnSegments,
   chooseTrafficSpawn,
   laneSpawnClearance,
+  prepareTrafficSpawnIndex,
 } from './traffic-spawn';
 import type { Edge } from './types';
 const road = (way: number, x: number, name = 'Главная'): Edge =>
@@ -21,6 +22,37 @@ const road = (way: number, x: number, name = 'Главная'): Edge =>
     from: way,
     to: way + 1,
   }) as Edge;
+it('прерванная подготовка спавна не публикует частичный индекс', () => {
+  // Arrange
+  const edges = Array.from({ length: 80 }, (_, i) => road(i, i));
+  const preparation = prepareTrafficSpawnIndex(edges);
+  // Act
+  expect(preparation.next().done).toBe(false);
+  expect(preparation.next().done).toBe(false);
+  preparation.return(undefined as never);
+  const candidates = trafficSpawnSegments(edges, { x: 0, y: 0, z: 0 }, 0, 100);
+  // Assert
+  expect(candidates.map((candidate) => candidate.edge)).toEqual(edges);
+  expect(prepareTrafficSpawnIndex(edges).next().done).toBe(true);
+});
+
+it('ищет текущую улицу за радиусом спавна при большой разнице высот', () => {
+  // Arrange
+  const raised = road(1, 95, 'Эстакада');
+  raised.points = raised.points.map((point) => ({ ...point, y: 7 }));
+  const outside = road(2, 129, 'Наземная');
+  // Act
+  const candidates = trafficSpawnSegments(
+    [raised, outside],
+    { x: 0, y: 0, z: 0 },
+    0,
+    100,
+  );
+  // Assert
+  expect(candidates).toHaveLength(1);
+  expect(candidates[0].edge).toBe(raised);
+  expect(candidates[0].main).toBe(false);
+});
 it('не объединяет разные безымянные улицы в одну текущую дорогу', () => {
   // Arrange
   const edges = [
@@ -109,4 +141,65 @@ it('обрезает спавн на дороге, начало которой �
   // Assert
   expect(spawn).toBeDefined();
   expect(spawn!.distance).toBeLessThanOrEqual(20);
+});
+
+it('учитывает высоту при выборе текущей улицы и сохраняет порядок сегментов', () => {
+  // Arrange
+  const bridge = {
+    ...road(1, 0, 'Мост'),
+    points: [
+      { x: 0, y: 30, z: -600 },
+      { x: 0, y: 30, z: 600 },
+    ],
+  };
+  const edges = [bridge, road(2, 20, 'Набережная'), road(3, 50, 'Соседняя')];
+  // Act
+  const below = trafficSpawnSegments(edges, { x: 0, y: 0, z: 0 }, 0, 100);
+  const above = trafficSpawnSegments(edges, { x: 0, y: 30, z: 0 }, 0, 100);
+  // Assert
+  expect(below.map((s) => [s.edge.way, s.main])).toEqual([
+    [2, true],
+    [3, false],
+  ]);
+  expect(above.map((s) => [s.edge.way, s.main])).toEqual([[1, true]]);
+});
+
+it('обновляет поиск после замены сети и изменения проходимости', () => {
+  // Arrange
+  const first = road(1, 0),
+    second = road(2, 30, 'Другая');
+  const edges = [first, second],
+    player = { x: 0, y: 0, z: 0 };
+  trafficSpawnSegments(edges, player, 0, 100);
+  // Act
+  first.blocked = true;
+  const closed = trafficSpawnSegments(edges, player, 0, 100);
+  const replaced = trafficSpawnSegments([road(3, 10)], player, 0, 100);
+  const empty = trafficSpawnSegments([], player, 0, 100);
+  // Assert
+  expect(closed.map((s) => [s.edge.way, s.main])).toEqual([[2, true]]);
+  expect(replaced.map((s) => s.edge.way)).toEqual([3]);
+  expect(empty).toEqual([]);
+});
+
+it('сохраняет станцию на изогнутой дороге и результат за пределами покрытия', () => {
+  // Arrange
+  const edge = {
+    ...road(1, 0),
+    points: [
+      { x: -200, y: 0, z: 0 },
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: 0, z: 200 },
+    ],
+    length: 400,
+  };
+  // Act
+  const segments = trafficSpawnSegments([edge], { x: 0, y: 0, z: 0 }, 0, 100);
+  const outside = trafficSpawnSegments([edge], { x: 3000, y: 0, z: 0 }, 0, 100);
+  // Assert
+  expect(segments.map((s) => [s.start, s.end])).toEqual([
+    [100, 200],
+    [200, 300],
+  ]);
+  expect(outside).toEqual([]);
 });
