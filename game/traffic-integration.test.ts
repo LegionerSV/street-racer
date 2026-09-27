@@ -12,6 +12,61 @@ const setup=async()=>{
 };
 const road=(id:number,from:number,to:number,z:number,length:number):Edge=>({id,stableId:`edge-${id}`,from,to,way:1,length,width:6.8,lanes:2,oneWay:true,speed:25,name:'Испытательная улица',bridge:false,tunnel:false,layer:0,blocked:false,points:[{x:0,y:.12,z},{x:0,y:.12,z:z+length}]});
 const world=(edges:Edge[]):World=>({center:{lat:0,lon:0},nodes:[],edges,restrictions:[],buildings:[],areas:[],trees:[],elevation:{width:2,size:5600,values:new Float32Array(4)},drivingSide:'right',warnings:[],spawnEdge:edges[0]?.stableId??null,routes:[]});
+it('обновляет колёса один раз за кадр и сохраняет вращение всех шагов физики', async () => {
+  // Arrange
+  const { engine, scene } = await setup(), traffic = new Traffic(scene, world([road(0, 1, 2, 0, 400)]));
+  traffic.agents.push({ id: 12, edge: 'edge-0', distance: 40, speed: 10, point: { x: 0, y: .96, z: 40 }, heading: 0, stuck: 0 });
+  try {
+    // Act
+    let angle = 0;
+    for (let i = 0; i < 6; i++) {
+      traffic.update(1 / 60, i / 60, { x: 50, y: 1, z: 40 }, 0, false);
+      const agent = traffic.agents[0];
+      angle += agent.speed / agent.visual!.profile.wheelRadius / 60;
+    }
+    const car = traffic.agents[0].visual!, tyre = car.wheels[0].getChildMeshes()[0];
+    // Assert
+    expect(tyre.rotation.x).toBe(0);
+    traffic.updateVisuals(.1);
+    expect(tyre.rotation.x).toBeCloseTo(angle, 10);
+    traffic.updateVisuals(.1);
+    expect(tyre.rotation.x).toBeCloseTo(angle, 10);
+  } finally { traffic.dispose(); scene.dispose(); engine.dispose(); }
+});
+
+it('переиспользует машину без старого импульса, столкновений и фонарей', async () => {
+  // Arrange
+  const { engine, scene } = await setup(), traffic = new Traffic(scene, world([road(0, 1, 2, 0, 400)]));
+  traffic.agents.push({ id: 12, edge: 'edge-0', distance: 40, speed: 10, point: { x: 0, y: .96, z: 40 }, heading: 0, stuck: 0 });
+  try {
+    traffic.update(1 / 60, 0, { x: 5, y: 1, z: 40 }, 0, false);
+    const agent = traffic.agents[0], visual = agent.visual!, aggregate = agent.body!;
+    aggregate.body.setLinearVelocity(new Vector3(30, 4, 0));
+    agent.impact = .7;
+    visual.brakeLights.forEach(light => light.isVisible = true);
+    // Act
+    traffic.update(1 / 60, 1 / 60, { x: 300, y: 1, z: 40 }, 0, false);
+    // Assert
+    expect(agent.visual).toBeUndefined();
+    expect(visual.root.isEnabled()).toBe(false);
+    expect(aggregate.shape.filterMembershipMask).toBe(0);
+    expect(aggregate.shape.filterCollideMask).toBe(0);
+    scene._advancePhysicsEngineStep(1000 / 60);
+    // Act
+    traffic.update(1 / 60, 2 / 60, { x: 50, y: 1, z: 40 }, 0, false);
+    // Assert
+    expect(agent.visual).toBe(visual);
+    expect(agent.body).toBe(aggregate);
+    expect(aggregate.body.shape).toBe(aggregate.shape);
+    expect(aggregate.body.getLinearVelocity().length()).toBeCloseTo(0);
+    expect(agent.dynamic).toBe(false);
+    expect(agent.impact).toBe(0);
+    expect(visual.root.isEnabled()).toBe(true);
+    expect(visual.brakeLights.every(light => !light.isVisible)).toBe(true);
+    traffic.dispose();
+    expect(visual.root.isDisposed()).toBe(true);
+  } finally { traffic.dispose(); scene.dispose(); engine.dispose(); }
+});
 it('обычная машина проезжает тысячи коротких сегментов и освобождает историю',async()=>{
   // Arrange
   const {engine,scene}=await setup(),w=world(Array.from({length:2300},(_,i)=>road(i,i,i+1,i,1))),traffic=new Traffic(scene,w);

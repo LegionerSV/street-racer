@@ -59,6 +59,7 @@ export function setCarLights(
 const trafficModels = new WeakMap<Scene, Map<string, CarVisual>>();
 const trafficMaterials = new WeakMap<Scene, Map<string, Material>>();
 const trafficGeometry = new WeakMap<Scene, Map<string, Mesh[]>>();
+const trafficSources = new WeakMap<Scene, Map<string, Mesh>>();
 export function createTrafficCar(
   scene: Scene,
   color: string,
@@ -135,9 +136,20 @@ export function createTrafficCar(
   function copy(parent: TransformNode, target: TransformNode) {
     for (const child of parent.getChildren()) {
       if (!(child instanceof TransformNode)) continue;
+      let sourceMesh = child;
+      if (child instanceof Mesh) {
+        let sources = trafficSources.get(scene);
+        if (!sources) {
+          sources = new Map();
+          trafficSources.set(scene, sources);
+        }
+        const batch = `${child.geometry!.uniqueId}/${child.material!.uniqueId}`;
+        sourceMesh = sources.get(batch) ?? child;
+        sources.set(batch, sourceMesh as Mesh);
+      }
       const instance =
         child instanceof Mesh
-          ? child.createInstance(name + '-' + child.name)
+          ? (sourceMesh as Mesh).createInstance(name + '-' + child.name)
           : new TransformNode(name + '-' + child.name, scene);
       instance.parent = target;
       instance.position.copyFrom(child.position);

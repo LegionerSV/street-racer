@@ -1,5 +1,5 @@
 import { Vector3 } from '@babylonjs/core';
-import { indexWorld } from './chunks';
+import { indexDrivingWorld as indexWorld } from './driving-index';
 import { boundsOf } from './geometry';
 import { projectOnSegment, sampleElevation } from './geo';
 import type { World } from './types';

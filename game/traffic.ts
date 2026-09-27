@@ -10,7 +10,6 @@ import { RACER_COLOURS } from './race-map-markers';
 import {
   PhysicsAggregate,
   PhysicsMotionType,
-  PhysicsShapeType,
   Quaternion,
   Scene,
   Vector3,
@@ -39,6 +38,7 @@ import {
 import { TrafficNeighborIndex } from './traffic-neighbors';
 import { signalApproaches } from './signal-approaches';
 import { trafficClearancePoint, trajectoryConflict } from './traffic-conflicts';
+import { TrafficCarPool, type TrafficCarLease } from './traffic-pool';
 
 type Plan = {
   ids: EdgeStableId[];
@@ -59,6 +59,10 @@ type Agent = {
   stuck: number;
   visual?: CarVisual;
   body?: PhysicsAggregate;
+  lease?: TrafficCarLease;
+  wheelAngle?: number;
+  braking?: boolean;
+  indicator?: number;
   plan?: Plan;
   travel?: number;
   laneOffset?: number;
@@ -151,6 +155,7 @@ export function trafficVisibleAt(distance: number, visible: boolean) {
   return distance <= (visible ? 245 : 220);
 }
 export class Traffic {
+  private pool: TrafficCarPool;
   agents: Agent[] = [];
   wetness = 0;
   private mobile = false;
@@ -168,6 +173,7 @@ export class Traffic {
     private scene: Scene,
     private world: World,
   ) {
+    this.pool = new TrafficCarPool(scene);
     this.signals = new Set(
       world.nodes.filter((n) => n.signal).map((n) => n.id),
     );
@@ -439,44 +445,52 @@ export class Traffic {
       a.id,
       this.world.center.lat > 58 ? 'spb' : 'moscow',
     );
-    a.visual = createTrafficCar(
-      this.scene,
-      a.race ? RACER_COLOURS[a.id % RACER_COLOURS.length] : appearance.color,
-      'traffic-' + a.id,
-      a.race ? 'sport' : appearance.kind,
-      !!a.race,
-      a.race ? 'sport-coupe' : appearance.model,
-      a.race ? 'standard' : appearance.finish,
-    );
+    const color = a.race
+        ? RACER_COLOURS[a.id % RACER_COLOURS.length]
+        : appearance.color,
+      kind = a.race ? 'sport' : appearance.kind,
+      model = a.race ? 'sport-coupe' : appearance.model,
+      finish = a.race ? 'standard' : appearance.finish;
+    a.lease = this.pool.take(`${model}/${color}/${finish}/${!!a.race}`, () => {
+      const visual = createTrafficCar(
+        this.scene,
+        color,
+        'traffic-' + a.id,
+        kind,
+        !!a.race,
+        model,
+        finish,
+      );
+      visual.root.position.copyFromFloats(a.point.x, a.point.y, a.point.z);
+      visual.root.rotationQuaternion = Quaternion.RotationYawPitchRoll(
+        a.heading,
+        a.pitch || 0,
+        a.roll || 0,
+      );
+      return visual;
+    });
+    a.visual = a.lease.visual;
     a.visual.root.position.copyFromFloats(a.point.x, a.point.y, a.point.z);
     a.visual.root.rotationQuaternion = Quaternion.RotationYawPitchRoll(
       a.heading,
       a.pitch || 0,
       a.roll || 0,
     );
-    a.body = new PhysicsAggregate(
-      a.visual.root,
-      PhysicsShapeType.BOX,
-      { mass: 1200, friction: 0.18, restitution: 0.04 },
-      this.scene,
-    );
-    a.body.body.setMassProperties({
-      mass: 1200,
-      centerOfMass: new Vector3(0, -0.38, 0),
-      inertia: new Vector3(1700 / 1200, 2100 / 1200, 760 / 1200),
-    });
-    a.body.body.setMotionType(PhysicsMotionType.ANIMATED);
-    a.body.body.setCollisionCallbackEnabled(true);
-    a.body.body.getCollisionObservable().add((e) => {
-      if (e.impulse > 400) a.impact = 0.7;
+    a.body = a.lease.body;
+    this.pool.activate(a.lease, () => {
+      a.impact = 0.7;
     });
   }
   private hide(a: Agent) {
-    a.body?.dispose();
+    if (a.lease) this.pool.release(a.lease);
+    a.lease = undefined;
     a.body = undefined;
-    a.visual?.dispose();
     a.visual = undefined;
     a.dynamic = false;
+    a.impact = 0;
+    a.wheelAngle = 0;
+    a.braking = false;
+    a.indicator = 0;
   }
   startRace(route: Route) {
     this.clearRacers();
@@ -1088,38 +1102,46 @@ export class Traffic {
               a.roll || 0,
             ),
           );
-        settleVehicleWheels(
-          a.visual!,
-          worldSurfaceSampler(
-            this.world,
-            mesh.position.x,
-            mesh.position.z,
-            a.point.y - a.visual!.profile.rideHeight + 0.8,
-            a.visual!.profile.length / 2 + 1,
-          ),
-        );
-        for (const [wheelIndex, wheel] of a.visual!.wheels.entries()) {
-          wheel.rotation.y = wheelIndex < 2 ? a.turn! * 0.22 : 0;
-          for (const child of wheel.getChildMeshes())
-            child.rotation.x += (a.speed / a.visual!.profile.wheelRadius) * dt;
-        }
-        setCarLights(
-          a.visual!,
-          a.speed < oldSpeed - 0.015 || target < 0.2,
+        a.wheelAngle =
+          (a.wheelAngle || 0) + (a.speed / a.visual!.profile.wheelRadius) * dt;
+        a.braking = a.speed < oldSpeed - 0.015 || target < 0.2;
+        a.indicator =
           Math.abs(this.lane(a, edge) - (a.laneOffset || 0)) > 0.15
             ? this.lane(a, edge) > (a.laneOffset || 0)
               ? 1
               : -1
-            : a.turn || 0,
-          time,
-        );
+            : a.turn || 0;
       } else this.hide(a);
     }
     for (const [id, r] of this.reservations)
       if (r.until < time - 3) this.reservations.delete(id);
   }
+  updateVisuals(time: number) {
+    for (const a of this.agents) {
+      const car = a.visual;
+      if (!car) continue;
+      settleVehicleWheels(
+        car,
+        worldSurfaceSampler(
+          this.world,
+          car.root.position.x,
+          car.root.position.z,
+          a.point.y - car.profile.rideHeight + 0.8,
+          car.profile.length / 2 + 1,
+        ),
+      );
+      for (const [i, wheel] of car.wheels.entries()) {
+        wheel.rotation.y = i < 2 ? (a.turn || 0) * 0.22 : 0;
+        for (const child of wheel.getChildMeshes())
+          child.rotation.x += a.wheelAngle || 0;
+      }
+      a.wheelAngle = 0;
+      setCarLights(car, !!a.braking, a.indicator || 0, time);
+    }
+  }
   dispose() {
     this.agents.forEach((a) => this.hide(a));
     this.agents = [];
+    this.pool.dispose();
   }
 }

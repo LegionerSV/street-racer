@@ -7,9 +7,27 @@ import {
   Ray,
   Mesh,
   PBRMaterial,
+  InstancedMesh,
 } from '@babylonjs/core';
 import { createCar, createTrafficCar, type CarKind } from './visuals';
 import { VEHICLE_PROFILES, type VehicleModelId } from './vehicle-profiles';
+it('неокрашенные детали разных цветов попадают в одну группу инстансинга', () => {
+  // Arrange
+  const engine = new NullEngine(), scene = new Scene(engine);
+  const first = createTrafficCar(scene, '#447788', 'first', 'sedan');
+  // Act
+  const second = createTrafficCar(scene, '#bb4433', 'second', 'sedan');
+  // Assert
+  try {
+    const sources = (car: typeof first, paint: boolean) => car.root.getChildMeshes()
+      .filter(m => m.material?.name.endsWith('-paint') === paint)
+      .map(m => (m as InstancedMesh).sourceMesh);
+    expect(sources(second, false)).toEqual(sources(first, false));
+    expect(sources(second, true)[0]).not.toBe(sources(first, true)[0]);
+    expect((sources(first, true)[0].material as PBRMaterial).albedoColor.toGammaSpace(true).toHexString().toLowerCase()).toBe('#447788');
+    expect((sources(second, true)[0].material as PBRMaterial).albedoColor.toGammaSpace(true).toHexString().toLowerCase()).toBe('#bb4433');
+  } finally { scene.dispose(); engine.dispose(); }
+});
 it('цвет лака переводится из sRGB в линейное пространство PBR без потери оттенка', () => {
   // Arrange
   const engine = new NullEngine(),

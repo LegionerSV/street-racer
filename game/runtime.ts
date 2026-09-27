@@ -52,7 +52,6 @@ import {
   raceInstalledChunkWeight,
   racePreloadWithinBudget,
   routeChunkPlan,
-  prepareWorldIndex,
 } from './chunks';
 import { distance2, pathLengths, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
@@ -69,10 +68,13 @@ import {
 import { material } from './visuals';
 import { EngineSound } from './audio';
 import { Atmosphere } from './atmosphere';
-import { indexWorld } from './chunks';
+import {
+  indexDrivingWorld as indexWorld,
+  prepareDrivingIndex,
+} from './driving-index';
 import { isLightQuality, resolutionScale } from './quality';
 import { streetMaterials } from './street-materials';
-import { FrameTimings } from './performance';
+import { FrameTimings, FrameWorkTimings } from './performance';
 import { VehicleLighting } from './vehicle-lighting';
 import { VehicleContactShadows } from './vehicle-contact-shadows';
 import { treeInstances } from './tree-instances';
@@ -268,6 +270,8 @@ export class Game {
   private engineStats: EngineInstrumentation;
   private sceneStats: SceneInstrumentation;
   private frameTimings = new FrameTimings();
+  private frameWork = new FrameWorkTimings();
+  private trafficWorkMs = 0;
   private installTimings = new FrameTimings(120);
   private odometer = 0;
   private lookTarget = Vector3.Zero();
@@ -677,6 +681,7 @@ export class Game {
       });
       if (this.driveTest) this.testStep(dt);
       this.player.step(dt, this.keys, this.race?.phase === 'countdown');
+      const trafficStarted = performance.now();
       this.traffic.update(
         dt,
         this.time,
@@ -686,6 +691,7 @@ export class Game {
         this.race?.elapsed || 0,
         this.player.heading,
       );
+      this.trafficWorkMs += performance.now() - trafficStarted;
       this.impactSpeeds.capture(this.player.aggregate.body);
       for (const agent of this.traffic.agents)
         if (agent.body) this.impactSpeeds.capture(agent.body.body);
@@ -1261,12 +1267,14 @@ export class Game {
         if (nearest) this.lastSafeEdge = edgeStableId(nearest);
       }
     }
+    const installStarted = performance.now();
     this.installQueue.drainSteps((chunk) => {
       if (this.wanted.some((c) => c.key === chunk.key && c.lod === chunk.lod))
         return this.installSteps(chunk);
       this.patchInstallMetrics.delete(chunk.key);
       return [][Symbol.iterator]();
     });
+    const installMs = performance.now() - installStarted;
     this.pump();
     const p = this.player.position,
       h = this.player.heading;
@@ -1292,11 +1300,17 @@ export class Game {
       if (reason) this.loadingReasons.push(`${reason}:${key}`);
     }
     this.loading = this.loadingReasons.length > 0;
+    this.trafficWorkMs = 0;
+    const physicsStarted = performance.now();
     advanceDrivingPhysics(
       this.scene,
       this.engine.getDeltaTime(),
       !this.paused && !this.loading,
     );
+    const physicsMs = performance.now() - physicsStarted,
+      visualsStarted = performance.now();
+    this.traffic.updateVisuals(this.time);
+    const visualsMs = performance.now() - visualsStarted;
     if (!this.paused && !this.loading) {
       const surface = sampleWorldSurface(this.world, p.x, p.z, p.y),
         up = this.player.visual.root.getDirection(Vector3.Up());
@@ -1455,7 +1469,16 @@ export class Game {
     });
     if (!this.paused && !this.loading)
       this.activeWallSeconds += this.engine.getDeltaTime() / 1000;
+    const renderStarted = performance.now();
     this.scene.render();
+    if (!this.paused && !document.hidden)
+      this.frameWork.add({
+        physics: physicsMs,
+        traffic: this.trafficWorkMs,
+        visuals: visualsMs,
+        render: performance.now() - renderStarted,
+        install: installMs,
+      });
     if (this.hudClock <= 0) {
       this.hudClock = 0.1;
       this.emit();
@@ -1626,7 +1649,7 @@ export class Game {
             continue;
           }
           const indexStarted = performance.now();
-          const indexSteps = prepareWorldIndex(next);
+          const indexSteps = prepareDrivingIndex(next, this.world);
           let indexStep = indexSteps.next();
           while (!indexStep.done && !this.disposed) {
             const sliceStarted = performance.now();
@@ -2228,6 +2251,7 @@ export class Game {
       gpu = this.engineStats.gpuFrameTimeCounter;
     return {
       ...this.frameTimings.summary(),
+      cpuWork: this.frameWork.summary(),
       mainThreadHeapMiB: memory
         ? Math.round(memory.usedJSHeapSize / 1048576)
         : null,
@@ -2274,6 +2298,7 @@ export class Game {
   }
   resetPerformance() {
     this.frameTimings.reset();
+    this.frameWork.reset();
     this.installTimings.reset();
   }
   exportPerformance() {

@@ -90,6 +90,7 @@ it.each([0, 48, -48])(
           false,
         );
         scene.getPhysicsEngine()!._step(1 / 60);
+        traffic.updateVisuals(i / 60);
       }
       const a = traffic.agents[0],
         car = a.visual!;
@@ -210,6 +211,7 @@ it.each([1, -1])(
         );
         scene.getPhysicsEngine()!._step(1 / 60);
         const car = a.visual!;
+        traffic.updateVisuals(i / 60);
         car.root.computeWorldMatrix(true);
         const up = car.root.getDirection(Vector3.Up());
         for (const wheel of car.wheels) {

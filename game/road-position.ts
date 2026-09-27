@@ -1,5 +1,5 @@
 import type {Edge,Point,World} from './types';
-import {indexWorld} from './chunks';
+import {indexDrivingWorld as indexWorld} from './driving-index';
 import {outgoing} from './network';
 import {projectOnSegment,tileKey} from './geo';
 export function drivingEdgeAt(world:World,position:Point,heading:number):Edge|undefined{

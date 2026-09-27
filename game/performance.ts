@@ -1,3 +1,46 @@
+type FrameWork = {
+  physics: number;
+  traffic: number;
+  visuals: number;
+  render: number;
+  install: number;
+};
+export class FrameWorkTimings {
+  private frames: FrameWork[] = [];
+  private next = 0;
+  constructor(private capacity = 600) {}
+  add(frame: FrameWork) {
+    if (Object.values(frame).some((ms) => !Number.isFinite(ms) || ms < 0))
+      return;
+    this.frames[this.next] = frame;
+    this.next = (this.next + 1) % this.capacity;
+  }
+  reset() {
+    this.frames = [];
+    this.next = 0;
+  }
+  summary() {
+    if (!this.frames.length) return null;
+    const section = (key: keyof FrameWork) => {
+      const values = this.frames
+        .map((frame) => frame[key])
+        .sort((a, b) => a - b);
+      return {
+        meanMs: values.reduce((sum, ms) => sum + ms, 0) / values.length,
+        p95Ms: values[Math.ceil(values.length * 0.95) - 1],
+      };
+    };
+    return {
+      samples: this.frames.length,
+      physics: section('physics'),
+      traffic: section('traffic'),
+      visuals: section('visuals'),
+      render: section('render'),
+      install: section('install'),
+    };
+  }
+}
+
 export class FrameTimings {
   private samples: number[] = [];
   private next = 0;
