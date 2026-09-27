@@ -11,6 +11,7 @@ import type { Building, Edge, Point, ElevationGrid } from './types';
 
 export const BRIDGE_DECK_THICKNESS = 0.55;
 export const MIN_ROAD_CLEARANCE = 3.5;
+const CLEARANCE_MODEL_TOLERANCE = 0.02;
 export const SIDEWALK_WIDTH = 2;
 export const CURB_WIDTH = 0.2;
 export const CURB_HEIGHT = 0.15;
@@ -70,7 +71,9 @@ function tunnelContinuation(incoming: Edge, node: number, options: Edge[]) {
       .filter(
         (candidate) =>
           candidate.compatible &&
-          (options.length === 1 || candidate.strong || candidate.alignment >= 0.5),
+          (options.length === 1 ||
+            candidate.strong ||
+            candidate.alignment >= 0.5),
       )
       .sort((a, b) => b.score - a.score);
   if (!ranked.length || (ranked[1] && ranked[0].score - ranked[1].score < 0.25))
@@ -451,39 +454,65 @@ export function fitBridgeBuildingUnderDeck(
       building.kind !== 'bridge' ||
       (explicit && !preserved) ||
       building.footprint.length < 3
-    ) continue;
+    )
+      continue;
     const layer = Number(building.osmTags?.layer ?? 0);
     if (!Number.isFinite(layer)) continue;
     const roofs = edges
-      .filter((edge) =>
-        edge.bridge &&
-        edge.layer > layer &&
-        (!explicit || preserved?.has(edge.stableId)),
+      .filter(
+        (edge) =>
+          edge.bridge &&
+          edge.layer > layer &&
+          (!explicit || preserved?.has(edge.stableId)),
       )
-      .flatMap((edge) => roadHeightsOverBuilding(edge, building)
-        .map((height) => height - BRIDGE_DECK_THICKNESS - 0.2));
+      .flatMap((edge) =>
+        roadHeightsOverBuilding(edge, building).map(
+          (height) => height - BRIDGE_DECK_THICKNESS - 0.2,
+        ),
+      );
     if (!roofs.length) continue;
     const ceiling = Math.min(...roofs);
     let ground = Math.max(...building.footprint.map((point) => point.y));
     if (ground + 0.1 > ceiling) {
       const lowering = ground + 0.1 - ceiling;
-      building.footprint = building.footprint.map((point) => ({ ...point, y: point.y - lowering }));
-      building.holes = building.holes?.map((hole) => hole.map((point) => ({ ...point, y: point.y - lowering })));
+      building.footprint = building.footprint.map((point) => ({
+        ...point,
+        y: point.y - lowering,
+      }));
+      building.holes = building.holes?.map((hole) =>
+        hole.map((point) => ({ ...point, y: point.y - lowering })),
+      );
       ground -= lowering;
     }
-    building.height = Math.max(0.1, Math.min(building.height, ceiling - ground));
+    building.height = Math.max(
+      0.1,
+      Math.min(building.height, ceiling - ground),
+    );
     if (building.minHeight !== undefined)
-      building.minHeight = Math.min(building.minHeight, Math.max(0, building.height - 0.1));
+      building.minHeight = Math.min(
+        building.minHeight,
+        Math.max(0, building.height - 0.1),
+      );
     if (building.supportMinHeight !== undefined)
-      building.supportMinHeight = Math.min(building.supportMinHeight, Math.max(0, building.height - 0.1));
+      building.supportMinHeight = Math.min(
+        building.supportMinHeight,
+        Math.max(0, building.height - 0.1),
+      );
     if (building.envelopeHeight !== undefined)
-      building.envelopeHeight = Math.min(building.envelopeHeight, building.height);
+      building.envelopeHeight = Math.min(
+        building.envelopeHeight,
+        building.height,
+      );
   }
 }
 export function fitTunnelDepth(edges: Edge[], elevation: ElevationGrid) {
   fitStructureHeight(edges, elevation);
 }
-function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid, buildings: Building[] = []) {
+function fitStructureHeight(
+  edges: Edge[],
+  tunnelTerrain?: ElevationGrid,
+  buildings: Building[] = [],
+) {
   const physical = physicalEdges(edges),
     peers = tunnelTerrain
       ? new Map<number, { id: number }[]>()
@@ -554,15 +583,19 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid, buildi
   }
   const crossings = roadCrossings(physical);
   const lowerBridgeBuildings = buildings
-    .filter((building) =>
-      building.kind === 'bridge' &&
-      building.footprint.length >= 3 &&
-      (building.osmTags?.height !== undefined || building.osmTags?.['building:levels'] !== undefined),
+    .filter(
+      (building) =>
+        building.kind === 'bridge' &&
+        building.footprint.length >= 3 &&
+        (building.osmTags?.height !== undefined ||
+          building.osmTags?.['building:levels'] !== undefined),
     )
     .map((building) => ({
       building,
       layer: Number(building.osmTags?.layer ?? 0),
-      top: Math.max(...building.footprint.map((point) => point.y)) + building.height,
+      top:
+        Math.max(...building.footprint.map((point) => point.y)) +
+        building.height,
     }))
     .filter((item) => Number.isFinite(item.layer));
   for (const group of groups) {
@@ -586,10 +619,15 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid, buildi
           ...contacts.map(
             (c) => MIN_ROAD_CLEARANCE + 0.05 - crossingClearance(c),
           ),
-          ...group.flatMap((edge) => lowerBridgeBuildings
-            .filter(({ layer }) => layer < edge.layer)
-            .flatMap(({ building, top }) => roadHeightsOverBuilding(edge, building)
-              .map((height) => top + BRIDGE_DECK_THICKNESS + 0.2 - height))),
+          ...group.flatMap((edge) =>
+            lowerBridgeBuildings
+              .filter(({ layer }) => layer < edge.layer)
+              .flatMap(({ building, top }) =>
+                roadHeightsOverBuilding(edge, building).map(
+                  (height) => top + BRIDGE_DECK_THICKNESS + 0.2 - height,
+                ),
+              ),
+          ),
         );
     if (Math.abs(rise) < 1e-6) continue;
     const ramp = Math.max(100, (Math.abs(rise) * 1.875) / 0.06),
@@ -679,17 +717,26 @@ function fitStructureHeight(edges: Edge[], tunnelTerrain?: ElevationGrid, buildi
 }
 
 export function validateClearance(edges: Edge[]): string[] {
-  const closed = new Set<number>();
-  const issues = new Map<number, NonNullable<Edge['clearanceIssue']>>();
+  const closed = new Set<string>();
+  const issues = new Map<string, NonNullable<Edge['clearanceIssue']>>();
+  for (const edge of edges) {
+    const legacyBlocked = edge.blocked && !edge.blockedReasons?.length;
+    edge.blockedReasons = (edge.blockedReasons || []).filter(
+      (reason) => reason !== 'clearance',
+    );
+    edge.blocked = legacyBlocked || edge.blockedReasons.length > 0;
+    edge.clearanceIssue = undefined;
+  }
   for (const c of roadCrossings(edges))
-    if (crossingClearance(c) < MIN_ROAD_CLEARANCE - 1e-6) {
+    if (crossingClearance(c) < MIN_ROAD_CLEARANCE - CLEARANCE_MODEL_TOLERANCE) {
       const upper = c.upper.edge.bridge || c.upper.edge.tunnel;
       const edge = upper ? c.upper.edge : c.lower.edge;
       if (!edge.bridge && !edge.tunnel) continue;
-      closed.add(edge.way);
+      const key = physicalKey(edge);
+      closed.add(key);
       const available = crossingClearance(c);
-      if (available < (issues.get(edge.way)?.available ?? Infinity))
-        issues.set(edge.way, {
+      if (available < (issues.get(key)?.available ?? Infinity))
+        issues.set(key, {
           otherWay: (upper ? c.lower : c.upper).edge.way,
           available,
           required: MIN_ROAD_CLEARANCE,
@@ -697,14 +744,20 @@ export function validateClearance(edges: Edge[]): string[] {
         });
     }
   for (const edge of edges)
-    if (closed.has(edge.way)) {
+    if (closed.has(physicalKey(edge))) {
       edge.blocked = true;
       edge.blockedReasons = [
         ...new Set([...(edge.blockedReasons || []), 'clearance' as const]),
       ];
-      edge.clearanceIssue = issues.get(edge.way);
+      edge.clearanceIssue = issues.get(physicalKey(edge));
     }
-  return [...closed]
+  return [
+    ...new Set(
+      edges
+        .filter((edge) => closed.has(physicalKey(edge)))
+        .map((edge) => edge.way),
+    ),
+  ]
     .sort((a, b) => a - b)
     .map((id) => `Дорога ${id} закрыта: недостаточный просвет между уровнями.`);
 }

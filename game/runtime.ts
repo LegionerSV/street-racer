@@ -1,3 +1,5 @@
+import { refreshRaceRoute } from './network';
+import { MIN_RACE_LENGTH } from './race-quality';
 import { opponentMarkers, raceMarkerPosition } from './race-map-markers';
 import { mapDiagnostics } from './map-diagnostics';
 import {
@@ -50,6 +52,7 @@ import {
   raceInstalledChunkWeight,
   racePreloadWithinBudget,
   routeChunkPlan,
+  prepareWorldIndex,
 } from './chunks';
 import { distance2, pathLengths, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
@@ -116,7 +119,9 @@ type BreakableLoaded = {
 export const isStaticCollisionRole = (role: string, lod: number) =>
   lod === 0 && role === 'collision';
 
-export function* mergeStaticCollisionDataSteps(chunk: ChunkData): Generator<void, MeshData> {
+export function* mergeStaticCollisionDataSteps(
+  chunk: ChunkData,
+): Generator<void, MeshData> {
   const meshes = [
       chunk.terrain,
       chunk.shoulders,
@@ -153,10 +158,12 @@ export function mergeStaticCollisionData(chunk: ChunkData): MeshData {
   while (!result.done) result = steps.next();
   return result.value;
 }
-export function stageChunkMesh<TMesh extends { isEnabled: () => boolean; setEnabled: (enabled: boolean) => void }>(
-  mesh: TMesh,
-  staged: { mesh: TMesh; enabled: boolean }[],
-) {
+export function stageChunkMesh<
+  TMesh extends {
+    isEnabled: () => boolean;
+    setEnabled: (enabled: boolean) => void;
+  },
+>(mesh: TMesh, staged: { mesh: TMesh; enabled: boolean }[]) {
   staged.push({ mesh, enabled: mesh.isEnabled() });
   mesh.setEnabled(false);
 }
@@ -184,6 +191,7 @@ type Loaded = {
 type MapUpdateTiming = {
   fetchMs: number;
   prepareMs: number;
+  indexMs?: number;
   commitMs: number;
   dirtyCount: number;
   installMs: number;
@@ -279,6 +287,15 @@ export class Game {
   private loadingReasons: string[] = [];
   private preparingRace = false;
   private racePreparationStatus = '';
+  private racePreparation: {
+    status: string;
+    start: string;
+    kind: string;
+    error?: string;
+    stack?: string;
+    tiles?: string[];
+    length?: number;
+  } | null = null;
   private racePinnedChunks = new Map<string, number>();
   private racePinnedTiles = new Set<string>();
   private raceCoverageLoading = false;
@@ -492,7 +509,7 @@ export class Game {
     // После фонового ограничения браузера не выполняем секунду физики за один кадр.
     Scene.MaxDeltaTime = 100;
     this.scene.fogMode = Scene.FOGMODE_EXP2;
-    this.scene.fogDensity = settings.quality === 'high' ? 0.00095 : 0.00135;
+    this.scene.fogDensity = settings.quality === 'high' ? 0.0004 : 0.00135;
     this.scene.fogColor = new Color3(0.13, 0.2, 0.24);
     this.scene.enablePhysics(
       new Vector3(0, -9.81, 0),
@@ -576,9 +593,7 @@ export class Game {
       light.intensity = 0;
       this.lampLights.push(light);
     }
-    this.vehicleLighting = new VehicleLighting(this.scene, (x, z, y) =>
-      sampleWorldSurface(this.world, x, z, y),
-    );
+    this.vehicleLighting = new VehicleLighting(this.scene);
     this.vehicleContactShadows = new VehicleContactShadows(
       this.scene,
       (x, z, y) => sampleWorldSurface(this.world, x, z, y),
@@ -704,6 +719,13 @@ export class Game {
       vertices = new VertexData();
     vertices.positions = data.positions;
     vertices.indices = data.indices;
+    if (name.endsWith(':collision')) {
+      vertices.applyToMesh(mesh);
+      mesh.isVisible = false;
+      mesh.isPickable = false;
+      mesh.freezeWorldMatrix();
+      return mesh;
+    }
     if (data.normals?.length === data.positions.length)
       vertices.normals = data.normals;
     else {
@@ -882,7 +904,8 @@ export class Game {
         branch.thinInstanceSetBuffer('matrix', shape.branches, 16);
         foliage.thinInstanceSetBuffer('matrix', shape.leaves, 16);
         trunk.isPickable = branch.isPickable = foliage.isPickable = false;
-        for (const mesh of [trunk, branch, foliage]) stageChunkMesh(mesh, staged);
+        for (const mesh of [trunk, branch, foliage])
+          stageChunkMesh(mesh, staged);
         meshes.push(trunk, branch, foliage);
         installMs += performance.now() - stepStarted;
         yield;
@@ -909,12 +932,13 @@ export class Game {
       // Коллайдеры меняются вместе с кварталом, без шага физики между версиями.
       swapChunkCollisionBodies(
         collisionMeshes,
-        (mesh) => new PhysicsAggregate(
-          mesh,
-          PhysicsShapeType.MESH,
-          { mass: 0, friction: 0.65, restitution: 0.02 },
-          this.scene,
-        ),
+        (mesh) =>
+          new PhysicsAggregate(
+            mesh,
+            PhysicsShapeType.MESH,
+            { mass: 0, friction: 0.65, restitution: 0.02 },
+            this.scene,
+          ),
         bodies,
         this.chunks.get(chunk.key),
         () => staged.forEach(({ mesh, enabled }) => mesh.setEnabled(enabled)),
@@ -1259,7 +1283,8 @@ export class Game {
     if (this.applyingMap) this.loadingReasons.push('map-transition');
     for (const key of critical) {
       const reason = criticalChunkLoadingReason(
-        !this.mapCoverage || tileReady(this.mapCoverage, key, this.world.center),
+        !this.mapCoverage ||
+          tileReady(this.mapCoverage, key, this.world.center),
         !!this.mapCoverage && this.staleChunks.has(key),
         this.chunks.get(key)?.lod,
         !!this.mapCoverage || this.wanted.some((c) => c.key === key),
@@ -1360,18 +1385,6 @@ export class Game {
     const trafficVisuals = this.traffic.agents.flatMap((a) =>
       a.visual ? [a.visual] : [],
     );
-    this.vehicleLighting.update(
-      dt,
-      this.player.visual,
-      trafficVisuals,
-      this.settings.quality,
-      this.atmosphere.state.daylight,
-    );
-    this.vehicleContactShadows.update(
-      this.player.visual,
-      trafficVisuals,
-      this.atmosphere.state.daylight,
-    );
     const sheltered = (
       indexWorld(this.world).segments.get(tileKey(p.x, p.z)) || []
     ).some(
@@ -1379,6 +1392,19 @@ export class Game {
         s.edge.tunnel &&
         projectOnSegment(p, s.a, s.b).distance < s.edge.width / 2 + 1 &&
         Math.abs(projectOnSegment(p, s.a, s.b).point.y - p.y) < 3,
+    );
+    this.vehicleLighting.update(
+      dt,
+      this.player.visual,
+      trafficVisuals,
+      this.settings.quality,
+      this.atmosphere.state.daylight,
+      sheltered,
+    );
+    this.vehicleContactShadows.update(
+      this.player.visual,
+      trafficVisuals,
+      this.atmosphere.state.daylight,
     );
     this.scene
       .getMeshByName('rain')
@@ -1599,10 +1625,22 @@ export class Game {
             awaiting = null;
             continue;
           }
+          const indexStarted = performance.now();
+          const indexSteps = prepareWorldIndex(next);
+          let indexStep = indexSteps.next();
+          while (!indexStep.done && !this.disposed) {
+            const sliceStarted = performance.now();
+            do {
+              indexStep = indexSteps.next();
+            } while (!indexStep.done && performance.now() - sliceStarted < 3);
+            if (!indexStep.done) await wait(0);
+          }
+          if (this.disposed) return;
           const preparedAt = performance.now();
           const updateMetric = {
             fetchMs: Math.round(fetchedAt - updateStarted),
-            prepareMs: Math.round(preparedAt - prepareStarted),
+            prepareMs: Math.round(indexStarted - prepareStarted),
+            indexMs: Math.round(preparedAt - indexStarted),
             commitMs: 0,
             dirtyCount: patch.dirtyChunks.length,
             installMs: 0,
@@ -1864,9 +1902,16 @@ export class Game {
     steps.return?.(undefined);
     throw new Error('Подготовка заезда отменена.');
   }
-  private raceTileKeys(plan: ReturnType<typeof routeChunkPlan>) {
-    return new Set(
-      plan.flatMap((chunk) => {
+  private raceTileKeys(plan: ReturnType<typeof routeChunkPlan>, route: Route) {
+    const margin = Math.max(
+      120,
+      ...route.edges.map(
+        (id) => (edgeById(this.world, id)?.width ?? 20) / 2 + 110,
+      ),
+    );
+    return new Set([
+      ...routeCoverageTileKeys(route.points, this.world.center, margin),
+      ...plan.flatMap((chunk) => {
         const [x, z] = chunk.key.split(',').map(Number);
         return sourceTileKeysForLocalBounds(this.world.center, {
           minX: x * 250,
@@ -1875,7 +1920,7 @@ export class Game {
           maxZ: (z + 1) * 250,
         });
       }),
-    );
+    ]);
   }
   private async ensureRaceCoverage(required: Set<string>) {
     const missing = () =>
@@ -1924,9 +1969,13 @@ export class Game {
         throw new Error(
           'Окружение этой трассы слишком велико для безопасной предварительной загрузки.',
         );
-      const expanded = await this.ensureRaceCoverage(this.raceTileKeys(plan));
+      const expanded = await this.ensureRaceCoverage(
+        this.raceTileKeys(plan, route),
+      );
       if (!expanded) break;
-      const refreshed = await this.worker.raceRoute(start, kind);
+      const refreshed =
+        refreshRaceRoute(this.world, route) ??
+        (await this.worker.raceRoute(start, kind));
       if (!refreshed)
         throw new Error(
           'После загрузки окружения не удалось повторно построить маршрут заезда.',
@@ -1941,7 +1990,7 @@ export class Game {
     this.racePinnedChunks = new Map(
       plan.map((chunk) => [chunk.key, chunk.lod]),
     );
-    this.racePinnedTiles = this.raceTileKeys(plan);
+    this.racePinnedTiles = this.raceTileKeys(plan, route);
     this.refreshWanted();
     const missing = plan.filter((chunk) =>
       raceChunkNeedsPreparation(
@@ -2007,6 +2056,11 @@ export class Game {
       return;
     const start = edgeById(this.world, invitation.edges[0]);
     if (!start || start.blocked) return;
+    this.racePreparation = {
+      status: 'searching',
+      start: edgeStableId(start),
+      kind: invitation.kind,
+    };
     this.preparingRace = true;
     this.loading = true;
     this.clearControls();
@@ -2018,8 +2072,30 @@ export class Game {
       );
       if (this.disposed) return;
       if (this.paused) return;
+      for (const radius of [1100, 1500]) {
+        if (route && route.length >= MIN_RACE_LENGTH) break;
+        if (!this.mapStream) break;
+        const origin = start.points[0];
+        this.racePreparationStatus =
+          'Ищем маршрут от 2 км · загружаем соседние кварталы';
+        const required = new Set(
+          sourceTileKeysForLocalBounds(this.world.center, {
+            minX: origin.x - radius,
+            maxX: origin.x + radius,
+            minZ: origin.z - radius,
+            maxZ: origin.z + radius,
+          }),
+        );
+        await this.ensureRaceCoverage(required);
+        if (this.disposed || this.paused) return;
+        route = await this.worker.raceRoute(
+          edgeStableId(start),
+          invitation.kind,
+        );
+      }
       if (
         !route ||
+        route.length < MIN_RACE_LENGTH ||
         !routeHasDrivingCoverage(
           route.points,
           this.world.loadedTiles,
@@ -2040,6 +2116,7 @@ export class Game {
         throw new Error(
           'Для этого заезда пока не хватает связанных загруженных дорог. Попробуйте другой старт или дождитесь подгрузки карты.',
         );
+      this.racePreparation!.status = 'environment';
       route = await this.prepareRaceEnvironment(
         route,
         edgeStableId(start),
@@ -2051,6 +2128,16 @@ export class Game {
         if (!this.disposed) this.refreshWanted();
         return;
       }
+      if (route.length < MIN_RACE_LENGTH)
+        throw new Error(
+          'Не удалось найти связный маршрут от 2 км без повторяющихся участков.',
+        );
+      this.racePreparation = {
+        ...this.racePreparation!,
+        status: 'ready',
+        length: route.length,
+        tiles: [...this.racePinnedTiles],
+      };
       this.race = makeRace(route);
       this.message = '';
       this.player.reset(
@@ -2065,6 +2152,13 @@ export class Game {
       this.refreshWanted();
       this.clearControls();
     } catch (error) {
+      this.racePreparation = {
+        ...this.racePreparation!,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        tiles: [...this.racePinnedTiles],
+      };
       this.racePinnedChunks.clear();
       this.racePinnedTiles.clear();
       this.refreshWanted();
@@ -2076,6 +2170,13 @@ export class Game {
         this.paused = true;
       }
     } finally {
+      if (!this.race) {
+        this.racePinnedChunks.clear();
+        this.racePinnedTiles.clear();
+        if (this.racePreparation?.status !== 'error')
+          this.racePreparation!.status = 'cancelled';
+        if (!this.disposed) this.refreshWanted();
+      }
       this.preparingRace = false;
       this.racePreparationStatus = '';
       if (!this.disposed) this.emit();
@@ -2114,7 +2215,7 @@ export class Game {
         this.canvas.clientHeight,
       ),
     );
-    this.scene.fogDensity = settings.quality === 'high' ? 0.00095 : 0.00135;
+    this.scene.fogDensity = settings.quality === 'high' ? 0.0004 : 0.00135;
     this.configureGlow(settings.quality);
     this.refreshWanted();
   }
@@ -2211,6 +2312,10 @@ export class Game {
       pending: this.pending.size,
       fps: this.engine.getFps(),
       trafficCars: this.traffic.agents.filter((a) => !a.race).length,
+      trafficDistribution: this.traffic.diagnostics(
+        this.player.position,
+        this.player.heading,
+      ),
       weather: this.atmosphere.state,
       odometer: this.odometer,
       offRoad: this.player.offRoad,
@@ -2248,25 +2353,33 @@ export class Game {
       loading: this.loading,
       loadingReasons: this.loadingReasons,
       error: this.streamFailure,
+      racePreparation: this.racePreparation,
       test: this.driveTest
         ? { elapsed: this.driveTest.elapsed, distance: this.driveTest.distance }
         : this.testReport,
     };
   }
-  startDriveTest() {
+  async startDriveTest() {
     if (this.suspendPump) return;
     if (this.driveTest) {
       this.endDriveTest();
       return;
     }
-    const route =
+    const invitation =
       this.world.routes.find((r) => r.kind === 'sprint') ||
       this.world.routes[0];
-    if (!route) {
+    if (!invitation) {
+      this.message = 'Нет маршрута для испытания.';
+      return;
+    }
+    const route = await this.worker.raceRoute(invitation.edges[0], 'sprint');
+    if (!route || this.disposed) {
       this.message = 'Нет маршрута для испытания.';
       return;
     }
     this.race = null;
+    this.racePinnedChunks.clear();
+    this.racePinnedTiles.clear();
     this.traffic.clearRacers();
     this.player.reset(
       edgeById(this.world, route.edges[0])!,
@@ -2371,6 +2484,8 @@ export class Game {
     }
     this.driveTest = null;
     this.race = null;
+    this.racePinnedChunks.clear();
+    this.racePinnedTiles.clear();
     this.traffic.clearRacers();
     const edge = candidates[0];
     this.lastSafeEdge = edgeStableId(edge);

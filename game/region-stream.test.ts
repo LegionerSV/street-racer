@@ -84,8 +84,8 @@ it('высокое качество хранит только ближайшие
       start,
     );
   // Assert
-  expect(policy.targetRadiusMeters).toBe(800);
-  expect(policy.maxElements).toBe(140000);
+  expect(policy.targetRadiusMeters).toBe(1800);
+  expect(policy.maxElements).toBe(260000);
   expect(initial.length).toBeLessThan(previousWindow.length);
   expect(ahead).toContain(mapTileAt({ x: 0, z: 800 }, start));
   const kremlinTiles = startupTiles(
@@ -115,12 +115,12 @@ it('плавно увеличивает окно source-тайлов вмест�
   expect(crawling).toBe(0);
   expect(city).toBe(1);
   expect(fast).toBe(1);
-  expect(mapRadiusAtSpeed(policy, 0)).toBe(policy.blockingRadiusMeters);
-  expect(mapRadiusAtSpeed(policy, 1)).toBe(policy.blockingRadiusMeters);
+  expect(mapRadiusAtSpeed(policy, 0)).toBe(policy.sceneryRadiusMeters);
+  expect(mapRadiusAtSpeed(policy, 1)).toBe(policy.sceneryRadiusMeters);
   expect(mapRadiusAtSpeed(policy, 12)).toBeGreaterThan(
     policy.blockingRadiusMeters,
   );
-  expect(mapRadiusAtSpeed(policy, 12)).toBeLessThan(policy.targetRadiusMeters);
+  expect(mapRadiusAtSpeed(policy, 12)).toBe(policy.targetRadiusMeters);
   expect(mapRadiusAtSpeed(policy, 200)).toBe(policy.targetRadiusMeters);
 });
 
@@ -195,8 +195,8 @@ it('не запрашивает в высоком качестве дальни�
     petersburg,
   );
   // Assert
-  expect(policy.targetRadiusMeters).toBe(800);
-  expect(moving.length).toBeLessThanOrEqual(55);
+  expect(policy.targetRadiusMeters).toBe(1800);
+  expect(moving.length).toBeLessThanOrEqual(64);
 });
 it('ставит четыре клетки по ходу движения перед соседними боковыми клетками', () => {
   // Arrange

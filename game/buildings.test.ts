@@ -365,3 +365,64 @@ it.each([
     ]);
   },
 );
+
+it('дальний силуэт сохраняет здания без дорожных деталей, деревьев и текстур фасада', () => {
+  // Arrange
+  const input = world();
+  input.trees = [{ x: 80, y: 0, z: 80 }];
+  // Act
+  const chunk = buildChunk(input, '0,0', 3);
+  // Assert
+  expect(chunk.buildings.indices.length).toBeGreaterThan(0);
+  expect(chunk.facades!.every((mesh) => mesh.indices.length === 0)).toBe(true);
+  expect(chunk.terrain.indices).toHaveLength(0);
+  expect(chunk.road.indices).toHaveLength(0);
+  expect(chunk.trees).toHaveLength(0);
+  expect(chunk.breakables).toHaveLength(0);
+});
+
+it('дальний силуэт сохраняет пониженную оболочку составного здания', () => {
+  // Arrange
+  const outline = {
+    ...building,
+    roof: 'flat',
+    height: 80,
+    envelopeHeight: 6,
+    group: 'complex',
+  };
+  const part = {
+    ...building,
+    id: 2,
+    part: true,
+    group: 'complex',
+    height: 20,
+    footprint: building.footprint.map((p) => ({
+      ...p,
+      x: 30 + (p.x - 30) / 2,
+    })),
+  };
+  const input = world(outline);
+  input.buildings.push(part);
+  // Act
+  const chunk = buildChunk(input, '0,0', 3);
+  // Assert
+  const heights = chunk.buildings.positions.filter((_, i) => i % 3 === 1);
+  expect(Math.max(...heights)).toBe(20);
+});
+it('согласует высоту дальних частей и масок при обновлении рельефа', () => {
+  // Arrange
+  const outline = { ...building, roof: 'flat', height: 20, group: 'complex' };
+  const part = { ...outline, id: 2, part: true };
+  const input = world(outline);
+  input.buildings.push(part);
+  input.elevation.values.fill(5);
+  const single = world(part);
+  single.elevation.values.fill(5);
+  // Act
+  const combined = buildChunk(input, '0,0', 3),
+    onlyPart = buildChunk(single, '0,0', 3);
+  // Assert
+  expect(combined.buildings.indices.length).toBe(
+    onlyPart.buildings.indices.length,
+  );
+});

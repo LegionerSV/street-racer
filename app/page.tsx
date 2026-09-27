@@ -458,6 +458,43 @@ export default function Home() {
             (input as { name: string }).name,
           ) || [],
       });
+    if (new URLSearchParams(location.search).has('debug'))
+      register({
+        name: 'prepare_test_race',
+        title: 'Проверить запуск заезда',
+        description:
+          'Запустить обычную подготовку выбранного вида гонки в отладочном режиме.',
+        inputSchema: {
+          type: 'object',
+          properties: { kind: { type: 'string', enum: ['sprint', 'circuit'] } },
+          required: ['kind'],
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: false },
+        execute: (input: unknown) => {
+          const kind = (input as { kind: 'sprint' | 'circuit' }).kind;
+          const game = gameRef.current;
+          const route = game?.world.routes
+            .filter((route) => route.kind === kind)
+            .sort((a, b) => {
+              const position = game.player.position;
+              return (
+                Math.hypot(
+                  a.points[0].x - position.x,
+                  a.points[0].z - position.z,
+                ) -
+                Math.hypot(
+                  b.points[0].x - position.x,
+                  b.points[0].z - position.z,
+                )
+              );
+            })[0];
+          if (!game || !route)
+            throw new Error('Нет доступного старта этого типа.');
+          void game.startRace(route);
+          return { requested: kind };
+        },
+      });
     return () => lifecycle.abort();
   }, []);
   // Диагностика локального прототипа доступна только с явным параметром URL.
@@ -739,9 +776,7 @@ export default function Home() {
             </div>
           )}
           {hud.loading && hud.mapStatus && (
-            <output className="streaming-banner">
-              {hud.mapStatus}
-            </output>
+            <output className="streaming-banner">{hud.mapStatus}</output>
           )}
           {hud.nearRace && !hud.race && (
             <button
@@ -756,7 +791,7 @@ export default function Home() {
                     : 'СПРИНТ · 3 СОПЕРНИКА'}
                 </small>
                 <b>{hud.nearRace.title}</b>
-                <span>Маршрут по загруженной карте · начать заезд</span>
+                <span>Маршрут от 2 км · начать подготовку</span>
               </div>
               <Flag size={25} />
             </button>

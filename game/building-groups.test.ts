@@ -6,6 +6,23 @@ import type { Building, OSMElement } from './types';
 import fortress from './fixtures/fortress-roofs.osm.json';
 const center = { lat: 0, lon: 0 };
 
+it('связывает обычный дом с частичной надстройкой', () => {
+  // Arrange
+  const elements = [
+    ...square(1, 0, 0, 100, {
+      building: 'apartments',
+      height: '30',
+      'building:colour': 'beige',
+    }),
+    ...square(2, 0, 0, 40, { 'building:part': 'yes', height: '20' }),
+  ];
+  // Act
+  const groups = buildingGroups(elements, center, true);
+  // Assert
+  expect(groups.groupOf.get('way/2')).toBe('way/1');
+  expect(groups.groupTags.get('way/1')?.['building:colour']).toBe('beige');
+});
+
 it('сохраняет оболочку под полностью совпадающей неразмеченной крышей', () => {
   // Arrange
   const elements = [

@@ -42,6 +42,7 @@ export type { MapTile } from './region-tile-source';
 export type MapStreamingPolicy = {
   blockingRadiusMeters: number;
   targetRadiusMeters: number;
+  sceneryRadiusMeters?: number;
   forwardTileRows: number;
   maxConcurrentTiles: number;
   maxUpdateTiles: number;
@@ -80,11 +81,12 @@ const MAP_STREAMING_POLICIES: Record<Settings['quality'], MapStreamingPolicy> =
     },
     high: {
       blockingRadiusMeters: 700,
-      targetRadiusMeters: 800,
+      targetRadiusMeters: 1800,
+      sceneryRadiusMeters: 1800,
       forwardTileRows: 1,
       maxConcurrentTiles: 6,
       maxUpdateTiles: 2,
-      maxElements: 140000,
+      maxElements: 260000,
     },
   };
 
@@ -109,11 +111,13 @@ export function mapRadiusAtSpeed(
 ) {
   if (!Number.isFinite(speedMetersPerSecond) || speedMetersPerSecond < 0)
     return policy.blockingRadiusMeters;
-  if (speedMetersPerSecond <= 2) return policy.blockingRadiusMeters;
+  if (speedMetersPerSecond <= 2)
+    return policy.sceneryRadiusMeters ?? policy.blockingRadiusMeters;
   const progress = Math.min(1, (speedMetersPerSecond - 2) / 28);
-  return (
+  return Math.max(
+    policy.sceneryRadiusMeters ?? 0,
     policy.blockingRadiusMeters +
-    (policy.targetRadiusMeters - policy.blockingRadiusMeters) * progress
+      (policy.targetRadiusMeters - policy.blockingRadiusMeters) * progress,
   );
 }
 
@@ -825,7 +829,9 @@ export class RegionStream {
     this.targetTileCount = order.length;
     this.blockingTileCount = this.missingBlockingTiles(p, heading);
     const slots =
-        this.policy.maxUpdateTiles -
+        (pinnedTileList.length
+          ? this.policy.maxConcurrentTiles
+          : this.policy.maxUpdateTiles) -
         this.pendingTiles.size -
         this.completedTiles.length,
       keys = order
@@ -889,6 +895,11 @@ export class RegionStream {
           this.wakePending = resolve;
         });
       this.wakePending = undefined;
+      if (pinnedTileList.length && this.pendingTiles.size)
+        await Promise.race([
+          Promise.allSettled(this.pendingTiles.values()),
+          new Promise((resolve) => setTimeout(resolve, 250)),
+        ]);
       this.control.signal.throwIfAborted();
       const loaded = this.completedTiles.splice(0),
         candidate = new Map(this.tiles);

@@ -18,7 +18,7 @@ it('обычная машина проезжает тысячи коротких
   traffic.agents.push({id:12,edge:'edge-0',distance:2,speed:20,point:{x:0,y:.96,z:2},heading:0,stuck:0});
   try{
     // Act
-    for(let i=0;i<6600;i++){const a=traffic.agents[0];traffic.update(1/60,i/60,{x:510,y:1,z:a.point.z},0,false);}
+    for(let i=0;i<6600;i++){const a=traffic.agents[0];traffic.update(1/60,i/60,{x:410,y:1,z:a.point.z},0,false);}
     // Assert
     expect(traffic.agents).toHaveLength(1);expect(traffic.agents[0].point.z).toBeGreaterThan(1800);
     expect(traffic.agents[0].plan!.ids.length).toBeLessThan(1000);
@@ -91,3 +91,20 @@ it.each([
     expect(Math.abs(traffic.agents[0].laneOffset || 0) > narrow.width / 2).toBe(leavesRoad);
   } finally { traffic.dispose(); scene.dispose(); engine.dispose(); }
 }, 20000);
+
+it('сохраняет плотный поток на текущей дороге в пределах бюджета видимой сцены',async()=>{
+  // Arrange
+  const {engine,scene}=await setup();
+  const edge=road(0,1,2,-600,1200);edge.width=12;edge.lanes=3;
+  const traffic=new Traffic(scene,world([edge]));
+  traffic.setDensity('rush');
+  try {
+    // Act
+    for(let i=0;i<90;i++)traffic.update(1,i,{x:0,y:1,z:0},0,false);
+    const stats=traffic.diagnostics({x:0,y:1,z:0},0);
+    // Assert
+    expect(stats.sameRoad).toBeGreaterThan(15);
+    expect(stats.sameRoad).toBeLessThanOrEqual(48);
+    expect(stats.total).toBe(stats.sameRoad);
+  }finally{traffic.dispose();scene.dispose();engine.dispose();}
+},20000);

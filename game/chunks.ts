@@ -1,3 +1,4 @@
+import { treeDimensions } from './tree-dimensions';
 import earcut from 'earcut';
 import {
   bridgeRailingSpans,
@@ -20,7 +21,11 @@ import {
   subtractPrisms,
   type Prism,
 } from './geometry';
-import { appendBuilding, appendBuildingSilhouette } from './buildings';
+import {
+  appendBuilding,
+  appendBuildingSilhouette,
+  buildingPartMasks,
+} from './buildings';
 import { worldLandmarks, appendLandmark } from './landmarks';
 import { dashSpans, periodicOffsets } from './markings';
 import {
@@ -244,6 +249,7 @@ export function desiredChunks(
       : quality === 'medium'
         ? 900
         : 800;
+  const skyline = quality === 'high' ? 1800 : far;
   const result: { key: string; lod: number; priority: number }[] = [];
   // На скорости 200 км/ч запас в 18 секунд покрывает четыре квартала по 250 м.
   const lookahead = streaming
@@ -252,7 +258,7 @@ export function desiredChunks(
   const critical = lookahead
     ? new Set(criticalChunks(p, heading, true))
     : new Set<string>();
-  const reach = Math.ceil((Math.max(far, lookahead) + 177) / CHUNK_SIZE),
+  const reach = Math.ceil((Math.max(skyline, lookahead) + 177) / CHUNK_SIZE),
     cx = Math.floor(p.x / CHUNK_SIZE),
     cz = Math.floor(p.z / CHUNK_SIZE);
   for (
@@ -287,11 +293,12 @@ export function desiredChunks(
         forwardMeters > 0 &&
         forwardMeters <= lookahead &&
         lateralMeters <= CHUNK_SIZE * 1.5;
-      if (d > far + 177 && !ahead) continue;
+      if (d > skyline + 177 && !ahead) continue;
       const key = `${x},${z}`;
       result.push({
         key,
-        lod: d <= detail + 177 || ahead ? 0 : mobile ? 2 : 1,
+        lod:
+          d <= detail + 177 || ahead ? 0 : d > far + 177 ? 3 : mobile ? 2 : 1,
         priority:
           (critical.has(key) ? -1_000_000 : ahead ? -10_000 : 0) +
           d -
@@ -303,24 +310,33 @@ export function desiredChunks(
 
 export function routeChunkPlan(points: Point[], quality: Settings['quality']) {
   if (!points.length) return [];
-  const samples = resample(points, CHUNK_SIZE / 2),
-    planned = new Map<string, { key: string; lod: number; priority: number }>();
+  const samples = resample(points, 50);
+  const margin = quality === 'mobile' ? 40 : 60;
+  const planned = new Map<
+    string,
+    { key: string; lod: number; priority: number }
+  >();
   for (let index = 0; index < samples.length; index++) {
-    const previous = samples[Math.max(0, index - 1)],
-      next = samples[Math.min(samples.length - 1, index + 1)],
-      heading = Math.atan2(next.x - previous.x, next.z - previous.z);
-    for (const chunk of desiredChunks(samples[index], heading, quality, true)) {
-      const current = planned.get(chunk.key);
-      if (!current || chunk.lod < current.lod)
-        planned.set(chunk.key, {
-          ...chunk,
-          priority: Math.min(chunk.priority, current?.priority ?? Infinity),
-        });
-    }
+    const p = samples[index],
+      previous = samples[Math.max(0, index - 1)],
+      next = samples[Math.min(samples.length - 1, index + 1)];
+    const heading = Math.atan2(next.x - previous.x, next.z - previous.z);
+    const keys = new Set(criticalChunks(p, heading, true, 100));
+    for (
+      let x = Math.floor((p.x - margin) / CHUNK_SIZE);
+      x <= Math.floor((p.x + margin) / CHUNK_SIZE);
+      x++
+    )
+      for (
+        let z = Math.floor((p.z - margin) / CHUNK_SIZE);
+        z <= Math.floor((p.z + margin) / CHUNK_SIZE);
+        z++
+      )
+        keys.add(`${x},${z}`);
+    for (const key of keys)
+      if (!planned.has(key)) planned.set(key, { key, lod: 0, priority: index });
   }
-  return [...planned.values()].sort(
-    (a, b) => a.priority - b.priority || a.key.localeCompare(b.key),
-  );
+  return [...planned.values()];
 }
 
 export function mergePinnedChunks(
@@ -597,6 +613,7 @@ type Index = {
   segments: Map<string, Segment[]>;
   owned: Map<string, Segment[]>;
   buildings: Map<string, Building[]>;
+  buildingParts: Map<string, Building[]>;
   junctions: Set<number>;
   crossings: SpatialGrid<{ points: Point[]; mask: Prism }>;
   spatial: SpatialGrid<Segment>;
@@ -628,13 +645,22 @@ function clipToChunk(polygon: Point[], x0: number, z0: number): Point[] {
   return polygon;
 }
 export function indexWorld(world: World): Index {
+  const steps = prepareWorldIndex(world);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+export function* prepareWorldIndex(world: World): Generator<void, Index> {
   const existing = worldIndices.get(world);
   if (existing) return existing;
+  let operations = 0;
   const coverage = coverageBounds(world.loadedTiles, world.center);
   const index: Index = {
       segments: new Map(),
       owned: new Map(),
       buildings: new Map(),
+      buildingParts: new Map(),
       junctions: new Set(),
       crossings: new SpatialGrid(32, coverage),
       spatial: new SpatialGrid(32, coverage),
@@ -660,6 +686,7 @@ export function indexWorld(world: World): Index {
     return normal;
   };
   for (const edge of world.edges) {
+    if (++operations % 32 === 0) yield;
     const id = `${edge.way}/${Math.min(edge.from, edge.to)}/${Math.max(edge.from, edge.to)}`;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -736,6 +763,7 @@ export function indexWorld(world: World): Index {
   for (const [id, neighbours] of links)
     if (neighbours.size > 2) index.junctions.add(id);
   for (const points of junctionSurfaces(world.edges)) {
+    if (++operations % 32 === 0) yield;
     const mask = footprintPrism(
       points,
       { x: 0, y: 1, z: 0, w: -points[0].y },
@@ -775,6 +803,7 @@ export function indexWorld(world: World): Index {
     }
   for (const segments of index.owned.values())
     for (const segment of segments) {
+      if (++operations % 32 === 0) yield;
       if (!segment.edge.oneWay || segment.edge.bridge || segment.edge.tunnel)
         continue;
       segment.join = carriagewayJoin(
@@ -791,6 +820,7 @@ export function indexWorld(world: World): Index {
   for (const segments of index.owned.values())
     for (const segment of segments)
       for (const side of [-1, 1]) {
+        if (++operations % 32 === 0) yield;
         if (segment.join?.side === side) continue;
         if (!sidewalkOn(segment.edge, side)) continue;
         const { points } = sidewalkShape(segment, side),
@@ -817,6 +847,12 @@ export function indexWorld(world: World): Index {
     if (area.kind === 'water')
       index.waters.add(area, boundsOf(area.points, 18));
   for (const b of world.buildings) {
+    if (++operations % 32 === 0) yield;
+    if (b.part && b.group) {
+      const parts = index.buildingParts.get(b.group) || [];
+      parts.push(b);
+      index.buildingParts.set(b.group, parts);
+    }
     const center = b.footprint.reduce(
       (a, p) => ({
         x: a.x + p.x / b.footprint.length,
@@ -867,6 +903,34 @@ export function buildChunk(
     lamps: [],
     breakables: [],
   };
+  if (lod >= 3) {
+    const ground = (building: Building): Building => {
+      if (building.kind === 'bridge') return building;
+      const point = (p: Point) => ({
+        ...p,
+        y: sampleElevation(world.elevation, p.x, p.z),
+      });
+      return {
+        ...building,
+        footprint: building.footprint.map(point),
+        holes: building.holes?.map((ring) => ring.map(point)),
+      };
+    };
+    for (const building of index.buildings.get(key) || []) {
+      const masks = building.part
+        ? []
+        : buildingPartMasks(
+            (index.buildingParts.get(building.group || '') || []).map(ground),
+          );
+      appendBuildingSilhouette(
+        ground(building),
+        result.buildings,
+        undefined,
+        masks,
+      );
+    }
+    return result;
+  }
   const waterLevel = (area: World['areas'][number], point: Point) =>
     (area.railing === 'river'
       ? sampleElevation(world.elevation, point.x, point.z)
@@ -1559,7 +1623,18 @@ export function buildChunk(
       lod,
       result.buildings,
       result.facades!,
-      roads,
+      [
+        ...roads,
+        ...(!building.part && building.group
+          ? buildingPartMasks(
+              (index.buildingParts.get(building.group) || []).map((part) => ({
+                ...part,
+                footprint: part.footprint.map(groundVertex),
+                holes: part.holes?.map((ring) => ring.map(groundVertex)),
+              })),
+            )
+          : []),
+      ],
       foundationFloor,
       closeCourtyards && !significant
         ? (ring, i) => ring === grounded.footprint && frontageEdges.has(i)
@@ -1760,7 +1835,7 @@ export function buildChunk(
         )
           continue;
         p.y = ground(p.x, p.z);
-        result.trees.push(p);
+        result.trees.push({ ...p, id: area.id * 31 + cx * 771 + cz * 991 + i });
       }
     }
     if (lod === 0 && area.railing && area.railing !== 'river')
@@ -1796,8 +1871,17 @@ export function buildChunk(
       )
         result.trees.push({ ...tree, y: ground(tree.x, tree.z) });
   if (lod === 0)
-    for (const tree of result.trees)
-      box(result.treeTrunks, tree, 0.55, 7, 0.55, [0.23, 0.24, 0.2]);
+    for (const tree of result.trees) {
+      const size = treeDimensions(tree);
+      box(
+        result.treeTrunks,
+        tree,
+        0.55 * size.horizontal,
+        7 * size.vertical,
+        0.55 * size.horizontal,
+        [0.23, 0.24, 0.2],
+      );
+    }
   const roadCuts = new SpatialGrid<Prism>(32),
     surfaceCuts = new SpatialGrid<Prism>(32);
   for (const crossing of crossingMasks) {

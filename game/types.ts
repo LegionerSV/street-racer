@@ -1,3 +1,4 @@
+import type { Tree } from './tree-dimensions';
 export type Point = { x: number; y: number; z: number };
 export type Center = { lat: number; lon: number };
 export type Tags = Record<string, string>;
@@ -165,13 +166,14 @@ export type RacerTraits = {
   reaction: number;
 };
 export type World = {
+  racePreviews?: boolean;
   center: Center;
   nodes: RoadNode[];
   edges: Edge[];
   restrictions: Restriction[];
   buildings: Building[];
   areas: Area[];
-  trees: Point[];
+  trees: Tree[];
   elevation: ElevationGrid;
   drivingSide: 'right' | 'left';
   warnings: string[];
@@ -193,8 +195,8 @@ export type WorldPatch = {
   buildingsRemoved: { id: number; osmType: Building['osmType'] }[];
   areasAddedOrUpdated: Area[];
   areasRemoved: { id: number; osmType: Area['osmType'] }[];
-  treesAdded: Point[];
-  treesRemoved: Point[];
+  treesAdded: Tree[];
+  treesRemoved: Tree[];
   elevationPatches: ElevationGrid[];
   elevationPatchesRemoved: string[];
   dirtyChunks: string[];
@@ -248,7 +250,7 @@ export type ChunkData = {
   buildings: MeshData;
   windows: MeshData;
   water: MeshData;
-  trees: Point[];
+  trees: Tree[];
   lamps: Point[];
   breakables: Breakable[];
 };

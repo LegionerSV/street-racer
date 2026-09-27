@@ -254,6 +254,13 @@ function triumphalOpening(b: Building, foundationFloor?: number) {
   };
 }
 function parsedColour(value?: string): Colour | undefined {
+  if (value?.includes(';')) {
+    for (const candidate of value.split(';')) {
+      const parsed = parsedColour(candidate.trim());
+      if (parsed) return parsed;
+    }
+    return undefined;
+  }
   let hex = named[value?.toLowerCase() || ''] || value || '';
   if (/^#[\da-f]{3}$/i.test(hex))
     hex =
@@ -327,11 +334,50 @@ function clip(points: Point[], plane: (p: Point) => number) {
   return output;
 }
 
+export function buildingPartMasks(parts: Building[]): Prism[] {
+  return parts.flatMap((part) => {
+    const rings = [part.footprint, ...(part.holes || [])],
+      flat = rings.flat(),
+      holes: number[] = [];
+    let count = part.footprint.length;
+    for (const ring of rings.slice(1)) {
+      holes.push(count);
+      count += ring.length;
+    }
+    const bottom =
+      Math.min(...flat.map((p) => p.y)) +
+      (part.supportMinHeight ?? part.minHeight ?? 0) -
+      0.3;
+    const top =
+      Math.max(...flat.map((p) => p.y)) + (part.envelopeHeight ?? part.height);
+    const indices = earcut(
+      flat.flatMap((p) => [p.x, p.z]),
+      holes,
+    );
+    const masks: Prism[] = [];
+    for (let i = 0; i < indices.length; i += 3)
+      masks.push(
+        footprintPrism(
+          indices.slice(i, i + 3).map((n) => flat[n]),
+          { x: 0, y: 1, z: 0, w: -bottom },
+          0,
+          top - bottom,
+        ),
+      );
+    return masks;
+  });
+}
+
 export function appendBuildingSilhouette(
   b: Building,
   mesh: MeshData,
   foundationFloor?: number,
+  openings: Prism[] = [],
 ) {
+  const emit = (mesh: MeshData, points: Point[], colour: Colour) => {
+    for (const piece of subtractPrisms(points, openings))
+      emitPolygon(mesh, piece, colour);
+  };
   const rings = [b.footprint, ...(b.holes || [])],
     flat = rings.flat(),
     holes: number[] = [];
@@ -344,7 +390,7 @@ export function appendBuildingSilhouette(
       (foundationFloor ?? Math.min(...flat.map((p) => p.y))) +
       (b.supportMinHeight ?? b.minHeight ?? 0) -
       0.3,
-    top = Math.max(...flat.map((p) => p.y)) + b.height,
+    top = Math.max(...flat.map((p) => p.y)) + (b.envelopeHeight ?? b.height),
     wallColour = colour(b),
     roofColour =
       parsedColour(b.roofColour) || (wallColour.map((v) => v * 0.48) as Colour);
@@ -352,7 +398,7 @@ export function appendBuildingSilhouette(
     for (let i = 0; i < ring.length; i++) {
       const a = ring[i],
         next = ring[(i + 1) % ring.length];
-      emitPolygon(
+      emit(
         mesh,
         [
           { ...a, y: floor },
@@ -368,7 +414,7 @@ export function appendBuildingSilhouette(
     holes,
   );
   for (let i = 0; i < indices.length; i += 3)
-    emitPolygon(
+    emit(
       mesh,
       indices.slice(i, i + 3).map((index) => ({ ...flat[index], y: top })),
       roofColour,
@@ -399,7 +445,7 @@ export function appendBuilding(
   }
   const windowed = hasFacadeWindows(b),
     textured = windowed,
-    detailed = lod === 0 && !(b.part && b.group) && windowed;
+    detailed = lod === 0 && !b.group && windowed;
   const bare = !windowed;
   const gateOpening =
     b.kind === 'triumphal_arch'

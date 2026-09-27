@@ -1,6 +1,11 @@
-import { buildWorld, createRaceRoute } from './network';
+import { buildWorld, findRaceRouteNear } from './network';
 import { reconcileWorld } from './world-update';
-import { buildChunk, chunkCacheWeight, ChunkBudget, indexWorld } from './chunks';
+import {
+  buildChunk,
+  chunkCacheWeight,
+  ChunkBudget,
+  indexWorld,
+} from './chunks';
 import type {
   ChunkData,
   WorkerRequest,
@@ -19,7 +24,8 @@ let prepared: World | null = null;
 let preparedPatch: WorldPatch | null = null;
 let registry: SourceTileRegistry | null = null;
 let preparedRegistry: SourceTileRegistry | null = null;
-const newChunkCache = () => new ChunkBudget<ChunkData>(32, 32 * 1024 * 1024, chunkCacheWeight);
+const newChunkCache = () =>
+  new ChunkBudget<ChunkData>(32, 32 * 1024 * 1024, chunkCacheWeight);
 let cache = newChunkCache();
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
@@ -39,7 +45,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       cache = newChunkCache();
       response = { id: request.id, type: 'committed' };
     } else if (request.type === 'world') {
-      world = buildWorld(request.region);
+      world = buildWorld(request.region, false);
       registry = SourceTileRegistry.fromRegion(request.region);
       prepared = null;
       preparedPatch = null;
@@ -82,6 +88,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           affected,
           updateRegion,
           staged.changedElements,
+          (region) => buildWorld(region, false),
         );
         preparedRegistry = staged.registry;
         indexWorld(prepared);
@@ -114,7 +121,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       } else {
         if (request.type === 'prepareTiles')
           throw new Error('Активный реестр source-тайлов ещё не подготовлен.');
-        prepared = reconcileWorld(world, buildWorld(request.region));
+        prepared = reconcileWorld(world, buildWorld(request.region, false));
         indexWorld(prepared);
         preparedPatch = createWorldPatch(world, prepared);
         response = {
@@ -131,7 +138,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       response = {
         id: request.id,
         type: 'race',
-        route: createRaceRoute(world, request.start, request.kind) ?? null,
+        route: findRaceRouteNear(world, request.start, request.kind) ?? null,
       };
     } else if (request.type === 'commit') {
       if (!prepared) throw new Error('Новая часть района ещё не подготовлена.');
@@ -147,14 +154,29 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       if (request.prepared && !prepared)
         throw new Error('Новая часть района ещё не подготовлена.');
       cache.setLimit(request.cacheLimit || 32);
-      const id = `${request.key}/${request.lod}${request.closeCourtyards?'c':'o'}`,
+      const id = `${request.key}/${request.lod}${request.closeCourtyards ? 'c' : 'o'}`,
         chunk = request.prepared
-          ? buildChunk(prepared!, request.key, request.lod, request.closeCourtyards)
-          : cache.get(id) || buildChunk(world, request.key, request.lod, request.closeCourtyards);
+          ? buildChunk(
+              prepared!,
+              request.key,
+              request.lod,
+              request.closeCourtyards,
+            )
+          : cache.get(id) ||
+            buildChunk(
+              world,
+              request.key,
+              request.lod,
+              request.closeCourtyards,
+            );
       if (!request.prepared) cache.touch(id, chunk);
       const preparedTransfer = prepareChunkTransfer(chunk);
       transfer = preparedTransfer.transfer;
-      response = { id: request.id, type: 'chunk', chunk: preparedTransfer.chunk };
+      response = {
+        id: request.id,
+        type: 'chunk',
+        chunk: preparedTransfer.chunk,
+      };
     } else throw new Error('Неизвестная команда подготовки района.');
     (
       self as unknown as {

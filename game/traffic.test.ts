@@ -1,3 +1,5 @@
+import { pathLengths } from './geo';
+import type { Route } from './types';
 import { describe, it, expect } from 'vitest';
 import { NullEngine, Scene, Vector3, HavokPlugin, FreeCamera } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
@@ -74,7 +76,9 @@ describe('Соперники', () => {
     const elements: OSMElement[] = [[1, -.0005, -.0005], [2, .0005, -.0005], [3, .0005, .0005], [4, -.0005, .0005]].map(([id, lon, lat]) => ({ type: 'node', id, lat, lon }));
     elements.push({ type: 'way', id: 100, nodes: [1, 2, 3, 4, 1], tags: { highway: 'residential', oneway: 'yes' } });
     const region: RegionData = { center: { lat: 0, lon: 0 }, elements, elevation: { width: 2, size: 5600, values: new Float32Array(4) }, drivingSide: 'right', fetchedAt: 'test' };
-    const world = buildWorld(region), route = world.routes.find(r => r.kind === 'circuit')!;
+    const world = buildWorld(region);
+    const points = world.edges.flatMap((edge, i) => edge.points.slice(i ? 1 : 0)), cumulative = pathLengths(points);
+    const route: Route = { id: 'ai-loop', kind: 'circuit', title: 'Тестовый круг', edges: world.edges.map(e => e.stableId!), points, cumulative, length: cumulative.at(-1)!, laps: 3 };
     const havok = await HavokPhysics({ wasmBinary: Uint8Array.from(await readFile(new URL('../node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm', import.meta.url))).buffer });
     const engine = new NullEngine(), scene = new Scene(engine); scene.enablePhysics(new Vector3(0, -9.81, 0), new HavokPlugin(true, havok));
     const traffic = new Traffic(scene, world); traffic.startRace(route);

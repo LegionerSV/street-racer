@@ -17,7 +17,11 @@ export const isSignificantBuilding = (t: Tags) =>
 
 // Только явная relation type=building или геометрическое включение в значимый
 // объект. Близость, одинаковое имя и общий Wikidata не объединяют ансамбль.
-export function buildingGroups(elements: OSMElement[], center: Center) {
+export function buildingGroups(
+  elements: OSMElement[],
+  center: Center,
+  includeOrdinary = false,
+) {
   const byKey = new Map(elements.map((e) => [osmKey(e), e]));
   const groupOf = new Map<string, string>(),
     groups = new Map<string, Set<string>>();
@@ -112,7 +116,7 @@ export function buildingGroups(elements: OSMElement[], center: Center) {
     if (
       e.tags?.building &&
       !isBuildingPart(e.tags) &&
-      isSignificantBuilding(e.tags)
+      (includeOrdinary || isSignificantBuilding(e.tags))
     ) {
       const points = rings(e).outer.flat();
       if (!points.length) continue;

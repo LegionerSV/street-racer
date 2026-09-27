@@ -118,15 +118,15 @@ describe('Профили высот дорог', () => {
   it('сохраняет углы кольца при более частой выборке высот', () => {
     // Arrange
     const input = region([
-      { ...node(1, -55), lat: -55 / 111320 }, { ...node(2, 55), lat: -55 / 111320 },
-      { ...node(3, 55), lat: 55 / 111320 }, { ...node(4, -55), lat: 55 / 111320 },
+      { ...node(1, -275), lat: -275 / 111320 }, { ...node(2, 275), lat: -275 / 111320 },
+      { ...node(3, 275), lat: 275 / 111320 }, { ...node(4, -275), lat: 275 / 111320 },
       way(10, [1, 2, 3, 4, 1], { bridge: 'no', oneway: 'yes' }),
     ]);
     // Act
     const world = buildWorld(input), route = world.routes.find(r => r.kind === 'circuit');
     // Assert
     expect(route).toBeDefined();
-    expect(route!.length).toBeCloseTo(440, 3);
+    expect(route!.length).toBeCloseTo(2200, 3);
     for (const n of world.nodes) expect(route!.points.some(p => distance2(p, n) < .01)).toBe(true);
   });
 

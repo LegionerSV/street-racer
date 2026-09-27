@@ -24,7 +24,9 @@ it('оставляет полную детализацию рядом с маш�
   // Assert
   expect(chunks.find((chunk) => chunk.key === '1,1')?.lod).toBe(0);
   expect(chunks.find((chunk) => chunk.key === '2,0')?.lod).toBe(1);
-  expect(chunks.find((chunk) => chunk.key === '2,2')).toBeUndefined();
+  expect(chunks.find((chunk) => chunk.key === '2,2')?.lod).toBe(3);
+  expect(chunks.find((chunk) => chunk.key === '0,6')?.lod).toBe(3);
+  expect(chunks.find((chunk) => chunk.key === '0,9')).toBeUndefined();
 });
 
 describe('Окружение маршрута', () => {
@@ -135,8 +137,10 @@ describe('Подготовка кварталов', () => {
     const chunks = desiredChunks(position, 0, 'high', true);
     const fast = desiredChunks(position, 0, 'high', true, 200 / 3.6);
     // Assert
-    expect(chunks.length).toBeLessThanOrEqual(40);
-    expect(chunks.map((chunk) => chunk.key)).not.toContain('0,4');
+    expect(chunks.filter((chunk) => chunk.lod < 3).length).toBeLessThanOrEqual(
+      40,
+    );
+    expect(chunks.find((chunk) => chunk.key === '0,4')?.lod).toBe(3);
     expect(fast.find((chunk) => chunk.key === '0,4')?.lod).toBe(0);
     expect(startupDrivingChunks(position, 0, 'high')).toHaveLength(9);
   });
@@ -1116,52 +1120,135 @@ describe('Подготовка кварталов', () => {
   it.each([
     { ground: 2, covered: false },
     { ground: -4, covered: true },
-  ])('сохраняет подмостовое пространство и убирает грунт с проезда: $ground', ({ ground, covered }) => {
-    // Arrange
-    const world = {
-      center: { lat: 0, lon: 0 }, nodes: [], restrictions: [], buildings: [], areas: [], trees: [],
-      edges: [{ id: 0, stableId: '1/1/2/0', way: 1, from: 1, to: 2,
-        length: 100, width: 9, lanes: 2, speed: 14, name: 'Мост', bridge: true,
-        tunnel: false, layer: 1, blocked: false,
-        points: [{ x: 100, y: 0, z: 20 }, { x: 100, y: 0, z: 120 }] }],
-      elevation: { width: 2, size: 5600, values: new Float32Array([ground, ground, ground, ground]) },
-      drivingSide: 'right', warnings: [], spawnEdge: null, routes: [],
-    } as World;
-    // Act
-    const terrain = buildChunk(world, '0,0', 0).terrain;
-    const point = { x: 100, y: 0, z: 70 };
-    const covers = Array.from({ length: terrain.indices.length / 3 }, (_, i) =>
-      terrain.indices.slice(i * 3, i * 3 + 3).map((id) => ({
-        x: terrain.positions[id * 3], y: 0, z: terrain.positions[id * 3 + 2],
-      })),
-    ).some((triangle) => polygonContains(point, triangle));
-    // Assert
-    expect(covers).toBe(covered);
-  });
+  ])(
+    'сохраняет подмостовое пространство и убирает грунт с проезда: $ground',
+    ({ ground, covered }) => {
+      // Arrange
+      const world = {
+        center: { lat: 0, lon: 0 },
+        nodes: [],
+        restrictions: [],
+        buildings: [],
+        areas: [],
+        trees: [],
+        edges: [
+          {
+            id: 0,
+            stableId: '1/1/2/0',
+            way: 1,
+            from: 1,
+            to: 2,
+            length: 100,
+            width: 9,
+            lanes: 2,
+            speed: 14,
+            name: 'Мост',
+            bridge: true,
+            tunnel: false,
+            layer: 1,
+            blocked: false,
+            points: [
+              { x: 100, y: 0, z: 20 },
+              { x: 100, y: 0, z: 120 },
+            ],
+          },
+        ],
+        elevation: {
+          width: 2,
+          size: 5600,
+          values: new Float32Array([ground, ground, ground, ground]),
+        },
+        drivingSide: 'right',
+        warnings: [],
+        spawnEdge: null,
+        routes: [],
+      } as World;
+      // Act
+      const terrain = buildChunk(world, '0,0', 0).terrain;
+      const point = { x: 100, y: 0, z: 70 };
+      const covers = Array.from(
+        { length: terrain.indices.length / 3 },
+        (_, i) =>
+          terrain.indices.slice(i * 3, i * 3 + 3).map((id) => ({
+            x: terrain.positions[id * 3],
+            y: 0,
+            z: terrain.positions[id * 3 + 2],
+          })),
+      ).some((triangle) => polygonContains(point, triangle));
+      // Assert
+      expect(covers).toBe(covered);
+    },
+  );
   it('убирает пик рельефа внутри моста, даже когда углы полотна ниже асфальта', () => {
     // Arrange
     const values = new Float32Array(21 * 21).fill(-4);
     values[16 * 21 + 18] = 10;
     const world = {
-      center: { lat: 0, lon: 0 }, nodes: [], restrictions: [], buildings: [], areas: [], trees: [],
-      edges: [{ id: 0, stableId: '1/1/2/0', way: 1, from: 1, to: 2,
-        length: 100, width: 9, lanes: 2, speed: 14, name: 'Мост', bridge: true,
-        tunnel: false, layer: 1, blocked: false,
-        points: [{ x: 100, y: 0, z: 20 }, { x: 100, y: 0, z: 120 }] }],
+      center: { lat: 0, lon: 0 },
+      nodes: [],
+      restrictions: [],
+      buildings: [],
+      areas: [],
+      trees: [],
+      edges: [
+        {
+          id: 0,
+          stableId: '1/1/2/0',
+          way: 1,
+          from: 1,
+          to: 2,
+          length: 100,
+          width: 9,
+          lanes: 2,
+          speed: 14,
+          name: 'Мост',
+          bridge: true,
+          tunnel: false,
+          layer: 1,
+          blocked: false,
+          points: [
+            { x: 100, y: 0, z: 20 },
+            { x: 100, y: 0, z: 120 },
+          ],
+        },
+      ],
       elevation: { width: 21, size: 250, values },
-      drivingSide: 'right', warnings: [], spawnEdge: null, routes: [],
+      drivingSide: 'right',
+      warnings: [],
+      spawnEdge: null,
+      routes: [],
     } as World;
 
     // Act
     const terrain = buildChunk(world, '0,0', 0).terrain;
     const spike = { x: 100, y: 0, z: 75 };
-    const protrudes = Array.from({ length: terrain.indices.length / 3 }, (_, i) =>
-      terrain.indices.slice(i * 3, i * 3 + 3).map((id) => ({
-        x: terrain.positions[id * 3], y: terrain.positions[id * 3 + 1], z: terrain.positions[id * 3 + 2],
-      })),
-    ).some((triangle) => polygonContains(spike, triangle) && triangle.some((point) => point.y > 0.5));
+    const protrudes = Array.from(
+      { length: terrain.indices.length / 3 },
+      (_, i) =>
+        terrain.indices.slice(i * 3, i * 3 + 3).map((id) => ({
+          x: terrain.positions[id * 3],
+          y: terrain.positions[id * 3 + 1],
+          z: terrain.positions[id * 3 + 2],
+        })),
+    ).some(
+      (triangle) =>
+        polygonContains(spike, triangle) &&
+        triangle.some((point) => point.y > 0.5),
+    );
 
     // Assert
     expect(protrudes).toBe(false);
   });
+});
+
+it('предзагружает проезжаемый коридор длинной гонки без полного окна каждой точки',()=>{
+  // Arrange
+  const points=[{x:125,y:0,z:125},{x:125,y:0,z:3125}];
+  // Act
+  const plan=routeChunkPlan(points,'high');
+  // Assert
+  expect(plan.length).toBeLessThanOrEqual(30);
+  for(let z=125;z<=3125;z+=50)
+    for(const key of criticalChunks({x:125,y:0,z},0,true))
+      expect(plan.find(chunk=>chunk.key===key)?.lod).toBe(0);
 });

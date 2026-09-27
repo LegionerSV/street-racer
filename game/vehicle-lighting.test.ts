@@ -1,11 +1,42 @@
 import { expect, it } from 'vitest';
-import { NullEngine, Scene, Vector3 } from '@babylonjs/core';
+import {
+  NullEngine,
+  Scene,
+  Vector3,
+  SpotLight,
+  Texture,
+} from '@babylonjs/core';
 import { createCar, createTrafficCar } from './visuals';
 import {
   headlightCasters,
   headlightPattern,
   VehicleLighting,
 } from './vehicle-lighting';
+
+it('включает настоящий свет днём в туннеле без светящейся дорожной геометрии', () => {
+  // Arrange
+  const engine = new NullEngine(),
+    scene = new Scene(engine),
+    car = createCar(scene, '#223344', 'player'),
+    lights = new VehicleLighting(scene);
+  try {
+    // Act
+    lights.update(1, car, [], 'medium', 1, true);
+    // Assert
+    expect(scene.getLightByName('vehicle-beam-0')!.isEnabled()).toBe(true);
+    expect(scene.getLightByName('vehicle-beam-0')!.intensity).toBeGreaterThan(
+      1,
+    );
+    const projector = scene.getLightByName('vehicle-beam-0') as SpotLight;
+    expect((projector.projectionTexture as Texture).invertY).toBe(false);
+    expect(scene.getMeshByName('vehicle-headlight-road-cutoff')).toBeNull();
+  } finally {
+    lights.dispose();
+    car.dispose();
+    scene.dispose();
+    engine.dispose();
+  }
+});
 
 it('ближний свет имеет горизонтальную отсечку со ступенькой справа', () => {
   // Arrange
@@ -16,11 +47,11 @@ it('ближний свет имеет горизонтальную отсечк
   const alpha = (x: number, y: number) => pixels[(y * size + x) * 4 + 3];
   // Assert
   expect(sample(30, 35)).toBeGreaterThan(100);
-  expect(sample(30, 62)).toBeLessThan(10);
-  expect(sample(98, 54)).toBeGreaterThan(sample(30, 54) + 80);
+  expect(sample(30, 70)).toBeLessThan(10);
+  expect(sample(98, 70)).toBeGreaterThan(sample(30, 70) + 80);
   expect(alpha(30, 35)).toBeGreaterThan(100);
-  expect(alpha(30, 62)).toBe(0);
-  expect(alpha(98, 54)).toBeGreaterThan(alpha(30, 54) + 80);
+  expect(alpha(30, 70)).toBe(0);
+  expect(alpha(98, 70)).toBeGreaterThan(alpha(30, 70) + 80);
 });
 
 it('дневной свет фар не выбеливает асфальт, кузова и ограждения', () => {
@@ -38,7 +69,7 @@ it('дневной свет фар не выбеливает асфальт, к�
     expect(beam.isEnabled()).toBe(false);
     expect(beam.specular.asArray()).toEqual([0, 0, 0]);
     expect(beam.shadowEnabled).toBe(false);
-    expect(scene.getMeshByName('vehicle-headlight-road-cutoff')?.isEnabled()).toBe(true);
+    expect(scene.getMeshByName('vehicle-headlight-road-cutoff')).toBeNull();
     lights.update(1, car, [], 'medium', 0.45);
     expect(beam.isEnabled()).toBe(true);
     expect(beam.shadowEnabled).toBe(false);
@@ -107,35 +138,24 @@ it('машины трафика перекрывают свет фар; скры
   engine.dispose();
 });
 
-it('рисует ночную cutoff-маску отдельной лентой по поверхности дороги', () => {
+it('сохраняет проекцию галочки ночью и плавно выключает свет после выхода из туннеля', () => {
   // Arrange
   const engine = new NullEngine(),
     scene = new Scene(engine),
-    player = createCar(scene, '#223344', 'player');
-  player.root.position.set(2, 1, 3);
-  const lights = new VehicleLighting(scene, (x, z) => ({
-    height: x * 0.01 + z * 0.02,
-    normal: Vector3.Up(),
-  }));
+    player = createCar(scene, '#223344', 'player'),
+    lights = new VehicleLighting(scene);
   try {
     // Act
-    lights.update(1 / 60, player, [], 'medium', 0);
-    const beam = scene.getMeshByName('vehicle-headlight-road-cutoff')!,
-      positions = Array.from(beam.getVerticesData('position')!);
+    lights.update(1, player, [], 'medium', 0);
+    const beam = scene.getLightByName('vehicle-beam-0')!;
+    const before = beam.intensity;
+    lights.update(1 / 60, player, [], 'medium', 1);
     // Assert
-    expect(beam.isEnabled()).toBe(true);
-    expect(beam.getTotalVertices()).toBe(18);
-    const width = (row: number) =>
-      Math.hypot(
-        positions[(row * 2 + 1) * 3] - positions[row * 2 * 3],
-        positions[(row * 2 + 1) * 3 + 2] - positions[row * 2 * 3 + 2],
-      );
-    expect(width(8)).toBeGreaterThan(width(0) * 4);
-    for (let i = 0; i < positions.length; i += 3)
-      expect(positions[i + 1]).toBeCloseTo(
-        positions[i] * 0.01 + positions[i + 2] * 0.02 + 0.028,
-        5,
-      );
+    expect(beam.intensity).toBeLessThan(before);
+    expect(beam.intensity).toBeGreaterThan(0.5);
+    expect(scene.getMeshByName('vehicle-headlight-road-cutoff')).toBeNull();
+    lights.update(2, player, [], 'medium', 1);
+    expect(beam.isEnabled()).toBe(false);
   } finally {
     lights.dispose();
     player.dispose();

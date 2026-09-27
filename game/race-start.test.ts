@@ -4,6 +4,7 @@ import { buildWorld, createRaceRoute } from './network';
 import { raceGrid } from './fixtures/race-grid';
 import type { Route } from './types';
 import { edgeById, edgeStableId } from './road-graph';
+import { routeCoverageTileKeys } from './stream-coverage';
 
 function gameFixture() {
   const world = buildWorld(raceGrid(4, 3));
@@ -28,6 +29,42 @@ function gameFixture() {
   });
   return game;
 }
+it('освобождает закреплённую трассу при переходе к проверке тоннеля', () => {
+  // Arrange
+  const game = gameFixture();
+  game.world.edges[0].tunnel = true;
+  game.world.edges[0].blocked = false;
+  game.camera = { position: { setAll: vi.fn() } };
+  game.player.position = { x: 0, y: 0, z: 0 };
+  game.traffic.clearRacers = vi.fn();
+  game.racePinnedChunks.set('0,0', 0);
+  game.racePinnedTiles.add('15/1/1');
+  // Act
+  game.visitStructure('tunnel');
+  // Assert
+  expect(game.racePinnedChunks.size).toBe(0);
+  expect(game.racePinnedTiles.size).toBe(0);
+  expect(game.driveTest.route.id).toBe('test-tunnel');
+});
+it('закрепляет запас исходных тайлов для проверки маршрута за узким коридором геометрии', () => {
+  // Arrange
+  const game = gameFixture(),
+    route = game.world.routes[0];
+  const margin = Math.max(
+    120,
+    ...route.edges.map(
+      (id: string) => edgeById(game.world, id)!.width / 2 + 110,
+    ),
+  );
+  // Act
+  const pinned = game.raceTileKeys([], route);
+  // Assert
+  expect([...pinned].sort((a, b) => a.localeCompare(b))).toEqual(
+    routeCoverageTileKeys(route.points, game.world.center, margin).sort(
+      (a, b) => a.localeCompare(b),
+    ),
+  );
+});
 it('при старте запрашивает новый маршрут в worker и передаёт один результат игроку и соперникам', async () => {
   // Arrange
   const before = buildWorld(raceGrid()),
@@ -221,4 +258,40 @@ it('сообщает об отсутствии готового маршрута
   expect(game.message).toBe(
     'Для этого заезда пока не хватает связанных загруженных дорог. Попробуйте другой старт или дождитесь подгрузки карты.',
   );
+});
+
+it('снимает закрепление при отмене расширения карты для длинной гонки', async () => {
+  // Arrange
+  const game = gameFixture(),
+    invitation = game.world.routes[0];
+  game.worker.raceRoute.mockResolvedValue(null);
+  game.mapStream = {};
+  game.ensureRaceCoverage = vi.fn(async () => {
+    game.racePinnedTiles.add('15/1/1');
+    game.paused = true;
+  });
+  // Act
+  await game.startRace(invitation);
+  // Assert
+  expect(game.ensureRaceCoverage).toHaveBeenCalledTimes(1);
+  expect(game.racePinnedTiles.size).toBe(0);
+  expect(game.racePreparation.status).toBe('cancelled');
+  expect(game.race).toBeNull();
+});
+it('расширяет карту, если первый маршрут короче двух километров', async () => {
+  // Arrange
+  const game = gameFixture(),
+    route = game.world.routes[0];
+  game.worker.raceRoute
+    .mockResolvedValueOnce({ ...route, length: 200 })
+    .mockResolvedValue(route);
+  game.mapStream = {};
+  game.ensureRaceCoverage = vi.fn(async () => true);
+  // Act
+  await game.startRace(route);
+  // Assert
+  expect(game.ensureRaceCoverage).toHaveBeenCalledTimes(1);
+  expect(game.worker.raceRoute).toHaveBeenCalledTimes(2);
+  expect(game.race.route.length).toBeGreaterThanOrEqual(2000);
+  expect(game.racePreparation.status).toBe('ready');
 });

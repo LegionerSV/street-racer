@@ -1,3 +1,8 @@
+import {
+  trafficSpawnSegments,
+  chooseTrafficSpawn,
+  laneSpawnClearance,
+} from './traffic-spawn';
 import { trafficAppearance, VEHICLE_PROFILES } from './vehicle-profiles';
 import { vehicleGroundPose, settleVehicleWheels } from './vehicle-grounding';
 import { worldSurfaceSampler } from './surface-contact';
@@ -33,11 +38,7 @@ import {
 } from './racing-ai';
 import { TrafficNeighborIndex } from './traffic-neighbors';
 import { signalApproaches } from './signal-approaches';
-import {
-  spawnClearance,
-  trafficClearancePoint,
-  trajectoryConflict,
-} from './traffic-conflicts';
+import { trafficClearancePoint, trajectoryConflict } from './traffic-conflicts';
 
 type Plan = {
   ids: EdgeStableId[];
@@ -508,6 +509,33 @@ export class Traffic {
   get racers() {
     return this.agents.filter((a) => a.race);
   }
+  private focusRoad?: { way: number; name: string };
+  diagnostics(player: Point, heading: number) {
+    const traffic = this.agents.filter((agent) => !agent.race);
+    const sameRoad = traffic.filter((agent) => {
+      const edge = edgeById(this.world, agent.edge);
+      return (
+        edge &&
+        this.focusRoad &&
+        (edge.way === this.focusRoad.way ||
+          (!!this.focusRoad.name &&
+            this.focusRoad.name !== 'Безымянная улица' &&
+            edge.name === this.focusRoad.name))
+      );
+    });
+    return {
+      total: traffic.length,
+      visible: traffic.filter((agent) => distance2(agent.point, player) <= 245)
+        .length,
+      sameRoad: sameRoad.length,
+      aheadOnRoad: sameRoad.filter(
+        (agent) =>
+          (agent.point.x - player.x) * Math.sin(heading) +
+            (agent.point.z - player.z) * Math.cos(heading) >
+          0,
+      ).length,
+    };
+  }
   update(
     frameDt: number,
     time: number,
@@ -523,7 +551,7 @@ export class Traffic {
       this.agents = this.agents.filter((a) => {
         if (
           !a.race &&
-          (distance2(a.point, player) > (this.mobile ? 360 : 620) ||
+          (distance2(a.point, player) > (this.mobile ? 340 : 460) ||
             (a.stuck > 30 && distance2(a.point, player) > 150))
         ) {
           this.hide(a);
@@ -531,15 +559,16 @@ export class Traffic {
         }
         return true;
       });
-      const near = this.world.edges.filter(
-        (e) =>
-          !e.blocked &&
-          e.length > 8 &&
-          distance2(e.points[0], player) > 90 &&
-          distance2(e.points[0], player) < (this.mobile ? 260 : 480),
+      const near = trafficSpawnSegments(
+        this.world.edges,
+        player,
+        playerHeading,
+        this.mobile ? 280 : 420,
       );
+      const focus = near.find((segment) => segment.main)?.edge;
+      this.focusRoad = focus ? { way: focus.way, name: focus.name } : undefined;
       const budget = trafficBudget(
-        near.reduce((sum, e) => sum + e.length, 0),
+        near.reduce((sum, e) => sum + e.end - e.start, 0),
         this.density,
         this.mobile,
       );
@@ -556,15 +585,38 @@ export class Traffic {
         this.hide(a);
         return false;
       });
+      const mainIds = new Set(
+        near
+          .filter((segment) => segment.main)
+          .map((segment) => edgeStableId(segment.edge)),
+      );
+      let mainCount = this.agents.filter(
+        (agent) => !agent.race && mainIds.has(agent.edge),
+      ).length;
+      const mainLimit = this.mobile
+        ? 18
+        : this.density === 'rush'
+          ? 48
+          : this.density === 'city'
+            ? 32
+            : 16;
+      const sideRoads = near.filter((segment) => !segment.main);
       const missing = budget - this.agents.filter((a) => !a.race).length;
       for (let i = 0; i < Math.min(24, missing); i++)
         if (near.length) {
+          const candidates = mainCount >= mainLimit ? sideRoads : near;
+          if (!candidates.length) break;
           const id = ++this.sequence + 10,
-            edge = near[Math.floor(seeded(id * 799) * near.length)];
+            spawn = chooseTrafficSpawn(
+              candidates,
+              seeded(id * 799),
+              seeded(id * 113),
+            )!,
+            edge = spawn.edge;
           const a: Agent = {
             id,
             edge: edgeStableId(edge),
-            distance: edge.length * (0.1 + seeded(id * 113) * 0.7),
+            distance: spawn.distance,
             speed: edge.speed * 0.7,
             point: { x: 0, y: 0, z: 0 },
             heading: 0,
@@ -572,28 +624,30 @@ export class Traffic {
           };
           this.sample(a);
           if (
-            spawnClearance(
-              a.point,
+            laneSpawnClearance(
+              a,
               player,
-              this.agents.map((agent) =>
-                trafficClearancePoint(
+              this.agents.map((agent) => ({
+                point: trafficClearancePoint(
                   agent.point,
                   !!agent.dynamic,
                   agent.visual?.root.position,
                 ),
-              ),
+                heading: agent.heading,
+              })),
             ) &&
             this.agents.every(
               (b) =>
-                distance2(b.point, a.point) > 15 &&
                 !(
                   (edge.laneProfile?.shared ??
                     (edge.width < 5.6 && !edge.oneWay)) &&
-                  edgeById(this.world, b.edge)!.way === edge.way
+                  edgeById(this.world, b.edge)?.way === edge.way
                 ),
             )
-          )
+          ) {
             this.agents.push(a);
+            if (mainIds.has(a.edge)) mainCount++;
+          }
         }
     }
     // Решения принимаются по одному снимку, чтобы порядок массива не давал преимущество.

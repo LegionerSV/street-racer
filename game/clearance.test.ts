@@ -339,6 +339,30 @@ it('проверяет низ плиты, в том числе края косо
   expect(validateClearance(edges)).toEqual([]);
 });
 
+it('не закрывает конструкцию из-за сантиметровой погрешности и очищает старую блокировку', () => {
+  // Arrange
+  const lower = road(1, [
+    { x: -50, y: 0, z: 0 },
+    { x: 50, y: 0, z: 0 },
+  ]);
+  const upper = road(
+    2,
+    [
+      { x: 0, y: 3.49 + 0.55, z: -50 },
+      { x: 0, y: 3.49 + 0.55, z: 50 },
+    ],
+    true,
+  );
+  upper.blocked = true;
+  upper.blockedReasons = ['clearance'];
+  // Act
+  const warnings = validateClearance([lower, upper]);
+  // Assert
+  expect(warnings).toEqual([]);
+  expect(upper.blocked).toBe(false);
+  expect(upper.clearanceIssue).toBeUndefined();
+});
+
 it('нижний мост учитывается до верхнего, номер слоя не становится множителем высоты', () => {
   // Arrange
   const ground = road(1, [
@@ -369,4 +393,44 @@ it('нижний мост учитывается до верхнего, номе
   for (const c of roadCrossings(edges))
     expect(crossingClearance(c)).toBeGreaterThanOrEqual(3.5);
   expect(top.points[0].y).toBeLessThan(9);
+});
+
+it('не закрывает весь way из-за одного конфликтующего сегмента и сохраняет другие причины', () => {
+  // Arrange
+  const lower = road(1, [
+    { x: -50, y: 0, z: 0 },
+    { x: 50, y: 0, z: 0 },
+  ]);
+  const crossing = road(
+    2,
+    [
+      { x: 0, y: 3, z: -50 },
+      { x: 0, y: 3, z: 50 },
+    ],
+    true,
+  );
+  const remote = {
+    ...road(
+      3,
+      [
+        { x: 0, y: 6, z: 200 },
+        { x: 0, y: 6, z: 300 },
+      ],
+      true,
+    ),
+    way: crossing.way,
+  };
+  const legacy = {
+    ...road(4, [
+      { x: 300, y: 0, z: 0 },
+      { x: 400, y: 0, z: 0 },
+    ]),
+    blocked: true,
+  };
+  // Act
+  validateClearance([lower, crossing, remote, legacy]);
+  // Assert
+  expect(crossing.blocked).toBe(true);
+  expect(remote.blocked).toBe(false);
+  expect(legacy.blocked).toBe(true);
 });

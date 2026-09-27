@@ -1078,3 +1078,30 @@ it('применяет незатрагивающий трассу WorldPatch в
     engine.dispose();
   }
 });
+
+it('собирает несколько закреплённых тайлов в одно обновление окружения гонки', async () => {
+  // Arrange
+  mockedDownloads();
+  const stream = new RegionStream({ lat: 0, lon: 0 }, 'high');
+  const pinned = Array.from({ length: 6 }, (_, i) =>
+    sourceTileKey(latLonToSourceTile(0, 0.08 + i * 0.015)),
+  );
+  await stream.start(new AbortController().signal, () => {});
+  try {
+    // Act
+    const result = await stream.next(
+      { x: 0, y: 0, z: 0 },
+      0,
+      undefined,
+      0,
+      false,
+      pinned,
+    );
+    // Assert
+    expect(pinned.every((key) => result?.loadedTiles?.includes(key))).toBe(
+      true,
+    );
+  } finally {
+    stream.dispose();
+  }
+});

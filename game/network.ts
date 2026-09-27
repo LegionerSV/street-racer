@@ -1,3 +1,4 @@
+import { raceGeometryValid } from './race-quality';
 import {
   buildingGroups,
   isBuildingPart,
@@ -127,6 +128,36 @@ export function advanceTurnHistory(
     if (prefixes.has(next.slice(i).join(','))) return next.slice(i);
   return [];
 }
+const turnRestrictionCache = new WeakMap<
+  World,
+  {
+    source: Restriction[];
+    nodes: Map<string, Restriction[]>;
+    ways: Map<number, Restriction[]>;
+  }
+>();
+function turnRestrictions(world: World) {
+  let index = turnRestrictionCache.get(world);
+  if (index?.source === world.restrictions) return index;
+  index = { source: world.restrictions, nodes: new Map(), ways: new Map() };
+  for (const restriction of world.restrictions) {
+    const key = `${restriction.fromWay}/${restriction.via}`;
+    const nodes = index.nodes.get(key) || [];
+    nodes.push(restriction);
+    index.nodes.set(key, nodes);
+    if (restriction.viaWays)
+      for (const way of new Set([
+        restriction.fromWay,
+        ...restriction.viaWays,
+      ])) {
+        const ways = index.ways.get(way) || [];
+        ways.push(restriction);
+        index.ways.set(way, ways);
+      }
+  }
+  turnRestrictionCache.set(world, index);
+  return index;
+}
 export function allowedTurn(
   world: World,
   from: Edge,
@@ -134,7 +165,8 @@ export function allowedTurn(
   history: number[] = [],
 ): boolean {
   if (from.to !== to.from || to.blocked) return false;
-  for (const r of world.restrictions)
+  const restrictions = turnRestrictions(world);
+  for (const r of restrictions.ways.get(from.way) || [])
     if (r.viaWays) {
       const chain = [r.fromWay, ...r.viaWays];
       for (let n = 1; n <= chain.length; n++) {
@@ -150,7 +182,7 @@ export function allowedTurn(
         if (!r.only && n === chain.length && to.way === r.toWay) return false;
       }
     }
-  for (const r of world.restrictions)
+  for (const r of restrictions.nodes.get(`${from.way}/${from.to}`) || [])
     if (r.via === from.to && r.fromWay === from.way) {
       if (r.kind === 'no_u_turn' && r.fromWay === r.toWay) {
         if (to.to === from.from) return false;
@@ -166,7 +198,7 @@ export function allowedTurn(
   return true;
 }
 
-export function buildWorld(region: RegionData): World {
+export function buildWorld(region: RegionData, racePreviews = true): World {
   const coverage = region.loadedTiles ? new Set(region.loadedTiles) : undefined;
   const objectBounds = coverageBounds(region.loadedTiles, region.center);
   const covered = (p: Point) => pointHasCoverage(coverage, p, region.center);
@@ -407,10 +439,14 @@ export function buildWorld(region: RegionData): World {
           kind: r.tags.restriction,
         });
     }
-  const { groupOf, groupTags } = buildingGroups(region.elements, region.center);
+  const { groupOf, groupTags } = buildingGroups(
+    region.elements,
+    region.center,
+    true,
+  );
   const buildings: Building[] = [],
     areas: Area[] = [],
-    trees: Point[] = [];
+    trees: import('./tree-dimensions').Tree[] = [];
   const ways = new Map(
     region.elements.filter((e) => e.type === 'way').map((e) => [e.id, e]),
   );
@@ -565,6 +601,7 @@ export function buildWorld(region: RegionData): World {
         t['building:material'] ||
         t['building:facade:material'] ||
         t.material ||
+        groupTags.get(groupOf.get(osmKey(e)) || '')?.['building:material'] ||
         (t.shop === 'mall' ? 'glass' : fortification ? 'brick' : undefined);
       const group = groupOf.get(osmKey(e)),
         inheritedGroupTags = group ? groupTags.get(group) : undefined,
@@ -587,19 +624,21 @@ export function buildWorld(region: RegionData): World {
           height,
         ),
         part: isBuildingPart(t),
-        colour: seeded(e.id),
+        colour: seeded(group ? Number(group.split('/')[1]) : e.id),
         roof,
         material,
         facadeColour:
           t['building:colour'] ||
           t['building:facade:colour'] ||
           t['building:facade:color'] ||
-          t.colour,
+          t.colour ||
+          inheritedGroupTags?.['building:colour'] ||
+          inheritedGroupTags?.colour,
         levels,
         floorHeight,
         technicalHeight: Math.min(technicalHeight, height),
         windowPolicy,
-        kind: t.building,
+        kind: t.building || inheritedGroupTags?.building,
         roofHeight: roofHeight || undefined,
         roofDirection,
         roofAngle,
@@ -700,7 +739,7 @@ export function buildWorld(region: RegionData): World {
     }
     if (e.type === 'node' && e.tags?.natural === 'tree') {
       const p = local(e.id);
-      if (p) trees.push(p);
+      if (p) trees.push({ ...p, id: e.id, height: osmLength(e.tags.height) });
     }
   }
   for (const e of region.elements)
@@ -952,26 +991,7 @@ export function buildWorld(region: RegionData): World {
     world.warnings.push(
       'Недостаточно связанных дорог для заезда. Выберите другой участок.',
     );
-  world.routes = createRoutes(world);
-  // Изолированный двор не должен становиться стартом, если рядом есть полноценная сеть.
-  if (
-    !world.routes.some((r) => r.kind === 'sprint') ||
-    !world.routes.some((r) => r.kind === 'circuit')
-  ) {
-    let best = world.routes;
-    let bestSpawn = world.spawnEdge;
-    for (const candidate of candidates.slice(0, 80)) {
-      world.spawnEdge = edgeStableId(candidate);
-      const routes = createRoutes(world);
-      if (routes.length > best.length) {
-        best = routes;
-        bestSpawn = edgeStableId(candidate);
-      }
-      if (best.length === 2) break;
-    }
-    world.spawnEdge = bestSpawn;
-    world.routes = best;
-  }
+  world.racePreviews = racePreviews;
   world.routes = createRaceLocations(world);
   return world;
 }
@@ -1006,6 +1026,7 @@ function shortest(
   target: number,
   forbidden = new Set<number>(),
   historyAtFirst?: number[],
+  forbiddenNodes = new Set<number>(),
 ): number[] | null {
   const safe = safeRaceEdges(world);
   if (!safe.has(first.id)) return null;
@@ -1044,6 +1065,7 @@ function shortest(
       if (
         !safe.has(next.id) ||
         forbidden.has(next.id) ||
+        forbiddenNodes.has(next.to) ||
         next.to === edge.from ||
         !allowedTurn(world, edge, next, state.history)
       )
@@ -1064,6 +1086,101 @@ function shortest(
     }
   }
   return null;
+}
+export function refreshRaceRoute(
+  world: World,
+  route: Route,
+): Route | undefined {
+  const edges = route.edges.map((id) => edgeById(world, id));
+  if (edges.some((e) => !e || e.blocked)) return;
+  return raceFromEdges(
+    world,
+    route.kind,
+    edges.map((e) => e!.id),
+  );
+}
+function raceFromEdges(
+  world: World,
+  kind: Route['kind'],
+  ids: number[],
+): Route | undefined {
+  if (!ids.length) return;
+  const visited = new Set<number>([world.edges[ids[0]].from]);
+  let history: number[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const edge = world.edges[ids[i]];
+    if (
+      edge.blocked ||
+      (i > 0 &&
+        (world.edges[ids[i - 1]].to !== edge.from ||
+          !allowedTurn(world, world.edges[ids[i - 1]], edge, history)))
+    )
+      return;
+    if (
+      visited.has(edge.to) &&
+      !(
+        kind === 'circuit' &&
+        i === ids.length - 1 &&
+        edge.to === world.edges[ids[0]].from
+      )
+    )
+      return;
+    visited.add(edge.to);
+    history = advanceTurnHistory(world, history, edge.way);
+  }
+  if (kind === 'circuit') {
+    let history = advanceTurnHistory(world, [], world.edges[ids[0]].way);
+    for (let i = 1; i < ids.length * 2; i++) {
+      const from = world.edges[ids[(i - 1) % ids.length]],
+        to = world.edges[ids[i % ids.length]];
+      if (!allowedTurn(world, from, to, history)) return;
+      history = advanceTurnHistory(world, history, to.way);
+    }
+  }
+  const raw: Point[] = [];
+  for (const id of ids)
+    raw.push(...world.edges[id].points.slice(raw.length ? 1 : 0));
+  // Контрольные точки по 70 м, с обязательными углами маршрута.
+  const points = [raw[0]];
+  for (let i = 1; i < raw.length - 1; i++) {
+    const a = raw[i - 1],
+      b = raw[i],
+      c = raw[i + 1];
+    const turn =
+      Math.abs((b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x)) /
+      (distance2(a, b) * distance2(b, c) || 1);
+    if (distance2(points.at(-1)!, b) > 65 || turn > 0.1) points.push(b);
+  }
+  points.push(raw.at(-1)!);
+  const cumulative = pathLengths(points),
+    length = cumulative.at(-1)!;
+  if (!raceGeometryValid(points, kind)) return;
+  if (
+    !routeHasDrivingCoverage(points, world.loadedTiles, world.center) ||
+    !routeHasCoverage(
+      points,
+      world.loadedTiles,
+      world.center,
+      Math.max(120, ...ids.map((id) => world.edges[id].width / 2 + 110)),
+    )
+  )
+    return;
+  let hash = 2166136261;
+  for (const id of ids) {
+    const e = world.edges[id];
+    for (const c of `${e.way}/${e.from}/${e.to};`)
+      hash = Math.imul(hash ^ c.charCodeAt(0), 16777619);
+  }
+  return {
+    id: `${kind}-${world.edges[ids[0]].way}-${world.edges[ids[0]].from}-${world.edges[ids[0]].to}-${(hash >>> 0).toString(36)}`,
+    title: kind === 'circuit' ? 'Ночной круг' : 'Через район',
+    kind,
+    edges: ids.map((id) => edgeStableId(world.edges[id])),
+    points,
+    cumulative,
+    length,
+    laps: kind === 'circuit' ? 3 : 1,
+  };
 }
 const routeCache = new WeakMap<World, Map<string, Route[]>>();
 export function invalidateRaceRoutes(world: World) {
@@ -1090,59 +1207,8 @@ export function createRoutes(
   const first = world.edges[startIndex],
     routes: Route[] = [];
   function add(kind: 'sprint' | 'circuit', ids: number[]) {
-    if (kind === 'circuit') {
-      let history = advanceTurnHistory(world, [], world.edges[ids[0]].way);
-      for (let i = 1; i < ids.length * 2; i++) {
-        const from = world.edges[ids[(i - 1) % ids.length]],
-          to = world.edges[ids[i % ids.length]];
-        if (!allowedTurn(world, from, to, history)) return;
-        history = advanceTurnHistory(world, history, to.way);
-      }
-    }
-    const raw: Point[] = [];
-    for (const id of ids)
-      raw.push(...world.edges[id].points.slice(raw.length ? 1 : 0));
-    // Контрольные точки по 70 м, с обязательными углами маршрута.
-    const points = [raw[0]];
-    for (let i = 1; i < raw.length - 1; i++) {
-      const a = raw[i - 1],
-        b = raw[i],
-        c = raw[i + 1];
-      const turn =
-        Math.abs((b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x)) /
-        (distance2(a, b) * distance2(b, c) || 1);
-      if (distance2(points.at(-1)!, b) > 65 || turn > 0.1) points.push(b);
-    }
-    points.push(raw.at(-1)!);
-    const cumulative = pathLengths(points),
-      length = cumulative.at(-1)!;
-    if (length < 400) return;
-    if (
-      !routeHasDrivingCoverage(points, world.loadedTiles, world.center) ||
-      !routeHasCoverage(
-        points,
-        world.loadedTiles,
-        world.center,
-        Math.max(120, ...ids.map((id) => world.edges[id].width / 2 + 110)),
-      )
-    )
-      return;
-    let hash = 2166136261;
-    for (const id of ids) {
-      const e = world.edges[id];
-      for (const c of `${e.way}/${e.from}/${e.to};`)
-        hash = Math.imul(hash ^ c.charCodeAt(0), 16777619);
-    }
-    routes.push({
-      id: `${kind}-${first.way}-${first.from}-${first.to}-${(hash >>> 0).toString(36)}`,
-      title: kind === 'circuit' ? 'Ночной круг' : 'Через район',
-      kind,
-      edges: ids.map((id) => edgeStableId(world.edges[id])),
-      points,
-      cumulative,
-      length,
-      laps: kind === 'circuit' ? 3 : 1,
-    });
+    const route = raceFromEdges(world, kind, ids);
+    if (route) routes.push(route);
   }
   const reachable = new Set<number>(),
     queue = [first.to];
@@ -1162,7 +1228,16 @@ export function createRoutes(
     .sort(
       (a, b) => distance2(b, first.points[0]) - distance2(a, first.points[0]),
     );
-  for (const target of distant.slice(0, 8)) {
+  const targetCells = new Set<string>();
+  const targets = distant
+    .filter((node) => {
+      const key = `${Math.floor(node.x / 300)},${Math.floor(node.z / 300)}`;
+      if (targetCells.has(key)) return false;
+      targetCells.add(key);
+      return true;
+    })
+    .slice(0, 64);
+  for (const target of targets) {
     const path = shortest(world, first, target.id);
     if (!path) continue;
     if (!routes.some((r) => r.kind === 'sprint')) add('sprint', path);
@@ -1177,8 +1252,20 @@ export function createRoutes(
       world,
       world.edges[path.at(-1)!],
       first.from,
-      new Set(path),
+      new Set(
+        world.edges
+          .filter((e) =>
+            path.some((id) => {
+              const used = world.edges[id];
+              return (
+                (used.from === e.to && used.to === e.from) || used.id === e.id
+              );
+            }),
+          )
+          .map((e) => e.id),
+      ),
       history,
+      new Set(path.slice(1).map((id) => world.edges[id].from)),
     );
     if (back) {
       add('circuit', [...path, ...back.slice(1)]);
@@ -1192,6 +1279,22 @@ export function createRoutes(
   routes.sort((a, b) => a.kind.localeCompare(b.kind));
   cache.set(cacheKey, routes);
   return routes;
+}
+
+function raceStartHasExtent(world: World, first: Edge, safe: Set<number>) {
+  const queue = [first.to],
+    seen = new Set<number>();
+  while (queue.length) {
+    const node = queue.pop()!;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    for (const edge of outgoing(world, node)) {
+      if (!safe.has(edge.id)) continue;
+      if (distance2(first.points[0], edge.points.at(-1)!) >= 800) return true;
+      if (!seen.has(edge.to)) queue.push(edge.to);
+    }
+  }
+  return false;
 }
 
 // Один распределённый старт на километровый участок; возле исходного старта
@@ -1244,13 +1347,34 @@ export function createRaceLocations(
           a.from - b.from ||
           a.to - b.to,
       )
-      .slice(0, 3)
+      .slice(0, world.racePreviews === false ? 24 : 3)
       .map((e) => e.id);
     const old = preferred.get(key);
     if (old !== undefined) candidates.unshift(old);
     for (const id of new Set(candidates)) {
-      const routes = createRoutes(world, edgeStableId(world.edges[id]));
-      if (!routes.length) continue;
+      const compact =
+        world.racePreviews === false &&
+        !raceStartHasExtent(world, world.edges[id], safe);
+      const routes =
+        world.racePreviews === false && !compact
+          ? []
+          : createRoutes(world, edgeStableId(world.edges[id]), compact);
+      if (!routes.length) {
+        if (world.racePreviews !== false || compact) continue;
+        const edge = world.edges[id];
+        const kind: Route['kind'] = Math.abs(x + z) % 2 ? 'sprint' : 'circuit';
+        result.push({
+          id: `start-${edgeStableId(edge)}-${kind}`,
+          kind,
+          title: kind === 'circuit' ? 'Ночной круг' : 'Через район',
+          edges: [edgeStableId(edge)],
+          points: edge.points,
+          cumulative: pathLengths(edge.points),
+          length: 0,
+          laps: kind === 'circuit' ? 3 : 1,
+        });
+        break;
+      }
       if (spawn && key === cell(spawn)) result.push(...routes);
       else {
         const kind = Math.abs(x + z) % 2 ? 'sprint' : 'circuit';
@@ -1272,4 +1396,36 @@ export function createRaceRoute(
   return createRoutes(world, edgeStableId(edge), true).find(
     (r) => r.kind === kind,
   );
+}
+
+export function findRaceRouteNear(
+  world: World,
+  start: string,
+  kind: Route['kind'],
+) {
+  const origin = edgeById(world, start);
+  if (!origin) return;
+  const direct = createRaceRoute(world, start, kind);
+  if (direct) return direct;
+  const safe = safeRaceEdges(world);
+  const candidates = world.edges
+    .filter(
+      (edge) =>
+        edge !== origin &&
+        safe.has(edge.id) &&
+        !edge.bridge &&
+        !edge.tunnel &&
+        distance2(edge.points[0], origin.points[0]) <= 250 &&
+        Math.abs(edge.points[0].y - origin.points[0].y) < 3,
+    )
+    .sort(
+      (a, b) =>
+        distance2(a.points[0], origin.points[0]) -
+          distance2(b.points[0], origin.points[0]) || a.id - b.id,
+    )
+    .slice(0, 24);
+  for (const candidate of candidates) {
+    const route = createRaceRoute(world, edgeStableId(candidate), kind);
+    if (route) return route;
+  }
 }

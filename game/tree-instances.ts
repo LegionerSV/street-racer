@@ -1,6 +1,6 @@
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core';
 import { seeded } from './geo';
-import type { Point } from './types';
+import { treeDimensions, type Tree } from './tree-dimensions';
 
 function matrixAt(
   position: Vector3,
@@ -10,12 +10,12 @@ function matrixAt(
   return Matrix.Compose(scale, rotation, position).m;
 }
 
-export function treeInstances(trees: Point[]) {
+export function treeInstances(trees: Tree[]) {
   const trunks = new Float32Array(trees.length * 16),
     branches = new Float32Array(trees.length * 3 * 16),
     leaves = new Float32Array(trees.length * 5 * 16);
   trees.forEach((tree, i) => {
-    const seed = Math.floor(tree.x * 17 + tree.z * 31);
+    const { seed, vertical, horizontal } = treeDimensions(tree);
     const crownHeight = 7.6 + seeded(seed + 1) * 1.5;
     trunks.set(
       matrixAt(
@@ -90,6 +90,26 @@ export function treeInstances(trees: Point[]) {
       ),
       (i * 5 + 4) * 16,
     );
+    for (const [buffer, count] of [
+      [trunks, 1],
+      [branches, 3],
+      [leaves, 5],
+    ] as const) {
+      for (let part = 0; part < count; part++) {
+        const offset = (i * count + part) * 16;
+        for (const column of [0, 4, 8]) {
+          buffer[offset + column] *= horizontal;
+          buffer[offset + column + 1] *= vertical;
+          buffer[offset + column + 2] *= horizontal;
+        }
+        buffer[offset + 12] =
+          tree.x + (buffer[offset + 12] - tree.x) * horizontal;
+        buffer[offset + 13] =
+          tree.y + (buffer[offset + 13] - tree.y) * vertical;
+        buffer[offset + 14] =
+          tree.z + (buffer[offset + 14] - tree.z) * horizontal;
+      }
+    }
   });
   return { trunks, branches, leaves };
 }
