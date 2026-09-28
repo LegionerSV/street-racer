@@ -149,6 +149,7 @@ export type Area = {
   surface?: string;
   holes?: Point[][];
   railing?: 'river' | 'park';
+  waterKind?: 'river' | 'canal';
 };
 export type RailLine = {
   id: number;

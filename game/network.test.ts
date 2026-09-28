@@ -22,6 +22,42 @@ const node = (
   tags: signal ? { highway: 'traffic_signals' } : {},
 });
 
+it('распознаёт берега рек и каналов, не добавляя набережную пруду', () => {
+  // Arrange
+  const elements: OSMElement[] = [];
+  const addWater = (id: number, lon: number, tags: Record<string, string>) => {
+    for (let i = 0; i < 4; i++)
+      elements.push(
+        node(
+          id * 10 + i,
+          lon + (i === 1 || i === 2 ? 0.0001 : 0),
+          i >= 2 ? 0.0001 : 0,
+        ),
+      );
+    elements.push({
+      type: 'way',
+      id,
+      nodes: [id * 10, id * 10 + 1, id * 10 + 2, id * 10 + 3, id * 10],
+      tags,
+    });
+  };
+  addWater(101, 0, { natural: 'water', water: 'canal' });
+  addWater(102, 0.0003, { natural: 'water', water: 'river' });
+  addWater(103, 0.0006, { natural: 'water', water: 'pond' });
+  // Act
+  const areas = buildWorld(region(elements)).areas;
+  // Assert
+  expect(areas.find((area) => area.id === 101)).toMatchObject({
+    railing: 'river',
+    waterKind: 'canal',
+  });
+  expect(areas.find((area) => area.id === 102)).toMatchObject({
+    railing: 'river',
+    waterKind: 'river',
+  });
+  expect(areas.find((area) => area.id === 103)?.railing).toBeUndefined();
+});
+
 it('выводит высоту цитадели из масштаба, но сохраняет явные OSM-теги', () => {
   // Arrange
   const citadel = (size: number, extra: Record<string, string> = {}) => {

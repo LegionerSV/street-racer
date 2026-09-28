@@ -494,6 +494,34 @@ function ribbon(
     color,
   );
 }
+function railBridgeDeck(mesh: MeshData, a: Point, b: Point, lod: number) {
+  const halfWidth = lod >= 3 ? 1.7 : 2.3;
+  const top = 0.03,
+    bottom = -1.25;
+  ribbon(mesh, a, b, -halfWidth, halfWidth, top, [0.33, 0.32, 0.28]);
+  ribbon(mesh, a, b, -halfWidth, halfWidth, bottom, [0.22, 0.25, 0.27]);
+  const length = distance2(a, b) || 1,
+    nx = (b.z - a.z) / length,
+    nz = -(b.x - a.x) / length;
+  const corner = (point: Point, side: number, height: number): Point => ({
+    x: point.x + nx * side * halfWidth,
+    y: point.y + height,
+    z: point.z + nz * side * halfWidth,
+  });
+  const leftTopA = corner(a, -1, top),
+    leftTopB = corner(b, -1, top),
+    rightTopA = corner(a, 1, top),
+    rightTopB = corner(b, 1, top),
+    leftBottomA = corner(a, -1, bottom),
+    leftBottomB = corner(b, -1, bottom),
+    rightBottomA = corner(a, 1, bottom),
+    rightBottomB = corner(b, 1, bottom);
+  const sideColour: Colour = [0.24, 0.27, 0.28];
+  quad(mesh, leftBottomA, leftBottomB, leftTopB, leftTopA, sideColour);
+  quad(mesh, rightTopA, rightTopB, rightBottomB, rightBottomA, sideColour);
+  quad(mesh, leftTopA, rightTopA, rightBottomA, leftBottomA, sideColour);
+  quad(mesh, rightTopB, leftTopB, leftBottomB, rightBottomB, sideColour);
+}
 type Segment = {
   a: Point;
   b: Point;
@@ -941,17 +969,21 @@ export function buildChunk(
     lamps: [],
     breakables: [],
   };
+  const flatWaterLevels = new Map<World['areas'][number], number>();
   if (lod >= 3) {
-    for (const rail of index.rails.get(key) ?? [])
-      ribbon(
-        result.structures,
-        rail.a,
-        rail.b,
-        -1.7,
-        1.7,
-        rail.bridge ? -0.35 : 0.07,
-        [0.28, 0.28, 0.27],
-      );
+    for (const rail of index.rails.get(key) ?? []) {
+      if (rail.bridge) railBridgeDeck(result.structures, rail.a, rail.b, lod);
+      else
+        ribbon(
+          result.structures,
+          rail.a,
+          rail.b,
+          -1.7,
+          1.7,
+          0.07,
+          [0.28, 0.28, 0.27],
+        );
+    }
     const ground = (building: Building): Building => {
       if (building.kind === 'bridge') return building;
       const point = (p: Point) => ({
@@ -1010,29 +1042,36 @@ export function buildChunk(
   }
   for (const rail of index.rails.get(key) ?? []) {
     const { a, b, bridge, station } = rail;
-    ribbon(
-      result.structures,
-      a,
-      b,
-      -2.1,
-      2.1,
-      bridge ? -0.35 : 0.07,
-      [0.33, 0.32, 0.28],
-    );
+    if (bridge) railBridgeDeck(result.structures, a, b, lod);
+    else ribbon(result.structures, a, b, -2.1, 2.1, 0.07, [0.33, 0.32, 0.28]);
     if (bridge) {
-      ribbon(result.structures, a, b, -2.3, 2.3, -0.65, [0.24, 0.27, 0.28]);
-      if (
-        Math.floor(station / 30) !==
-        Math.floor((station + distance2(a, b)) / 30)
-      ) {
-        const midpoint = mixPoint(a, b, 0.5);
-        const ground = sampleElevation(world.elevation, midpoint.x, midpoint.z);
-        if (midpoint.y - ground > 2)
+      const length = distance2(a, b) || 1;
+      for (const distance of periodicOffsets(station, length, 1, 30, 15)) {
+        const midpoint = mixPoint(a, b, distance / length);
+        const terrain = sampleElevation(
+          world.elevation,
+          midpoint.x,
+          midpoint.z,
+        );
+        const water = index.waters
+          .query(boundsOf([midpoint]))
+          .find(
+            (area) =>
+              polygonContains(midpoint, area.points) &&
+              !(area.holes || []).some((hole) =>
+                polygonContains(midpoint, hole),
+              ),
+          );
+        const bottom =
+          Math.min(terrain, water ? waterLevel(water, midpoint) - 3 : terrain) -
+          0.5;
+        const top = midpoint.y - 1.05;
+        if (top - bottom > 2)
           box(
             result.structures,
-            { ...midpoint, y: ground },
+            { ...midpoint, y: bottom },
             1.3,
-            midpoint.y - ground - 0.5,
+            top - bottom,
             1.3,
             [0.32, 0.34, 0.35],
           );
@@ -1114,9 +1153,20 @@ export function buildChunk(
       );
     }
   function waterLevel(area: World['areas'][number], point: Point) {
-    return (area.railing === 'river'
-      ? sampleElevation(world.elevation, point.x, point.z)
-      : Math.min(...area.points.map((p) => p.y))) - 0.4;
+    if (area.railing === 'river' && area.waterKind !== 'canal')
+      return sampleElevation(world.elevation, point.x, point.z) - 0.4;
+    let level = flatWaterLevels.get(area);
+    if (level === undefined) {
+      level =
+        area.waterKind === 'canal'
+          ? area.points.map((p) => p.y).sort((a, b) => a - b)[
+              Math.floor(area.points.length / 2)
+            ] - 0.4
+          : area.points.reduce((lowest, p) => Math.min(lowest, p.y), Infinity) -
+            0.4;
+      flatWaterLevels.set(area, level);
+    }
+    return level;
   }
   const quayHeight = (point: Point) => {
     let distance = WATERFRONT_REACH,
@@ -1170,7 +1220,10 @@ export function buildChunk(
       );
       const quay = bank && area.railing === 'river' ? quayHeight(p) : undefined;
       if (quay !== undefined) roadHeight = quay;
-      else if ((inside || bank) && !roadSamples.length)
+      else if (
+        (inside || (bank && area.railing !== 'river')) &&
+        !roadSamples.length
+      )
         roadHeight = Math.min(roadHeight, waterLevel(area, p) - 3);
     }
     index.ground.set(cacheKey, roadHeight);

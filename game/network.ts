@@ -667,8 +667,17 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
         points: footprint,
         holes,
         kind: 'water',
+        waterKind:
+          t.water === 'canal' || t.waterway === 'canal'
+            ? 'canal'
+            : t.water === 'river' || t.waterway === 'riverbank'
+              ? 'river'
+              : undefined,
         railing:
-          t.waterway === 'riverbank' || t.water === 'river'
+          t.waterway === 'riverbank' ||
+          t.water === 'river' ||
+          t.water === 'canal' ||
+          t.waterway === 'canal'
             ? 'river'
             : undefined,
       });

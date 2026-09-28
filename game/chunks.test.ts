@@ -633,6 +633,90 @@ describe('Подготовка кварталов', () => {
     // Assert
     expect(Math.min(...bank.map((p) => p[1]))).toBeGreaterThan(4);
   });
+  it.each(['river', 'canal'] as const)(
+    'оставляет сушу у берега %s на поверхности и опускает только дно под водой',
+    (waterKind) => {
+      // Arrange
+      const world = {
+        center: { lat: 0, lon: 0 },
+        nodes: [],
+        edges: [],
+        restrictions: [],
+        buildings: [],
+        trees: [],
+        areas: [
+          {
+            id: 1,
+            kind: 'water',
+            railing: 'river',
+            waterKind,
+            points: [
+              { x: 125, y: 0, z: 0 },
+              { x: 225, y: 0, z: 0 },
+              { x: 225, y: 0, z: 200 },
+              { x: 125, y: 0, z: 200 },
+            ],
+          },
+        ],
+        elevation: { width: 2, size: 5600, values: new Float32Array(4) },
+        drivingSide: 'right',
+        warnings: [],
+        spawnEdge: null,
+        routes: [],
+      } as World;
+      // Act
+      const positions = buildChunk(world, '0,0', 0).terrain.positions;
+      const heightAt = (x: number) => {
+        const i = Array.from({ length: 441 }, (_, index) => index).find(
+          (index) =>
+            positions[index * 3] === x && positions[index * 3 + 2] === 100,
+        );
+        return positions[i! * 3 + 1];
+      };
+      // Assert
+      expect(heightAt(112.5)).toBeCloseTo(0);
+      expect(heightAt(137.5)).toBeLessThan(-3);
+    },
+  );
+  it('не опускает поверхность канала вслед за одиночным провалом DEM на берегу', () => {
+    // Arrange
+    const world = {
+      center: { lat: 0, lon: 0 },
+      nodes: [],
+      edges: [],
+      restrictions: [],
+      buildings: [],
+      trees: [],
+      areas: [
+        {
+          id: 1,
+          kind: 'water',
+          railing: 'river',
+          waterKind: 'canal',
+          points: [
+            { x: 20, y: -12, z: 20 },
+            { x: 100, y: 0, z: 20 },
+            { x: 180, y: 0, z: 20 },
+            { x: 180, y: 0, z: 120 },
+            { x: 100, y: 0, z: 120 },
+            { x: 20, y: 0, z: 120 },
+          ],
+        },
+      ],
+      elevation: { width: 2, size: 5600, values: new Float32Array(4) },
+      drivingSide: 'right',
+      warnings: [],
+      spawnEdge: null,
+      routes: [],
+    } as World;
+    // Act
+    const water = buildChunk(world, '0,0', 0).water;
+    const heights = water.positions.filter((_, index) => index % 3 === 1);
+    // Assert
+    expect(heights.length).toBeGreaterThan(0);
+    expect(Math.min(...heights)).toBeGreaterThan(-2);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(0.01);
+  });
   it('ждёт только стартовую зону и путь на 70 м вперёд с запасом у границ', () => {
     // Arrange / Act / Assert
     expect(criticalChunks({ x: 125, y: 0, z: 125 }, 0)).toEqual(['0,0']);

@@ -298,3 +298,74 @@ it('рисует путь, мост и запаркованный вагон в 
   expect(chunk.structures.indices.length).toBeGreaterThan(0);
   expect(distant.structures.indices.length).toBeGreaterThan(0);
 });
+
+it('рисует боковины настила железнодорожного моста вблизи и вдали', () => {
+  // Arrange
+  const world = buildWorld(region([]));
+  world.railways = [
+    {
+      id: 10,
+      nodes: [1, 2],
+      bridge: true,
+      service: '',
+      points: [
+        { x: 10, y: 8, z: 10 },
+        { x: 30, y: 8, z: 10 },
+      ],
+    },
+  ];
+  const verticalFace = (lod: number) => {
+    const mesh = buildChunk(world, '0,0', lod).structures;
+    return Array.from({ length: mesh.indices.length / 3 }, (_, index) => {
+      const heights = mesh.indices
+        .slice(index * 3, index * 3 + 3)
+        .map((vertex) => mesh.positions[vertex * 3 + 1]);
+      return Math.max(...heights) - Math.min(...heights);
+    }).some((height) => height >= 0.8);
+  };
+  // Act / Assert
+  expect(verticalFace(0)).toBe(true);
+  expect(verticalFace(3)).toBe(true);
+});
+
+it('опускает опоры железнодорожного моста до дна водоёма', () => {
+  // Arrange
+  const world = buildWorld(region([]));
+  world.railways = [
+    {
+      id: 10,
+      nodes: [1, 2],
+      bridge: true,
+      service: '',
+      points: [
+        { x: 10, y: 8, z: 50 },
+        { x: 130, y: 8, z: 50 },
+      ],
+    },
+  ];
+  world.areas = [
+    {
+      id: 1,
+      kind: 'water',
+      railing: 'river',
+      waterKind: 'canal',
+      points: [
+        { x: 0, y: 0, z: 0 },
+        { x: 180, y: 0, z: 0 },
+        { x: 180, y: 0, z: 100 },
+        { x: 0, y: 0, z: 100 },
+      ],
+    },
+  ];
+  // Act
+  const mesh = buildChunk(world, '0,0', 0).structures;
+  const supportY = Array.from(
+    { length: mesh.positions.length / 3 },
+    (_, index) => index,
+  )
+    .filter((index) => Math.abs(mesh.colors![index * 4] - 0.32) < 0.001)
+    .map((index) => mesh.positions[index * 3 + 1]);
+  // Assert
+  expect(supportY.length).toBeGreaterThan(0);
+  expect(Math.min(...supportY)).toBeLessThanOrEqual(-3.4);
+});
