@@ -3,6 +3,7 @@ import {
   isBuildingPart,
   isSignificantBuilding,
 } from './building-groups';
+import { isShipTags } from './ships';
 import { toLocal } from './geo';
 import { ROAD_TYPES } from './map-object-filters';
 import type { Center, OSMElement } from './types';
@@ -46,6 +47,16 @@ function isRoad(element: OSMElement) {
     tags.access !== 'private' &&
     tags.motor_vehicle !== 'no' &&
     tags.motorcar !== 'no'
+  );
+}
+
+function isRailway(element: OSMElement) {
+  const railway = element.tags?.railway;
+  return (
+    (element.type === 'way' &&
+      ['rail', 'narrow_gauge'].includes(railway || '') &&
+      !!element.nodes?.length) ||
+    railway === 'station'
   );
 }
 
@@ -193,6 +204,7 @@ export function reduceMapElements(
   center: Center,
   mode: MapDetailMode = 'standard',
   closeCourtyards = false,
+  collectStats = true,
 ) {
   const byKey = new Map(elements.map((element) => [keyOf(element), element])),
     nodeById = new Map(
@@ -277,6 +289,7 @@ export function reduceMapElements(
   for (const element of elements) {
     const tags = element.tags ?? {};
     if (
+      isRailway(element) ||
       (isRoad(element) && (!closeCourtyards || !isCourtyardRoad(element))) ||
       (element.type === 'relation' &&
         tags.type === 'restriction' &&
@@ -290,6 +303,7 @@ export function reduceMapElements(
       retain(element);
     } else if (
       (tags.building && tags.building !== 'no') ||
+      isShipTags(tags) ||
       isBuildingPart(tags) ||
       tags.type === 'building' ||
       tags.historic === 'citywalls' ||
@@ -297,6 +311,7 @@ export function reduceMapElements(
     ) {
       if (
         tags.building === 'wall' ||
+        isShipTags(tags) ||
         isSignificantBuilding(tags) ||
         (mode !== 'roads' &&
           (tags.name ||
@@ -364,8 +379,21 @@ export function reduceMapElements(
   }
 
   const reduced = elements.filter((element) => kept.has(keyOf(element)));
+  const emptyStats = (): ElementBreakdown => ({
+    total: 0,
+    nodes: 0,
+    ways: 0,
+    relations: 0,
+    roads: 0,
+    buildings: 0,
+    buildingParts: 0,
+    trees: 0,
+    areas: 0,
+  });
   return {
     elements: reduced,
-    stats: { raw: summarize(elements), kept: summarize(reduced) },
+    stats: collectStats
+      ? { raw: summarize(elements), kept: summarize(reduced) }
+      : { raw: emptyStats(), kept: emptyStats() },
   };
 }

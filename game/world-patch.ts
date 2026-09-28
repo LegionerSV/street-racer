@@ -51,6 +51,8 @@ function candidateChunks(previous: World, next: World) {
     points.length && bounds.push(boundsOf(points, 80));
   for (const world of [previous, next]) {
     world.edges.forEach((edge) => addPoints(edge.points));
+    world.railways?.forEach((line) => addPoints(line.points));
+    world.parkedWagons?.forEach((wagon) => addPoints([wagon.point]));
     world.buildings.forEach((building) => addPoints(building.footprint));
     world.areas.forEach((area) => addPoints(area.points));
     world.trees.forEach((tree) => addPoints([tree]));
@@ -100,6 +102,14 @@ export function createWorldPatch(
       (building) => `${building.osmType ?? 'way'}/${building.id}`,
     ),
     areas = delta<Area>(previous.areas, next.areas, areaKey),
+    railways = delta(previous.railways ?? [], next.railways ?? [], (line) =>
+      String(line.id),
+    ),
+    parkedWagons = delta(
+      previous.parkedWagons ?? [],
+      next.parkedWagons ?? [],
+      (wagon) => wagon.id,
+    ),
     trees = delta<Point>(previous.trees, next.trees, pointKey),
     elevation = delta<ElevationGrid>(
       previous.elevation.patches ?? [previous.elevation],
@@ -107,13 +117,30 @@ export function createWorldPatch(
       elevationKey,
     ),
     routes = delta<Route>(previous.routes, next.routes, (route) => route.id),
-    changedEdges=new Set([...edges.removed.map(edgeKey),...edges.addedOrUpdated.map(edgeKey)]),
-    previousRoutes=new Map(previous.routes.map(route=>[route.id,route])),
-    nextRoutes=new Map(next.routes.map(route=>[route.id,route])),
-    invalidatedRoutes=new Set([...routes.removed,...routes.addedOrUpdated].map(route=>route.id));
-  for(const id of new Set([...previousRoutes.keys(),...nextRoutes.keys()])){
-    const before=previousRoutes.get(id),after=nextRoutes.get(id),route=after??before;
-    if(route?.edges.some(edge=>changedEdges.has(edge))||(before&&after&&routeHasCoverage(before.points,previous.loadedTiles,previous.center)!==routeHasCoverage(after.points,next.loadedTiles,next.center)))invalidatedRoutes.add(id);
+    changedEdges = new Set([
+      ...edges.removed.map(edgeKey),
+      ...edges.addedOrUpdated.map(edgeKey),
+    ]),
+    previousRoutes = new Map(previous.routes.map((route) => [route.id, route])),
+    nextRoutes = new Map(next.routes.map((route) => [route.id, route])),
+    invalidatedRoutes = new Set(
+      [...routes.removed, ...routes.addedOrUpdated].map((route) => route.id),
+    );
+  for (const id of new Set([...previousRoutes.keys(), ...nextRoutes.keys()])) {
+    const before = previousRoutes.get(id),
+      after = nextRoutes.get(id),
+      route = after ?? before;
+    if (
+      route?.edges.some((edge) => changedEdges.has(edge)) ||
+      (before &&
+        after &&
+        routeHasCoverage(
+          before.points,
+          previous.loadedTiles,
+          previous.center,
+        ) !== routeHasCoverage(after.points, next.loadedTiles, next.center))
+    )
+      invalidatedRoutes.add(id);
   }
   return {
     coverageAdded: [...newCoverage].filter((key) => !oldCoverage.has(key)),
@@ -134,6 +161,10 @@ export function createWorldPatch(
       id: area.id,
       osmType: area.osmType,
     })),
+    railwaysAddedOrUpdated: railways.addedOrUpdated,
+    railwaysRemoved: railways.removed.map((line) => line.id),
+    parkedWagonsAddedOrUpdated: parkedWagons.addedOrUpdated,
+    parkedWagonsRemoved: parkedWagons.removed.map((wagon) => wagon.id),
     treesAdded: trees.addedOrUpdated,
     treesRemoved: trees.removed,
     elevationPatches: elevation.addedOrUpdated,
@@ -162,8 +193,7 @@ function applyDelta<T>(
     seen.add(id);
     return [replacements.get(id) ?? value];
   });
-  for (const value of updated)
-    if (!seen.has(key(value))) kept.push(value);
+  for (const value of updated) if (!seen.has(key(value))) kept.push(value);
   return kept;
 }
 
@@ -201,9 +231,7 @@ export function applyWorldPatch(
     areas = applyDelta(
       previous.areas,
       patch.areasAddedOrUpdated,
-      patch.areasRemoved.map(
-        (area) => `${area.osmType ?? 'way'}/${area.id}`,
-      ),
+      patch.areasRemoved.map((area) => `${area.osmType ?? 'way'}/${area.id}`),
       areaKey,
     ),
     trees = applyDelta(
@@ -229,6 +257,18 @@ export function applyWorldPatch(
     restrictions,
     buildings,
     areas,
+    railways: applyDelta(
+      previous.railways ?? [],
+      patch.railwaysAddedOrUpdated ?? [],
+      (patch.railwaysRemoved ?? []).map(String),
+      (line) => String(line.id),
+    ),
+    parkedWagons: applyDelta(
+      previous.parkedWagons ?? [],
+      patch.parkedWagonsAddedOrUpdated ?? [],
+      patch.parkedWagonsRemoved ?? [],
+      (wagon) => wagon.id,
+    ),
     trees,
     elevation: { ...meta.elevation, patches: elevationPatches },
     loadedTiles: [...loadedTiles],

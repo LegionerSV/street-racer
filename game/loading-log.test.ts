@@ -1,6 +1,24 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { LoadingLog, readLoadingLog, LOADING_LOG_KEY } from './loading-log';
+import {
+  LoadingLog,
+  readLoadingLog,
+  LOADING_LOG_KEY,
+  isDebugMode,
+  measureLoading,
+} from './loading-log';
 afterEach(() => vi.unstubAllGlobals());
+it('в обычном адресе не включает диагностику и выполняет загрузку без лога', async () => {
+  // Arrange
+  const task = vi.fn().mockResolvedValue('готово');
+  // Act
+  const value = await measureLoading(undefined, 'Загрузка', task);
+  // Assert
+  expect(value).toBe('готово');
+  expect(task).toHaveBeenCalledOnce();
+  expect(isDebugMode('')).toBe(false);
+  expect(isDebugMode('?debug')).toBe(true);
+  expect(isDebugMode('?debug=0')).toBe(true);
+});
 it('сохраняет этап, HTTP-ошибку и длительность даже после неудачной загрузки', async () => {
   // Arrange
   const values = new Map<string, string>();

@@ -29,12 +29,16 @@ const DEM_BASE_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
 
 export const OSMIUM_FILTER_EXPRESSIONS = [
   `w/highway=${ROAD_TYPES.join(',')}`,
+  'w/railway=rail,narrow_gauge',
+  'nwr/railway=station',
   'n/highway=traffic_signals',
   'r/type=restriction',
   'w/building',
   'w/building:part',
   'r/building',
   'r/building:part',
+  'nwr/historic=ship',
+  'nwr/ship:type',
   'nwr/natural=water,wood,tree',
   'nwr/waterway=riverbank',
   'nwr/landuse=forest,grass,meadow,reservoir',

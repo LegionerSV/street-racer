@@ -108,6 +108,18 @@ export class LoadingLog {
     this.save();
   }
 }
+export function isDebugMode(search: string): boolean {
+  return new URLSearchParams(search).has('debug');
+}
+
+export async function measureLoading<T>(
+  log: LoadingLog | undefined,
+  stage: string,
+  task: () => T | Promise<T>,
+  details?: Details,
+): Promise<T> {
+  return log ? log.measure(stage, task, details) : task();
+}
 export function readLoadingLog(): LoadingReport | null {
   try {
     const log = JSON.parse(

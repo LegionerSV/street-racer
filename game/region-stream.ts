@@ -312,6 +312,7 @@ export class RegionStream {
     quality: Settings['quality'],
     private log?: LoadingLog,
     private closeCourtyards = false,
+    private debug = !!log,
   ) {
     if (this.closeCourtyards) this.detailMode = 'minimal';
     this.policy = mapStreamingPolicy(quality);
@@ -368,17 +369,20 @@ export class RegionStream {
       this.control.signal,
     );
     if (result.kind === 'hit') {
-      for (const element of result.tile.elements)
-        this.startupRawKeys?.add(osmElementKey(element));
+      if (this.debug)
+        for (const element of result.tile.elements)
+          this.startupRawKeys?.add(osmElementKey(element));
       const finish = this.log?.start('Отбор объектов source-тайла', {
         tile: key,
         mode: 'standard',
       });
-      const started = performance.now();
+      const started = this.debug ? performance.now() : 0;
       const processed = this.reduceTile(result.tile, 'standard');
-      const current = this.tileDiagnostics.get(key) ?? {};
-      current.filter = processed.stats;
-      this.tileDiagnostics.set(key, current);
+      if (this.debug) {
+        const current = this.tileDiagnostics.get(key) ?? {};
+        current.filter = processed.stats;
+        this.tileDiagnostics.set(key, current);
+      }
       finish?.('success', {
         rawElements: processed.stats.raw.total,
         keptElements: processed.stats.kept.total,
@@ -392,7 +396,7 @@ export class RegionStream {
         keptTrees: processed.stats.kept.trees,
         rawAreas: processed.stats.raw.areas,
         keptAreas: processed.stats.kept.areas,
-        filterMs: Math.round(performance.now() - started),
+        filterMs: this.debug ? Math.round(performance.now() - started) : 0,
       });
       return processed.tile;
     }
@@ -422,6 +426,7 @@ export class RegionStream {
       sourceTileCenter({ z: tile.z, x: tile.x, y: tile.y }),
       effectiveMode,
       this.closeCourtyards,
+      this.debug,
     );
     return {
       tile: {
@@ -449,6 +454,7 @@ export class RegionStream {
   }
 
   private recordFilters(filters: Map<string, ElementReductionStats>) {
+    if (!this.debug) return;
     for (const [key, filter] of filters) {
       const current = this.tileDiagnostics.get(key) ?? {};
       current.filter = filter;
@@ -476,6 +482,7 @@ export class RegionStream {
       log,
       catalogCache: this.catalogCache,
       onSourceResult: (id, result) => {
+        if (!this.debug) return;
         const key = sourceTileKey(id),
           current = this.tileDiagnostics.get(key) ?? {};
         if (result.kind === 'hit') {
@@ -664,7 +671,7 @@ export class RegionStream {
       0,
       this.center,
     ).length;
-    this.startupRawKeys = new Set<string>();
+    this.startupRawKeys = this.debug ? new Set<string>() : undefined;
     try {
       const startupElementKeys = new Set<string>();
       let completed = 0;
@@ -699,7 +706,7 @@ export class RegionStream {
             startupElementKeys.add(osmElementKey(element));
         }
         this.blockingTileCount = initial.length - this.tiles.size;
-        this.startupRawUnique = this.startupRawKeys.size;
+        this.startupRawUnique = this.startupRawKeys?.size ?? 0;
         this.startupKeptUnique = startupElementKeys.size;
         for (
           let modeIndex = 1;
@@ -1049,6 +1056,7 @@ export class RegionStream {
   }
 
   private record(entry: (typeof this.messages)[number]) {
+    if (!this.debug) return;
     this.messages.push(entry);
     if (this.messages.length > 40) this.messages.shift();
   }

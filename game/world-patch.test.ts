@@ -43,16 +43,66 @@ it('возвращает типизированные изменения и то
   expect(patch.treesAdded).toEqual(after.trees);
   expect(patch.elevationPatchesRemoved).toEqual(['-500,0']);
 });
+it('добавляет и удаляет рельсы с пересборкой затронутого квартала', () => {
+  // Arrange
+  const before = buildWorld(region(10, []));
+  const after = structuredClone(before);
+  after.railways = [
+    {
+      id: 81,
+      nodes: [1, 2],
+      bridge: true,
+      service: '',
+      points: [
+        { x: 10, y: 7, z: 10 },
+        { x: 100, y: 7, z: 10 },
+      ],
+    },
+  ];
+  // Act
+  const added = createWorldPatch(before, after, ['0,0']);
+  const applied = applyWorldPatch(before, added, {
+    center: after.center,
+    drivingSide: after.drivingSide,
+    heightDatum: after.heightDatum,
+    warnings: after.warnings,
+    spawnEdge: after.spawnEdge,
+    routes: after.routes,
+    elevation: after.elevation,
+  });
+  const removed = createWorldPatch(applied, before, ['0,0']);
+  // Assert
+  expect(added.railwaysAddedOrUpdated).toEqual(after.railways);
+  expect(added.dirtyChunks).toContain('0,0');
+  expect(applied.railways).toEqual(after.railways);
+  expect(removed.railwaysRemoved).toEqual([81]);
+});
 it('не передаёт неизменную дорогу заново из-за диапазона исходных высот', () => {
   // Arrange
   const before = buildWorld(region(10, ['15/16384/16384']));
-  before.edges = [{
-    id: 1, stableId: '10/1/2/0', way: 10, from: 1, to: 2,
-    length: 100, width: 8, lanes: 2, speed: 40, name: 'Тестовая улица',
-    bridge: false, tunnel: false, layer: 0, blocked: false,
-    points: [{ x: 0, y: 0, z: 0 }, { x: 100, y: 0, z: 0 }],
-    sourceHeightRange: [0, 0],
-  }];
+  before.edges = [
+    {
+      id: 1,
+      stableId: '10/1/2/0',
+      way: 10,
+      from: 1,
+      to: 2,
+      length: 100,
+      width: 8,
+      lanes: 2,
+      speed: 40,
+      name: 'Тестовая улица',
+      bridge: false,
+      tunnel: false,
+      layer: 0,
+      blocked: false,
+      points: [
+        { x: 0, y: 0, z: 0 },
+        { x: 100, y: 0, z: 0 },
+      ],
+      sourceHeightRange: [0, 0],
+    },
+  ];
   const after = structuredClone(before);
   expect(before.edges.length).toBeGreaterThan(0);
   for (const edge of after.edges) {
@@ -139,7 +189,11 @@ it('восстанавливает новый мир из малого патч�
   const restored = applyWorldPatch(before, patch, meta);
   // Assert
   expect(restored.loadedTiles).toEqual(after.loadedTiles);
-  expect(restored.edges.map((edge) => edge.stableId).sort((a, b) => a.localeCompare(b))).toEqual(
+  expect(
+    restored.edges
+      .map((edge) => edge.stableId)
+      .sort((a, b) => a.localeCompare(b)),
+  ).toEqual(
     after.edges.map((edge) => edge.stableId).sort((a, b) => a.localeCompare(b)),
   );
   expect(restored.nodes.map((node) => node.id).sort((a, b) => a - b)).toEqual(
@@ -151,7 +205,28 @@ it('восстанавливает новый мир из малого патч�
 it('не передаёт повторно дорогу при изменении только её служебного номера', () => {
   // Arrange
   const before = buildWorld(region(10, ['15/16384/16384']));
-  before.edges = [{ id: 0, stableId: '10/1/2/0', way: 10, from: 1, to: 2, length: 100, width: 7, lanes: 2, speed: 14, name: 'Улица', bridge: false, tunnel: false, layer: 0, points: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 100 }], blocked: false }];
+  before.edges = [
+    {
+      id: 0,
+      stableId: '10/1/2/0',
+      way: 10,
+      from: 1,
+      to: 2,
+      length: 100,
+      width: 7,
+      lanes: 2,
+      speed: 14,
+      name: 'Улица',
+      bridge: false,
+      tunnel: false,
+      layer: 0,
+      points: [
+        { x: 0, y: 0, z: 0 },
+        { x: 0, y: 0, z: 100 },
+      ],
+      blocked: false,
+    },
+  ];
   const after = structuredClone(before);
   after.edges.forEach((edge) => (edge.id += 100));
   // Act
@@ -160,18 +235,56 @@ it('не передаёт повторно дорогу при изменени�
   expect(patch.edgesAddedOrUpdated).toEqual([]);
   expect(patch.edgesRemoved).toEqual([]);
 });
-it('инвалидирует только маршрут, ребро которого изменилось',()=>{
+it('инвалидирует только маршрут, ребро которого изменилось', () => {
   // Arrange
-  const before=buildWorld(region(10,['15/16384/16384']));
-  before.edges=[{id:0,stableId:'10/1/2/0',way:10,from:1,to:2,length:100,width:7,lanes:2,speed:14,name:'Улица',bridge:false,tunnel:false,layer:0,points:[{x:0,y:0,z:0},{x:0,y:0,z:100}],blocked:false}];
-  const after=structuredClone(before),edge=before.edges[0].stableId;
-  const route=(id:string,edges:string[])=>({id,kind:'sprint' as const,title:id,edges,points:before.edges[0].points,cumulative:[0,before.edges[0].length],length:before.edges[0].length,laps:1});
-  before.routes=[route('changed',[edge]),route('untouched',['unrelated'])];after.routes=structuredClone(before.routes);after.edges[0].speed++;
+  const before = buildWorld(region(10, ['15/16384/16384']));
+  before.edges = [
+    {
+      id: 0,
+      stableId: '10/1/2/0',
+      way: 10,
+      from: 1,
+      to: 2,
+      length: 100,
+      width: 7,
+      lanes: 2,
+      speed: 14,
+      name: 'Улица',
+      bridge: false,
+      tunnel: false,
+      layer: 0,
+      points: [
+        { x: 0, y: 0, z: 0 },
+        { x: 0, y: 0, z: 100 },
+      ],
+      blocked: false,
+    },
+  ];
+  const after = structuredClone(before),
+    edge = before.edges[0].stableId;
+  const route = (id: string, edges: string[]) => ({
+    id,
+    kind: 'sprint' as const,
+    title: id,
+    edges,
+    points: before.edges[0].points,
+    cumulative: [0, before.edges[0].length],
+    length: before.edges[0].length,
+    laps: 1,
+  });
+  before.routes = [route('changed', [edge]), route('untouched', ['unrelated'])];
+  after.routes = structuredClone(before.routes);
+  after.edges[0].speed++;
   // Act
-  const patch=createWorldPatch(before,after);
+  const patch = createWorldPatch(before, after);
   // Assert
-  expect(patch.invalidatedRoutes).toContain('changed');expect(patch.invalidatedRoutes).not.toContain('untouched');
-  const coverageBefore=structuredClone(before);delete coverageBefore.loadedTiles;
-  const coverageAfter=structuredClone(coverageBefore);coverageAfter.loadedTiles=[];
-  expect(createWorldPatch(coverageBefore,coverageAfter).invalidatedRoutes).toEqual(['changed','untouched']);
+  expect(patch.invalidatedRoutes).toContain('changed');
+  expect(patch.invalidatedRoutes).not.toContain('untouched');
+  const coverageBefore = structuredClone(before);
+  delete coverageBefore.loadedTiles;
+  const coverageAfter = structuredClone(coverageBefore);
+  coverageAfter.loadedTiles = [];
+  expect(
+    createWorldPatch(coverageBefore, coverageAfter).invalidatedRoutes,
+  ).toEqual(['changed', 'untouched']);
 });

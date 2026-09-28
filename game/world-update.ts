@@ -77,13 +77,25 @@ export function reconcileWorld(previous: World, next: World): World {
   }
   const nodes = new Map(next.nodes.map((node) => [node.id, node]));
   const alignedBridge = alignBridgeCarriageways(
-    next.edges, nodes, next.elevation, next.drivingSide, preserved,
+    next.edges,
+    nodes,
+    next.elevation,
+    next.drivingSide,
+    preserved,
   );
   const alignedGround = alignCarriagewayElevations(
-    next.edges, nodes, next.elevation, next.drivingSide, preserved,
+    next.edges,
+    nodes,
+    next.elevation,
+    next.drivingSide,
+    preserved,
   );
   const alignedApproaches = alignBridgeApproaches(
-    next.edges, nodes, next.elevation, next.drivingSide, preserved,
+    next.edges,
+    nodes,
+    next.elevation,
+    next.drivingSide,
+    preserved,
   );
   if (alignedBridge || alignedGround || alignedApproaches) {
     for (const edge of next.edges)
@@ -182,6 +194,10 @@ export function changedChunks(
   objects(previous.nodes, next.nodes, (p) => [p]);
   objects(previous.buildings, next.buildings, (b) => b.footprint);
   objects(previous.areas, next.areas, (a) => a.points);
+  objects(previous.railways ?? [], next.railways ?? [], (line) => line.points);
+  objects(previous.parkedWagons ?? [], next.parkedWagons ?? [], (wagon) => [
+    wagon.point,
+  ]);
   objects(previous.trees, next.trees, (p) => [p]);
   const patchKey = (p: World['elevation']) =>
     `${p.offsetX || 0},${p.offsetZ || 0}`;

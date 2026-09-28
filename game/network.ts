@@ -1,4 +1,5 @@
 import { raceGeometryValid } from './race-quality';
+import { buildRailways, parkedWagons } from './railways';
 import {
   buildingGroups,
   isBuildingPart,
@@ -54,6 +55,7 @@ import {
   windowsForbiddenByTags,
 } from './buildings';
 import { applyBuildingAppearances } from './building-appearance';
+import { isShipTags } from './ships';
 import { addLandmarkSupplements } from './landmark-supplements';
 import { SpatialGrid, boundsOf, overlaps } from './geometry';
 import {
@@ -485,7 +487,9 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
     if (objectBounds && !objectBounds.some((b) => overlaps(b, footprintBounds)))
       return;
     if (
-      ((t.building && t.building !== 'no') || isBuildingPart(t)) &&
+      ((t.building && t.building !== 'no') ||
+        isBuildingPart(t) ||
+        isShipTags(t)) &&
       t.location !== 'underground'
     ) {
       const fortification =
@@ -638,7 +642,9 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
         floorHeight,
         technicalHeight: Math.min(technicalHeight, height),
         windowPolicy,
-        kind: t.building || inheritedGroupTags?.building,
+        kind: isShipTags(t)
+          ? 'ship'
+          : t.building || inheritedGroupTags?.building,
         roofHeight: roofHeight || undefined,
         roofDirection,
         roofAngle,
@@ -960,6 +966,7 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
     restrictions,
     buildings,
     areas,
+    railways: buildRailways(region, elevation),
     trees,
     elevation,
     drivingSide: region.drivingSide,
@@ -968,6 +975,7 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
     routes: [],
     loadedTiles: region.loadedTiles,
   };
+  world.parkedWagons = parkedWagons(world.railways!, region);
   // Выбираем старт в связном компоненте, из которого действительно можно ехать.
   for (const candidate of candidates.slice(0, 100)) {
     const seen = new Set<number>(),

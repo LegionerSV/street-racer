@@ -27,6 +27,7 @@ import {
   buildingPartMasks,
 } from './buildings';
 import { worldLandmarks, appendLandmark } from './landmarks';
+import { appendShip, isShipTags } from './ships';
 import { dashSpans, periodicOffsets } from './markings';
 import {
   BRIDGE_DECK_THICKNESS,
@@ -40,6 +41,7 @@ import type {
   Edge,
   MeshData,
   Point,
+  ParkedWagon,
   Settings,
   World,
 } from './types';
@@ -621,6 +623,11 @@ type Index = {
   cavities: SpatialGrid<Prism>;
   ground: Map<string, number>;
   waters: SpatialGrid<World['areas'][number]>;
+  rails: Map<
+    string,
+    { a: Point; b: Point; bridge: boolean; station: number }[]
+  >;
+  wagons: Map<string, ParkedWagon[]>;
 };
 const worldIndices = new WeakMap<World, Index>();
 function clipToChunk(polygon: Point[], x0: number, z0: number): Point[] {
@@ -668,6 +675,8 @@ export function* prepareWorldIndex(world: World): Generator<void, Index> {
       cavities: new SpatialGrid(32, coverage),
       ground: new Map(),
       waters: new SpatialGrid(250, coverage),
+      rails: new Map(),
+      wagons: new Map(),
     },
     seen = new Set<string>();
   const links = new Map<number, Set<number>>(),
@@ -846,6 +855,35 @@ export function* prepareWorldIndex(world: World): Generator<void, Index> {
   for (const area of world.areas)
     if (area.kind === 'water')
       index.waters.add(area, boundsOf(area.points, 18));
+  for (const line of world.railways ?? []) {
+    let station = 0;
+    for (let i = 1; i < line.points.length; i++) {
+      const from = line.points[i - 1],
+        to = line.points[i];
+      const length = distance2(from, to);
+      const parts = Math.max(1, Math.ceil(length / 10));
+      for (let j = 0; j < parts; j++) {
+        const a = mixPoint(from, to, j / parts),
+          b = mixPoint(from, to, (j + 1) / parts);
+        const key = tileKey((a.x + b.x) / 2, (a.z + b.z) / 2);
+        const list = index.rails.get(key) ?? [];
+        list.push({
+          a,
+          b,
+          bridge: line.bridge,
+          station: station + (length * j) / parts,
+        });
+        index.rails.set(key, list);
+      }
+      station += length;
+    }
+  }
+  for (const wagon of world.parkedWagons ?? []) {
+    const key = tileKey(wagon.point.x, wagon.point.z);
+    const list = index.wagons.get(key) ?? [];
+    list.push(wagon);
+    index.wagons.set(key, list);
+  }
   for (const b of world.buildings) {
     if (++operations % 32 === 0) yield;
     if (b.part && b.group) {
@@ -904,6 +942,16 @@ export function buildChunk(
     breakables: [],
   };
   if (lod >= 3) {
+    for (const rail of index.rails.get(key) ?? [])
+      ribbon(
+        result.structures,
+        rail.a,
+        rail.b,
+        -1.7,
+        1.7,
+        rail.bridge ? -0.35 : 0.07,
+        [0.28, 0.28, 0.27],
+      );
     const ground = (building: Building): Building => {
       if (building.kind === 'bridge') return building;
       const point = (p: Point) => ({
@@ -917,6 +965,35 @@ export function buildChunk(
       };
     };
     for (const building of index.buildings.get(key) || []) {
+      if (building.part && isShipTags(building.groupTags ?? {})) continue;
+      if (
+        !building.part &&
+        (building.kind === 'ship' || isShipTags(building.osmTags ?? {}))
+      ) {
+        const center = building.footprint.reduce(
+          (sum, p) => ({
+            x: sum.x + p.x / building.footprint.length,
+            y: 0,
+            z: sum.z + p.z / building.footprint.length,
+          }),
+          { x: 0, y: 0, z: 0 },
+        );
+        const water = world.areas.find(
+          (area) =>
+            area.kind === 'water' &&
+            polygonContains(center, area.points) &&
+            !(area.holes || []).some((hole) => polygonContains(center, hole)),
+        );
+        appendShip(
+          building,
+          result.structures,
+          water
+            ? waterLevel(water, center)
+            : sampleElevation(world.elevation, center.x, center.z) - 0.4,
+          lod,
+        );
+        continue;
+      }
       const masks = building.part
         ? []
         : buildingPartMasks(
@@ -931,10 +1008,116 @@ export function buildChunk(
     }
     return result;
   }
-  const waterLevel = (area: World['areas'][number], point: Point) =>
-    (area.railing === 'river'
+  for (const rail of index.rails.get(key) ?? []) {
+    const { a, b, bridge, station } = rail;
+    ribbon(
+      result.structures,
+      a,
+      b,
+      -2.1,
+      2.1,
+      bridge ? -0.35 : 0.07,
+      [0.33, 0.32, 0.28],
+    );
+    if (bridge) {
+      ribbon(result.structures, a, b, -2.3, 2.3, -0.65, [0.24, 0.27, 0.28]);
+      if (
+        Math.floor(station / 30) !==
+        Math.floor((station + distance2(a, b)) / 30)
+      ) {
+        const midpoint = mixPoint(a, b, 0.5);
+        const ground = sampleElevation(world.elevation, midpoint.x, midpoint.z);
+        if (midpoint.y - ground > 2)
+          box(
+            result.structures,
+            { ...midpoint, y: ground },
+            1.3,
+            midpoint.y - ground - 0.5,
+            1.3,
+            [0.32, 0.34, 0.35],
+          );
+      }
+    }
+    for (const side of [-1, 1])
+      ribbon(
+        result.structures,
+        a,
+        b,
+        side * 0.7 - 0.06,
+        side * 0.7 + 0.06,
+        0.22,
+        [0.68, 0.71, 0.7],
+      );
+    if (lod === 0) {
+      const length = distance2(a, b);
+      for (const d of periodicOffsets(station, length, 1, 3, 0)) {
+        const before = mixPoint(a, b, Math.max(0, d - 0.17) / length);
+        const after = mixPoint(a, b, Math.min(length, d + 0.17) / length);
+        ribbon(
+          result.structures,
+          before,
+          after,
+          -1.25,
+          1.25,
+          0.13,
+          [0.27, 0.2, 0.14],
+        );
+      }
+    }
+  }
+  if (lod === 0)
+    for (const wagon of index.wagons.get(key) ?? []) {
+      const p = wagon.point,
+        forward = { x: Math.sin(wagon.heading), z: Math.cos(wagon.heading) };
+      const right = { x: forward.z, z: -forward.x };
+      const corner = (
+        length: number,
+        width: number,
+        height: number,
+      ): Point => ({
+        x: p.x + forward.x * length + right.x * width,
+        y: p.y + height,
+        z: p.z + forward.z * length + right.z * width,
+      });
+      const base = [
+        corner(-6, -1.35, 0.45),
+        corner(6, -1.35, 0.45),
+        corner(6, 1.35, 0.45),
+        corner(-6, 1.35, 0.45),
+      ];
+      const top = [
+        corner(-6, -1.35, 3.1),
+        corner(6, -1.35, 3.1),
+        corner(6, 1.35, 3.1),
+        corner(-6, 1.35, 3.1),
+      ];
+      const colour: Colour =
+        Number(wagon.id.split(':')[0]) % 2
+          ? [0.48, 0.22, 0.15]
+          : [0.27, 0.38, 0.42];
+      for (let i = 0; i < 4; i++)
+        quad(
+          result.structures,
+          base[i],
+          base[(i + 1) % 4],
+          top[(i + 1) % 4],
+          top[i],
+          colour,
+        );
+      quad(
+        result.structures,
+        top[0],
+        top[1],
+        top[2],
+        top[3],
+        [0.25, 0.27, 0.28],
+      );
+    }
+  function waterLevel(area: World['areas'][number], point: Point) {
+    return (area.railing === 'river'
       ? sampleElevation(world.elevation, point.x, point.z)
       : Math.min(...area.points.map((p) => p.y))) - 0.4;
+  }
   const quayHeight = (point: Point) => {
     let distance = WATERFRONT_REACH,
       height: number | undefined;
@@ -1517,6 +1700,35 @@ export function buildChunk(
       )
     )
       continue;
+    if (building.part && isShipTags(building.groupTags ?? {})) continue;
+    if (
+      !building.part &&
+      (building.kind === 'ship' || isShipTags(building.osmTags ?? {}))
+    ) {
+      const center = building.footprint.reduce(
+        (sum, p) => ({
+          x: sum.x + p.x / building.footprint.length,
+          y: 0,
+          z: sum.z + p.z / building.footprint.length,
+        }),
+        { x: 0, y: 0, z: 0 },
+      );
+      const water = world.areas.find(
+        (area) =>
+          area.kind === 'water' &&
+          polygonContains(center, area.points) &&
+          !(area.holes || []).some((hole) => polygonContains(center, hole)),
+      );
+      appendShip(
+        building,
+        result.structures,
+        water
+          ? waterLevel(water, center)
+          : sampleElevation(world.elevation, center.x, center.z) - 0.4,
+        lod,
+      );
+      continue;
+    }
     const tags = building.osmTags ?? {},
       significant = !!(
         building.part ||

@@ -57,6 +57,7 @@ import { distance2, pathLengths, projectOnSegment, tileKey } from './geo';
 import { PlayerCar } from './vehicle';
 import { DrivingInput, drivingKeys, type DrivingKey } from './input';
 import { Traffic } from './traffic';
+import { TrainTraffic } from './train-traffic';
 import { laneCaption } from './lanes';
 import { drivingEdgeAt } from './road-position';
 import {
@@ -74,7 +75,11 @@ import {
 } from './driving-index';
 import { isLightQuality, resolutionScale } from './quality';
 import { streetMaterials } from './street-materials';
-import { FrameTimings, FrameWorkTimings, RenderWorkTimings } from './performance';
+import {
+  FrameTimings,
+  FrameWorkTimings,
+  RenderWorkTimings,
+} from './performance';
 import { skipHiddenRenderCandidates } from './render-candidates';
 import { VehicleLighting } from './vehicle-lighting';
 import { VehicleContactShadows } from './vehicle-contact-shadows';
@@ -254,6 +259,7 @@ export class Game {
   readonly scene: Scene;
   readonly player: PlayerCar;
   readonly traffic: Traffic;
+  private trains: TrainTraffic;
   readonly camera: FreeCamera;
   private chunks = new Map<string, Loaded>();
   private impactSpeeds = new ImpactSpeeds();
@@ -268,8 +274,8 @@ export class Game {
   private facadeMaterials: StandardMaterial[];
   private vehicleLighting: VehicleLighting;
   private vehicleContactShadows: VehicleContactShadows;
-  private engineStats: EngineInstrumentation;
-  private sceneStats: SceneInstrumentation;
+  private engineStats?: EngineInstrumentation;
+  private sceneStats?: SceneInstrumentation;
   private frameTimings = new FrameTimings();
   private frameWork = new FrameWorkTimings();
   private renderWork = new RenderWorkTimings();
@@ -396,6 +402,7 @@ export class Game {
     progress: (text: string, n: number) => void,
     signal: AbortSignal,
     log?: LoadingLog,
+    debug = false,
   ) {
     signal.throwIfAborted();
     progress('Загружаем физику автомобиля', 85);
@@ -405,7 +412,7 @@ export class Game {
       : loadHavok());
     signal.throwIfAborted();
     const createScene = () =>
-      new Game(canvas, world, worker, settings, onHUD, havok);
+      new Game(canvas, world, worker, settings, onHUD, havok, debug);
     const game = await (log
       ? log.measure('Создание игровой сцены', createScene)
       : createScene());
@@ -491,6 +498,7 @@ export class Game {
     public settings: Settings,
     private onHUD: (hud: HUD) => void,
     havok: unknown,
+    private debug = false,
   ) {
     this.mapCoverage = world.loadedTiles
       ? new Set(world.loadedTiles)
@@ -510,12 +518,14 @@ export class Game {
     this.scene = new Scene(this.engine);
     skipHiddenRenderCandidates(this.scene);
     this.scene.clearColor = new Color4(0.105, 0.15, 0.2, 1);
-    this.engineStats = new EngineInstrumentation(this.engine);
-    this.engineStats.captureGPUFrameTime = true;
-    this.sceneStats = new SceneInstrumentation(this.scene);
-    this.sceneStats.captureActiveMeshesEvaluationTime = true;
-    this.sceneStats.captureRenderTargetsRenderTime = true;
-    this.sceneStats.captureRenderTime = true;
+    if (this.debug) {
+      this.engineStats = new EngineInstrumentation(this.engine);
+      this.engineStats.captureGPUFrameTime = true;
+      this.sceneStats = new SceneInstrumentation(this.scene);
+      this.sceneStats.captureActiveMeshesEvaluationTime = true;
+      this.sceneStats.captureRenderTargetsRenderTime = true;
+      this.sceneStats.captureRenderTime = true;
+    }
     // После фонового ограничения браузера не выполняем секунду физики за один кадр.
     Scene.MaxDeltaTime = 100;
     this.scene.fogMode = Scene.FOGMODE_EXP2;
@@ -535,6 +545,7 @@ export class Game {
     this.camera.inputs.clear();
     this.player = new PlayerCar(this.scene);
     this.traffic = new Traffic(this.scene, world);
+    this.trains = new TrainTraffic(this.scene, world);
     this.traffic.setDensity(settings.traffic || 'city');
     this.traffic.setMobile(settings.quality === 'mobile');
     this.lastSafeEdge = world.spawnEdge;
@@ -687,7 +698,7 @@ export class Game {
       });
       if (this.driveTest) this.testStep(dt);
       this.player.step(dt, this.keys, this.race?.phase === 'countdown');
-      const trafficStarted = performance.now();
+      const trafficStarted = this.debug ? performance.now() : 0;
       this.traffic.update(
         dt,
         this.time,
@@ -697,7 +708,13 @@ export class Game {
         this.race?.elapsed || 0,
         this.player.heading,
       );
-      this.trafficWorkMs += performance.now() - trafficStarted;
+      this.trains.step(
+        dt,
+        this.paused || this.loading || document.hidden,
+        this.player.position,
+        this.camera,
+      );
+      if (this.debug) this.trafficWorkMs += performance.now() - trafficStarted;
       this.impactSpeeds.capture(this.player.aggregate.body);
       for (const agent of this.traffic.agents)
         if (agent.body) this.impactSpeeds.capture(agent.body.body);
@@ -971,7 +988,7 @@ export class Game {
       });
       committed = true;
       installMs += performance.now() - stepStarted;
-      this.installTimings.add(installMs);
+      if (this.debug) this.installTimings.add(installMs);
       const metric = this.patchInstallMetrics.get(chunk.key);
       if (metric) {
         metric.installMs += installMs;
@@ -1220,7 +1237,7 @@ export class Game {
   }
   private frame() {
     if (this.disposed) return;
-    if (!this.paused && !document.hidden)
+    if (this.debug && !this.paused && !document.hidden)
       this.frameTimings.add(
         this.engine.getDeltaTime(),
         this.loading || this.pending.size > 0 || this.installQueue.size > 0,
@@ -1273,14 +1290,14 @@ export class Game {
         if (nearest) this.lastSafeEdge = edgeStableId(nearest);
       }
     }
-    const installStarted = performance.now();
+    const installStarted = this.debug ? performance.now() : 0;
     this.installQueue.drainSteps((chunk) => {
       if (this.wanted.some((c) => c.key === chunk.key && c.lod === chunk.lod))
         return this.installSteps(chunk);
       this.patchInstallMetrics.delete(chunk.key);
       return [][Symbol.iterator]();
     });
-    const installMs = performance.now() - installStarted;
+    const installMs = this.debug ? performance.now() - installStarted : 0;
     this.pump();
     const p = this.player.position,
       h = this.player.heading;
@@ -1307,16 +1324,16 @@ export class Game {
     }
     this.loading = this.loadingReasons.length > 0;
     this.trafficWorkMs = 0;
-    const physicsStarted = performance.now();
+    const physicsStarted = this.debug ? performance.now() : 0;
     advanceDrivingPhysics(
       this.scene,
       this.engine.getDeltaTime(),
       !this.paused && !this.loading,
     );
-    const physicsMs = performance.now() - physicsStarted,
-      visualsStarted = performance.now();
+    const physicsMs = this.debug ? performance.now() - physicsStarted : 0,
+      visualsStarted = this.debug ? performance.now() : 0;
     this.traffic.updateVisuals(this.time);
-    const visualsMs = performance.now() - visualsStarted;
+    const visualsMs = this.debug ? performance.now() - visualsStarted : 0;
     if (!this.paused && !this.loading) {
       const surface = sampleWorldSurface(this.world, p.x, p.z, p.y),
         up = this.player.visual.root.getDirection(Vector3.Up());
@@ -1475,9 +1492,9 @@ export class Game {
     });
     if (!this.paused && !this.loading)
       this.activeWallSeconds += this.engine.getDeltaTime() / 1000;
-    const renderStarted = performance.now();
+    const renderStarted = this.debug ? performance.now() : 0;
     this.scene.render();
-    if (!this.paused && !document.hidden) {
+    if (this.debug && !this.paused && !document.hidden) {
       this.frameWork.add({
         physics: physicsMs,
         traffic: this.trafficWorkMs,
@@ -1486,12 +1503,16 @@ export class Game {
         install: installMs,
       });
       this.renderWork.add({
-        activeMeshesEvaluation: this.sceneStats.activeMeshesEvaluationTimeCounter.count
-          ? this.sceneStats.activeMeshesEvaluationTimeCounter.current : null,
-        renderTargets: this.sceneStats.renderTargetsRenderTimeCounter.count
-          ? this.sceneStats.renderTargetsRenderTimeCounter.current : null,
-        mainPass: this.sceneStats.renderTimeCounter.count
-          ? this.sceneStats.renderTimeCounter.current : null,
+        activeMeshesEvaluation: this.sceneStats!
+          .activeMeshesEvaluationTimeCounter.count
+          ? this.sceneStats!.activeMeshesEvaluationTimeCounter.current
+          : null,
+        renderTargets: this.sceneStats!.renderTargetsRenderTimeCounter.count
+          ? this.sceneStats!.renderTargetsRenderTimeCounter.current
+          : null,
+        mainPass: this.sceneStats!.renderTimeCounter.count
+          ? this.sceneStats!.renderTimeCounter.current
+          : null,
       });
     }
     if (this.hudClock <= 0) {
@@ -1582,7 +1603,7 @@ export class Game {
           continue;
         }
         try {
-          const updateStarted = performance.now();
+          const updateStarted = this.debug ? performance.now() : 0;
           const position = this.player.position;
           const raceMargin = this.race
             ? Math.max(
@@ -1624,7 +1645,7 @@ export class Game {
               true,
               pinnedRaceTiles,
             ));
-          const fetchedAt = performance.now();
+          const fetchedAt = this.debug ? performance.now() : 0;
           if (this.disposed) return;
           if (!region) {
             await wait(1500);
@@ -1633,7 +1654,7 @@ export class Game {
           awaiting = region;
           while (!this.disposed && blocked()) await wait(1000);
           if (this.disposed) return;
-          const prepareStarted = performance.now();
+          const prepareStarted = this.debug ? performance.now() : 0;
           const installedChunks = [
             ...new Set([
               ...this.chunks.keys(),
@@ -1663,7 +1684,7 @@ export class Game {
             awaiting = null;
             continue;
           }
-          const indexStarted = performance.now();
+          const indexStarted = this.debug ? performance.now() : 0;
           const indexSteps = prepareDrivingIndex(next, this.world);
           let indexStep = indexSteps.next();
           while (!indexStep.done && !this.disposed) {
@@ -1674,20 +1695,25 @@ export class Game {
             if (!indexStep.done) await wait(0);
           }
           if (this.disposed) return;
-          const preparedAt = performance.now();
-          const updateMetric = {
-            fetchMs: Math.round(fetchedAt - updateStarted),
-            prepareMs: Math.round(indexStarted - prepareStarted),
-            indexMs: Math.round(preparedAt - indexStarted),
-            commitMs: 0,
-            dirtyCount: patch.dirtyChunks.length,
-            installMs: 0,
-            maxFrameDelayMs: 0,
-            totalMs: 0,
-            tiles: next.loadedTiles?.length ?? 0,
-          };
-          this.mapUpdateTimings.push(updateMetric);
-          if (this.mapUpdateTimings.length > 20) this.mapUpdateTimings.shift();
+          const preparedAt = this.debug ? performance.now() : 0;
+          const updateMetric: MapUpdateTiming | undefined = this.debug
+            ? {
+                fetchMs: Math.round(fetchedAt - updateStarted),
+                prepareMs: Math.round(indexStarted - prepareStarted),
+                indexMs: Math.round(preparedAt - indexStarted),
+                commitMs: 0,
+                dirtyCount: patch.dirtyChunks.length,
+                installMs: 0,
+                maxFrameDelayMs: 0,
+                totalMs: 0,
+                tiles: next.loadedTiles?.length ?? 0,
+              }
+            : undefined;
+          if (updateMetric) {
+            this.mapUpdateTimings.push(updateMetric);
+            if (this.mapUpdateTimings.length > 20)
+              this.mapUpdateTimings.shift();
+          }
           while (!this.disposed && blocked()) await wait(1000);
           if (this.disposed) return;
           const nextCoverage = new Set(next.loadedTiles);
@@ -1755,10 +1781,12 @@ export class Game {
           }
           const transitionData = [...staged.values()];
           this.applyingMap = true;
-          const commitStarted = performance.now();
+          const commitStarted = this.debug ? performance.now() : 0;
           await this.worker.commit();
-          const committedAt = performance.now();
-          updateMetric.commitMs = Math.round(committedAt - commitStarted);
+          if (updateMetric)
+            updateMetric.commitMs = Math.round(
+              performance.now() - commitStarted,
+            );
           if (this.disposed) return;
           const newCoverage = new Set(next.loadedTiles);
           const activeDirty = patch.dirtyChunks.filter(
@@ -1769,12 +1797,13 @@ export class Game {
           for (const key of activeDirty) {
             this.staleChunks.add(key);
             this.installQueue.delete(key);
-            this.patchInstallMetrics.set(key, updateMetric);
+            if (updateMetric) this.patchInstallMetrics.set(key, updateMetric);
           }
           const safe = this.lastSafeEdge
             ? edgeById(this.world, this.lastSafeEdge)
             : undefined;
           this.traffic.applyWorldPatch(next, patch);
+          this.trains.setWorld(next);
           this.world = next;
           this.mapCoverage = newCoverage;
           for (const chunk of transitionData) {
@@ -1790,7 +1819,10 @@ export class Game {
           this.refreshWanted();
           onWorld(next);
           awaiting = null;
-          updateMetric.totalMs = Math.round(performance.now() - updateStarted);
+          if (updateMetric)
+            updateMetric.totalMs = Math.round(
+              performance.now() - updateStarted,
+            );
         } catch (error) {
           if (this.disposed) return;
           this.message =
@@ -2263,7 +2295,7 @@ export class Game {
     ).memory;
     const planes = Frustum.GetPlanes(this.camera.getTransformationMatrix()),
       bounds = [...this.chunks.values()].flatMap((c) => c.buildingBounds),
-      gpu = this.engineStats.gpuFrameTimeCounter;
+      gpu = this.engineStats?.gpuFrameTimeCounter;
     return {
       ...this.frameTimings.summary(),
       cpuWork: this.frameWork.summary(),
@@ -2276,15 +2308,16 @@ export class Game {
       visibleBuildings: bounds.filter((b) => b.isInFrustum(planes)).length,
       activeMeshes: this.scene.getActiveMeshes().length,
       triangles: Math.round(this.scene.getActiveIndices() / 3),
-      drawCalls: this.sceneStats.drawCallsCounter.current,
+      drawCalls: this.sceneStats?.drawCallsCounter.current ?? null,
       renderLastFrame: {
-        activeMeshesEvaluationMs: this.sceneStats.activeMeshesEvaluationTimeCounter.count
+        activeMeshesEvaluationMs: this.sceneStats
+          ?.activeMeshesEvaluationTimeCounter.count
           ? this.sceneStats.activeMeshesEvaluationTimeCounter.current
           : null,
-        renderTargetsMs: this.sceneStats.renderTargetsRenderTimeCounter.count
+        renderTargetsMs: this.sceneStats?.renderTargetsRenderTimeCounter.count
           ? this.sceneStats.renderTargetsRenderTimeCounter.current
           : null,
-        mainPassMs: this.sceneStats.renderTimeCounter.count
+        mainPassMs: this.sceneStats?.renderTimeCounter.count
           ? this.sceneStats.renderTimeCounter.current
           : null,
       },
@@ -2590,14 +2623,15 @@ export class Game {
     window.removeEventListener('resize', this.resize);
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.engine.stopRenderLoop();
-    this.engineStats.dispose();
-    this.sceneStats.dispose();
+    this.engineStats?.dispose();
+    this.sceneStats?.dispose();
     this.clearControls();
     this.vehicleLighting.dispose();
     this.vehicleContactShadows.dispose();
     this.atmosphere.dispose();
     this.sound.dispose();
     this.traffic.dispose();
+    this.trains.dispose();
     this.player.dispose();
     this.chunks.forEach((c) => c.dispose());
     this.chunks.clear();

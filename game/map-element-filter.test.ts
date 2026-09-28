@@ -355,3 +355,19 @@ it('при переполнении сначала убирает удалённ
   expect(minimal.elements.map((element) => element.id)).toEqual([1, 2, 10]);
   expect(roads.elements.map((element) => element.id)).toEqual([1, 2, 10]);
 });
+
+it('пропускает диагностическую сводку, когда дебаг выключен', () => {
+  // Arrange
+  const center = { lat: 0, lon: 0 };
+  const elements: OSMElement[] = [
+    { type: 'node', id: 1, lat: 0, lon: 0 },
+    { type: 'node', id: 2, lat: 0.001, lon: 0 },
+    { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
+  ];
+  // Act
+  const result = reduceMapElements(elements, center, 'standard', false, false);
+  // Assert
+  expect(result.elements.map((element) => element.id)).toEqual([1, 2, 10]);
+  expect(result.stats.raw.total).toBe(0);
+  expect(result.stats.kept.total).toBe(0);
+});

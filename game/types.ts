@@ -150,6 +150,14 @@ export type Area = {
   holes?: Point[][];
   railing?: 'river' | 'park';
 };
+export type RailLine = {
+  id: number;
+  nodes: number[];
+  points: Point[];
+  bridge: boolean;
+  service: string;
+};
+export type ParkedWagon = { id: string; point: Point; heading: number };
 export type Route = {
   id: string;
   kind: 'sprint' | 'circuit';
@@ -173,6 +181,8 @@ export type World = {
   restrictions: Restriction[];
   buildings: Building[];
   areas: Area[];
+  railways?: RailLine[];
+  parkedWagons?: ParkedWagon[];
   trees: Tree[];
   elevation: ElevationGrid;
   drivingSide: 'right' | 'left';
@@ -195,6 +205,10 @@ export type WorldPatch = {
   buildingsRemoved: { id: number; osmType: Building['osmType'] }[];
   areasAddedOrUpdated: Area[];
   areasRemoved: { id: number; osmType: Area['osmType'] }[];
+  railwaysAddedOrUpdated?: RailLine[];
+  railwaysRemoved?: number[];
+  parkedWagonsAddedOrUpdated?: ParkedWagon[];
+  parkedWagonsRemoved?: string[];
   treesAdded: Tree[];
   treesRemoved: Tree[];
   elevationPatches: ElevationGrid[];

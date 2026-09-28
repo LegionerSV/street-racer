@@ -69,7 +69,7 @@ function expectedOverlapKeys(
   return { overlap, elements };
 }
 
-function verifyGeometry(first: TileArtifactV1, second: TileArtifactV1) {
+export function verifyGeometry(first: TileArtifactV1, second: TileArtifactV1) {
   const firstExpected = expectedOverlapKeys(first, second),
     secondExpected = expectedOverlapKeys(second, first),
     secondElements = secondExpected.elements;

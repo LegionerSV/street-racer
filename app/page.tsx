@@ -23,11 +23,15 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { validateCenter } from '@/game/data';
+import { toGeo } from '@/game/geo';
+import { readLastRide, saveLastRide } from '@/game/last-ride';
 import { RegionStream, mapStreamingPolicy } from '@/game/region-stream';
 import {
   LoadingLog,
   readLoadingLog,
   downloadLoadingLog,
+  isDebugMode,
+  measureLoading,
 } from '@/game/loading-log';
 import { WorldWorker } from '@/game/worker-client';
 import type { Game } from '@/game/runtime';
@@ -102,6 +106,8 @@ export default function Home() {
   const [hasLoadingLog, setHasLoadingLog] = useState(false);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const loadingLogRef = useRef<LoadingLog | null>(null);
+  const lastRideRef = useRef<{ lat: number; lon: number } | null>(null);
+  const lastRideSavedAtRef = useRef(0);
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [hud, setHUD] = useState<HUD | null>(null);
   const [world, setWorld] = useState<World | null>(null);
@@ -134,11 +140,18 @@ export default function Home() {
       changed = () => setTouchDevice(media.matches);
     setTouchDevice(media.matches);
     setSettings(readSettings(media.matches));
-    setDebug(new URLSearchParams(location.search).has('debug'));
-    setHasLoadingLog(!!readLoadingLog());
+    const debugging = isDebugMode(location.search);
+    setDebug(debugging);
+    setHasLoadingLog(debugging && !!readLoadingLog());
+    const saveRide = () => {
+      if (lastRideRef.current) saveLastRide(lastRideRef.current);
+    };
+    window.addEventListener('pagehide', saveRide);
     media.addEventListener('change', changed);
     return () => {
       media.removeEventListener('change', changed);
+      window.removeEventListener('pagehide', saveRide);
+      saveRide();
       attemptRef.current++;
       loadingLogRef.current?.finish('cancelled');
       abortRef.current?.abort();
@@ -171,8 +184,9 @@ export default function Home() {
     import('leaflet')
       .then((L) => {
         if (dead || !mapEl.current) return;
+        const initial = readLastRide() ?? INITIAL_CENTER;
         const map = L.map(mapEl.current, { zoomControl: false }).setView(
-          [INITIAL_CENTER.lat, INITIAL_CENTER.lon],
+          [initial.lat, initial.lon],
           13,
         );
         mapRef.current = map;
@@ -189,10 +203,11 @@ export default function Home() {
           ],
           { color: '#d8ff3e', weight: 2, fillOpacity: 0.08 },
         ).addTo(map);
-        const marker = L.circleMarker(
-          [INITIAL_CENTER.lat, INITIAL_CENTER.lon],
-          { radius: 7, color: '#d8ff3e', fillOpacity: 1 },
-        ).addTo(map);
+        const marker = L.circleMarker([initial.lat, initial.lon], {
+          radius: 7,
+          color: '#d8ff3e',
+          fillOpacity: 1,
+        }).addTo(map);
         const update = (lat: number, lon: number) => {
           const dy = 1000 / 111320,
             dx = dy / Math.cos((lat * Math.PI) / 180);
@@ -204,7 +219,7 @@ export default function Home() {
           setCenter({ lat, lon });
           setCoords(`${lat.toFixed(5)}, ${lon.toFixed(5)}`);
         };
-        update(INITIAL_CENTER.lat, INITIAL_CENTER.lon);
+        update(initial.lat, initial.lon);
         map.on('click', (e: import('leaflet').LeafletMouseEvent) =>
           update(e.latlng.lat, e.latlng.lng),
         );
@@ -250,9 +265,12 @@ export default function Home() {
     const attempt = ++attemptRef.current;
     const abort = new AbortController();
     abortRef.current = abort;
-    const log = new LoadingLog(center, settings.quality);
-    loadingLogRef.current = log;
-    setHasLoadingLog(true);
+    const debugging = isDebugMode(location.search);
+    const log = debugging
+      ? new LoadingLog(center, settings.quality)
+      : undefined;
+    loadingLogRef.current = log ?? null;
+    setHasLoadingLog(debugging);
     setLoadingSeconds(0);
     setMessage('');
     setRecord(null);
@@ -266,20 +284,26 @@ export default function Home() {
       settings.quality,
       log,
       new URLSearchParams(location.search).get('courtyards') === 'closed',
+      debugging,
     );
     try {
       validateCenter(center);
       const [region, { Game }] = await Promise.all([
-        log.measure('Данные района', () =>
+        measureLoading(log, 'Данные района', () =>
           mapStream.start(abort.signal, update),
         ),
-        log.measure('Загрузка игрового движка', () => import('@/game/runtime')),
+        measureLoading(
+          log,
+          'Загрузка игрового движка',
+          () => import('@/game/runtime'),
+        ),
       ]);
       abort.signal.throwIfAborted();
       const worker = new WorldWorker();
       workerRef.current = worker;
       update('Соединяем дороги и строим маршруты', 84);
-      const generated = await log.measure(
+      const generated = await measureLoading(
+        log,
         'Построение мира в worker',
         () => worker.build(region),
         { elements: region.elements.length },
@@ -301,6 +325,17 @@ export default function Home() {
         (next) => {
           setHUD(next);
           if (
+            Number.isFinite(next.position.x) &&
+            Number.isFinite(next.position.z)
+          ) {
+            const position = toGeo(next.position, generated.center);
+            lastRideRef.current = position;
+            if (Date.now() - lastRideSavedAtRef.current >= 10000) {
+              saveLastRide(position);
+              lastRideSavedAtRef.current = Date.now();
+            }
+          }
+          if (
             new URLSearchParams(location.search).has('debug') &&
             performance.now() - diagnosticsAtRef.current >= 10000
           ) {
@@ -319,6 +354,7 @@ export default function Home() {
         update,
         abort.signal,
         log,
+        debugging,
       );
       if (attempt !== attemptRef.current) {
         mapStream.dispose();
@@ -326,7 +362,7 @@ export default function Home() {
         return;
       }
       gameRef.current = game;
-      log.finish('success');
+      log?.finish('success');
       setStage('playing');
       game.attachMapStream(mapStream, (next) => {
         if (attempt === attemptRef.current) setWorld(next);
@@ -334,7 +370,7 @@ export default function Home() {
     } catch (error) {
       mapStream.dispose();
       const cancelled = abort.signal.aborted;
-      log.finish(
+      log?.finish(
         cancelled ? 'cancelled' : 'error',
         error instanceof Error ? error.message : String(error),
       );
@@ -355,6 +391,7 @@ export default function Home() {
   }
   function cancel() {
     attemptRef.current++;
+    if (lastRideRef.current) saveLastRide(lastRideRef.current);
     loadingLogRef.current?.finish('cancelled');
     abortRef.current?.abort();
     abortRef.current = null;
@@ -508,7 +545,9 @@ export default function Home() {
         return stateRef.current;
       },
       get loadingLog() {
-        return loadingLogRef.current?.snapshot() ?? readLoadingLog();
+        return isDebugMode(location.search)
+          ? (loadingLogRef.current?.snapshot() ?? readLoadingLog())
+          : null;
       },
       start: () => startRef.current(),
       select: (lat: number, lon: number) =>
@@ -585,7 +624,7 @@ export default function Home() {
             <ArrowUpRight size={23} />
           </Button>
           {message && <output className="message">{message}</output>}
-          {hasLoadingLog && (
+          {debug && hasLoadingLog && (
             <Button variant="outline" onClick={downloadLog}>
               Скачать лог загрузки
             </Button>
@@ -657,9 +696,11 @@ export default function Home() {
               <Button variant="outline" onClick={cancel}>
                 Отменить загрузку
               </Button>
-              <Button variant="outline" onClick={downloadLog}>
-                Скачать лог загрузки
-              </Button>
+              {debug && (
+                <Button variant="outline" onClick={downloadLog}>
+                  Скачать лог загрузки
+                </Button>
+              )}
             </div>
           </section>
         </div>
@@ -919,15 +960,22 @@ export default function Home() {
           <DialogDescription>
             Район ждёт. Продолжи поездку или настрой игру.
           </DialogDescription>
-          <Button variant="outline" onClick={downloadLog}>
-            Скачать лог загрузки
+          <Button variant="outline" onClick={cancel}>
+            Выбрать другой район
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => gameRef.current?.exportPerformance()}
-          >
-            Скачать диагностику карты
-          </Button>
+          {debug && (
+            <>
+              <Button variant="outline" onClick={downloadLog}>
+                Скачать лог загрузки
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => gameRef.current?.exportPerformance()}
+              >
+                Скачать диагностику карты
+              </Button>
+            </>
+          )}
           {hud?.message && (
             <p className="message">
               {hud.message}
@@ -1135,9 +1183,6 @@ export default function Home() {
               Покинуть заезд
             </Button>
           )}
-          <Button variant="outline" onClick={cancel}>
-            Выбрать другой район
-          </Button>
           {world && (
             <p className="world-details">
               {world.buildings.length.toLocaleString('ru')} зданий ·{' '}
