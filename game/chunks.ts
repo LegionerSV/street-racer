@@ -494,19 +494,27 @@ function ribbon(
     color,
   );
 }
-function railBridgeDeck(mesh: MeshData, a: Point, b: Point, lod: number) {
+type RailNormal = { x: number; z: number };
+function railBridgeDeck(
+  mesh: MeshData,
+  a: Point,
+  b: Point,
+  lod: number,
+  na?: RailNormal,
+  nb?: RailNormal,
+) {
   const halfWidth = lod >= 3 ? 1.7 : 2.3;
   const top = 0.03,
     bottom = -1.25;
-  ribbon(mesh, a, b, -halfWidth, halfWidth, top, [0.33, 0.32, 0.28]);
-  ribbon(mesh, a, b, -halfWidth, halfWidth, bottom, [0.22, 0.25, 0.27]);
+  ribbon(mesh, a, b, -halfWidth, halfWidth, top, [0.33, 0.32, 0.28], na, nb);
+  ribbon(mesh, a, b, -halfWidth, halfWidth, bottom, [0.22, 0.25, 0.27], na, nb);
   const length = distance2(a, b) || 1,
     nx = (b.z - a.z) / length,
     nz = -(b.x - a.x) / length;
   const corner = (point: Point, side: number, height: number): Point => ({
-    x: point.x + nx * side * halfWidth,
+    x: point.x + ((point === a ? na : nb)?.x ?? nx) * side * halfWidth,
     y: point.y + height,
-    z: point.z + nz * side * halfWidth,
+    z: point.z + ((point === a ? na : nb)?.z ?? nz) * side * halfWidth,
   });
   const leftTopA = corner(a, -1, top),
     leftTopB = corner(b, -1, top),
@@ -521,6 +529,57 @@ function railBridgeDeck(mesh: MeshData, a: Point, b: Point, lod: number) {
   quad(mesh, rightTopA, rightTopB, rightBottomB, rightBottomA, sideColour);
   quad(mesh, leftTopA, rightTopA, rightBottomA, leftBottomA, sideColour);
   quad(mesh, rightTopB, leftTopB, leftBottomB, rightBottomB, sideColour);
+}
+function railEmbankment(
+  mesh: MeshData,
+  a: Point,
+  b: Point,
+  elevation: World['elevation'],
+  na?: RailNormal,
+  nb?: RailNormal,
+  capStart = false,
+  capEnd = false,
+) {
+  const length = distance2(a, b) || 1;
+  const nx = (b.z - a.z) / length,
+    nz = -(b.x - a.x) / length;
+  const sections: {
+    start: { top: Point; foot: Point };
+    end: { top: Point; foot: Point };
+  }[] = [];
+  for (const side of [-1, 1]) {
+    const section = (point: Point) => {
+      const normal = (point === a ? na : nb) ?? { x: nx, z: nz };
+      const top = {
+        x: point.x + normal.x * side * 2.1,
+        y: point.y + 0.07,
+        z: point.z + normal.z * side * 2.1,
+      };
+      const ground = sampleElevation(elevation, top.x, top.z);
+      const width = 2.1 + Math.max(0.1, top.y - ground) * 1.7;
+      const foot = {
+        x: point.x + normal.x * side * width,
+        y: 0,
+        z: point.z + normal.z * side * width,
+      };
+      foot.y =
+        Math.min(top.y, sampleElevation(elevation, foot.x, foot.z)) - 0.05;
+      return { top, foot };
+    };
+    const start = section(a),
+      end = section(b);
+    sections.push({ start, end });
+    if (side < 0)
+      quad(mesh, start.foot, end.foot, end.top, start.top, [0.27, 0.34, 0.19]);
+    else
+      quad(mesh, start.top, end.top, end.foot, start.foot, [0.27, 0.34, 0.19]);
+  }
+  for (const endpoint of ['start', 'end'] as const) {
+    if (endpoint === 'start' ? !capStart : !capEnd) continue;
+    const left = sections[0][endpoint],
+      right = sections[1][endpoint];
+    quad(mesh, left.foot, right.foot, right.top, left.top, [0.37, 0.35, 0.3]);
+  }
 }
 type Segment = {
   a: Point;
@@ -653,7 +712,16 @@ type Index = {
   waters: SpatialGrid<World['areas'][number]>;
   rails: Map<
     string,
-    { a: Point; b: Point; bridge: boolean; station: number }[]
+    {
+      a: Point;
+      b: Point;
+      bridge: boolean;
+      station: number;
+      na: RailNormal;
+      nb: RailNormal;
+      capStart: boolean;
+      capEnd: boolean;
+    }[]
   >;
   wagons: Map<string, ParkedWagon[]>;
 };
@@ -883,6 +951,47 @@ export function* prepareWorldIndex(world: World): Generator<void, Index> {
   for (const area of world.areas)
     if (area.kind === 'water')
       index.waters.add(area, boundsOf(area.points, 18));
+  const railNeighbors = new Map<string, Map<string, Point>>();
+  const railPointKey = (point: Point) =>
+    `${point.x.toFixed(6)}/${point.z.toFixed(6)}`;
+  const bridgeEnds = new Set(
+    (world.railways ?? [])
+      .filter((line) => line.bridge)
+      .flatMap((line) => [line.points[0], line.points.at(-1)!])
+      .map(railPointKey),
+  );
+  for (const line of world.railways ?? [])
+    for (let i = 1; i < line.points.length; i++) {
+      for (const [a, b] of [
+        [line.points[i - 1], line.points[i]],
+        [line.points[i], line.points[i - 1]],
+      ]) {
+        if (distance2(a, b) < 0.001) continue;
+        const key = railPointKey(a);
+        const neighbors = railNeighbors.get(key) ?? new Map<string, Point>();
+        neighbors.set(railPointKey(b), b);
+        railNeighbors.set(key, neighbors);
+      }
+    }
+  const railNormal = (point: Point, fallback: RailNormal): RailNormal => {
+    const neighbors = [
+      ...(railNeighbors.get(railPointKey(point))?.values() ?? []),
+    ];
+    if (neighbors.length !== 2) return fallback;
+    const [a, b] = neighbors;
+    const first = distance2(a, point),
+      second = distance2(point, b);
+    let x = ((point.z - a.z) / first + (b.z - point.z) / second) / 2;
+    let z = ((a.x - point.x) / first + (point.x - b.x) / second) / 2;
+    const square = x * x + z * z;
+    if (square < 0.01) return fallback;
+    const factor = Math.min(1 / square, 1.8 / Math.sqrt(square));
+    if (x * fallback.x + z * fallback.z < 0) {
+      x = -x;
+      z = -z;
+    }
+    return { x: x * factor, z: z * factor };
+  };
   for (const line of world.railways ?? []) {
     let station = 0;
     for (let i = 1; i < line.points.length; i++) {
@@ -890,6 +999,10 @@ export function* prepareWorldIndex(world: World): Generator<void, Index> {
         to = line.points[i];
       const length = distance2(from, to);
       const parts = Math.max(1, Math.ceil(length / 10));
+      const normal = {
+        x: (to.z - from.z) / (length || 1),
+        z: -(to.x - from.x) / (length || 1),
+      };
       for (let j = 0; j < parts; j++) {
         const a = mixPoint(from, to, j / parts),
           b = mixPoint(from, to, (j + 1) / parts);
@@ -900,6 +1013,10 @@ export function* prepareWorldIndex(world: World): Generator<void, Index> {
           b,
           bridge: line.bridge,
           station: station + (length * j) / parts,
+          na: j === 0 ? railNormal(from, normal) : normal,
+          nb: j === parts - 1 ? railNormal(to, normal) : normal,
+          capStart: j === 0 && bridgeEnds.has(railPointKey(from)),
+          capEnd: j === parts - 1 && bridgeEnds.has(railPointKey(to)),
         });
         index.rails.set(key, list);
       }
@@ -972,17 +1089,38 @@ export function buildChunk(
   const flatWaterLevels = new Map<World['areas'][number], number>();
   if (lod >= 3) {
     for (const rail of index.rails.get(key) ?? []) {
-      if (rail.bridge) railBridgeDeck(result.structures, rail.a, rail.b, lod);
-      else
+      if (rail.bridge)
+        railBridgeDeck(
+          result.structures,
+          rail.a,
+          rail.b,
+          lod,
+          rail.na,
+          rail.nb,
+        );
+      else {
+        railEmbankment(
+          result.structures,
+          rail.a,
+          rail.b,
+          world.elevation,
+          rail.na,
+          rail.nb,
+          rail.capStart,
+          rail.capEnd,
+        );
         ribbon(
           result.structures,
           rail.a,
           rail.b,
-          -1.7,
-          1.7,
+          -2.1,
+          2.1,
           0.07,
           [0.28, 0.28, 0.27],
+          rail.na,
+          rail.nb,
         );
+      }
     }
     const ground = (building: Building): Building => {
       if (building.kind === 'bridge') return building;
@@ -1041,9 +1179,31 @@ export function buildChunk(
     return result;
   }
   for (const rail of index.rails.get(key) ?? []) {
-    const { a, b, bridge, station } = rail;
-    if (bridge) railBridgeDeck(result.structures, a, b, lod);
-    else ribbon(result.structures, a, b, -2.1, 2.1, 0.07, [0.33, 0.32, 0.28]);
+    const { a, b, bridge, station, na, nb } = rail;
+    if (bridge) railBridgeDeck(result.structures, a, b, lod, na, nb);
+    else {
+      railEmbankment(
+        result.structures,
+        a,
+        b,
+        world.elevation,
+        na,
+        nb,
+        rail.capStart,
+        rail.capEnd,
+      );
+      ribbon(
+        result.structures,
+        a,
+        b,
+        -2.1,
+        2.1,
+        0.07,
+        [0.33, 0.32, 0.28],
+        na,
+        nb,
+      );
+    }
     if (bridge) {
       const length = distance2(a, b) || 1;
       for (const distance of periodicOffsets(station, length, 1, 30, 15)) {
@@ -1086,6 +1246,8 @@ export function buildChunk(
         side * 0.7 + 0.06,
         0.22,
         [0.68, 0.71, 0.7],
+        na,
+        nb,
       );
     if (lod === 0) {
       const length = distance2(a, b);

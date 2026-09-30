@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { buildWorld } from './network';
+import { changedChunks } from './world-update';
 import {
   buildIncrementalWorld,
   SourceTileRegistry,
@@ -54,6 +55,105 @@ const road: OSMElement[] = [
   { type: 'way', id: 10, nodes: [1, 2], tags: { highway: 'residential' } },
 ];
 
+it('перестраивает весь связанный железнодорожный подход при догрузке и удалении моста', () => {
+  // Arrange
+  const approach: OSMElement[] = [
+    { type: 'node', id: 51, lat: 0, lon: 0 },
+    { type: 'node', id: 52, lat: 0, lon: 0.0004 },
+    { type: 'node', id: 53, lat: 0, lon: 0.0008 },
+    { type: 'way', id: 50, nodes: [51, 52], tags: { railway: 'rail' } },
+    { type: 'way', id: 54, nodes: [52, 53], tags: { railway: 'rail' } },
+  ];
+  const bridge: OSMElement[] = [
+    approach[2],
+    { type: 'node', id: 55, lat: 0, lon: 0.001 },
+    {
+      type: 'way',
+      id: 56,
+      nodes: [53, 55],
+      tags: { railway: 'rail', bridge: 'yes' },
+    },
+  ];
+  const initial = region([tile('15/16384/16384', approach)]);
+  const full = region([
+    ...initial.sourceTiles!,
+    tile('15/16385/16384', bridge),
+  ]);
+  const registry = SourceTileRegistry.fromRegion(full)!;
+  const previous = buildWorld(initial);
+  // Act
+  const loaded = buildIncrementalWorld(
+    previous,
+    registry,
+    ['15/16385/16384'],
+    full,
+  );
+  const removed = buildIncrementalWorld(
+    loaded,
+    SourceTileRegistry.fromRegion(initial)!,
+    ['15/16385/16384'],
+    initial,
+    new Set(['way/56']),
+  );
+  // Assert
+  expect(
+    previous.railways!.every((l) => l.points.every((p) => p.y === 0)),
+  ).toBe(true);
+  expect(loaded.railways).toHaveLength(3);
+  expect(
+    loaded.railways!.find((l) => l.id === 50)!.points[0].y,
+  ).toBeGreaterThan(3);
+  expect(loaded.railways!.find((l) => l.id === 54)!.points.at(-1)!.y).toBe(5);
+  expect(removed.railways).toEqual(previous.railways);
+  expect(changedChunks(previous, loaded, new Set(['0,0']))).toContain('0,0');
+});
+
+it('добавляет и убирает вагоны при догрузке и выгрузке вокзала', () => {
+  // Arrange
+  const siding: OSMElement[] = [
+    { type: 'node', id: 81, lat: 0, lon: 0 },
+    { type: 'node', id: 82, lat: 0, lon: 0.0016 },
+    {
+      type: 'way',
+      id: 80,
+      nodes: [81, 82],
+      tags: { railway: 'rail', service: 'siding' },
+    },
+  ];
+  const station: OSMElement[] = [
+    { type: 'node', id: 83, lat: 0, lon: 0.0008, tags: { railway: 'station' } },
+  ];
+  const initial = region([tile('15/16384/16384', siding)]);
+  const full = region([
+    ...initial.sourceTiles!,
+    tile('15/16385/16384', station),
+  ]);
+  const previous = buildWorld(initial);
+  // Act
+  const loaded = buildIncrementalWorld(
+    previous,
+    SourceTileRegistry.fromRegion(full)!,
+    ['15/16385/16384'],
+    full,
+  );
+  const removed = buildIncrementalWorld(
+    loaded,
+    SourceTileRegistry.fromRegion(initial)!,
+    ['15/16385/16384'],
+    initial,
+    new Set(['node/83']),
+  );
+  // Assert
+  expect(previous.parkedWagons).toEqual([]);
+  expect(loaded.parkedWagons!.map((wagon) => wagon.id)).toEqual([
+    '80:0',
+    '80:1',
+    '80:2',
+    '80:3',
+  ]);
+  expect(removed.parkedWagons).toEqual([]);
+});
+
 it('дедуплицирует halo-объект и удаляет его только после последней ссылки', () => {
   // Arrange
   const first = region([
@@ -89,7 +189,9 @@ it('считает единственного владельца без поте
   expect(registry.referenceCount('node/2')).toBe(1);
   expect(staged.registry.referenceCount('node/1')).toBe(2);
   expect(staged.registry.referenceCount('node/2')).toBe(0);
-  expect(staged.registry.affectedTiles(staged.changed, staged.changedElements)).toContain('15/16386/16384');
+  expect(
+    staged.registry.affectedTiles(staged.changed, staged.changedElements),
+  ).toContain('15/16386/16384');
 });
 
 it('удаляет OSM-объект и его рёбра после выгрузки последнего owning tile', () => {
@@ -296,7 +398,12 @@ it('не смешивает одинаковые OSM id областей way и 
       { type: 'node', id: 420, lat: -0.001, lon: 0.001 },
       { type: 'node', id: 421, lat: -0.001, lon: 0.002 },
       { type: 'node', id: 422, lat: -0.002, lon: 0.002 },
-      { type: 'way', id: 42, nodes: [420, 421, 422, 420], tags: { leisure: 'park' } },
+      {
+        type: 'way',
+        id: 42,
+        nodes: [420, 421, 422, 420],
+        tags: { leisure: 'park' },
+      },
     ],
     nextRegion = region([tile('15/16384/16384', park)]),
     registry = SourceTileRegistry.fromRegion(nextRegion)!,
@@ -322,8 +429,7 @@ it('не смешивает одинаковые OSM id областей way и 
     new Set(['way/42']),
   );
   // Assert
-  expect(after.areas.map((area) => `${area.osmType}/${area.id}`).sort()).toEqual([
-    'relation/42',
-    'way/42',
-  ]);
+  expect(
+    after.areas.map((area) => `${area.osmType}/${area.id}`).sort(),
+  ).toEqual(['relation/42', 'way/42']);
 });

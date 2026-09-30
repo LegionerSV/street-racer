@@ -1,5 +1,6 @@
 import { overlaps } from './geometry';
 import { buildWorld } from './network';
+import { buildRailways, parkedWagons } from './railways';
 import { parseSourceTileKey, sourceTileKey } from './source-tiles';
 import { sourceTileLocalBounds } from './stream-coverage';
 import type {
@@ -84,7 +85,7 @@ export class SourceTileRegistry {
 
   referenceCount(key: string) {
     const owners = this.references.get(key);
-    return owners ? typeof owners === 'string' ? 1 : owners.length : 0;
+    return owners ? (typeof owners === 'string' ? 1 : owners.length) : 0;
   }
 
   keys() {
@@ -239,9 +240,18 @@ export function buildIncrementalWorld(
     ...rebuilt.edges.filter((edge) => affectedWays.has(edge.way)),
   ];
   edges.forEach((edge, id) => (edge.id = id));
+  const railwayRegion = registry.regionFor(registry.keys(), metadata);
+  const railways = buildRailways(railwayRegion, rebuilt.elevation);
   const next: World = {
     ...previous,
-    nodes: mergeByKey(previous.nodes, rebuilt.nodes, affectedNodes, node => node.id),
+    railways,
+    parkedWagons: parkedWagons(railways, railwayRegion),
+    nodes: mergeByKey(
+      previous.nodes,
+      rebuilt.nodes,
+      affectedNodes,
+      (node) => node.id,
+    ),
     edges,
     restrictions: [
       ...previous.restrictions.filter(

@@ -1,10 +1,14 @@
 import {
+  distance2,
+  mixPoint,
   pathLengths,
   pointAt,
   projectOnSegment,
   sampleElevation,
+  smooth,
   toLocal,
 } from './geo';
+import { MinHeap } from './min-heap';
 import type {
   ElevationGrid,
   ParkedWagon,
@@ -14,6 +18,8 @@ import type {
 } from './types';
 
 const ACTIVE_RAILWAYS = new Set(['rail', 'narrow_gauge']);
+const RAIL_BRIDGE_LIFT = 5;
+const RAIL_APPROACH_LENGTH = 350;
 
 export function buildRailways(
   region: RegionData,
@@ -55,31 +61,83 @@ export function buildRailways(
       service: tags.service || '',
     });
   }
-  for (const line of lines)
-    if (line.bridge)
-      for (const point of line.points) point.y += 5;
-  const raised = new Map<number, number>();
-  for (const line of lines)
-    if (line.bridge)
-      for (let i = 0; i < line.nodes.length; i++)
-        raised.set(line.nodes[i], line.points[i].y);
-  for (const line of lines)
-    if (!line.bridge) {
-      const lengths = pathLengths(line.points),
-        total = lengths.at(-1) || 0;
-      const start = raised.get(line.nodes[0]),
-        end = raised.get(line.nodes.at(-1)!);
-      for (let i = 0; i < line.points.length; i++) {
-        const startWeight =
-          start === undefined ? 0 : Math.max(0, 1 - lengths[i] / 100);
-        const endWeight =
-          end === undefined ? 0 : Math.max(0, 1 - (total - lengths[i]) / 100);
-        if (startWeight)
-          line.points[i].y += (start! - line.points[i].y) * startWeight;
-        if (endWeight)
-          line.points[i].y += (end! - line.points[i].y) * endWeight;
+  const links = new Map<number, { node: number; length: number }[]>();
+  const distances = new Map<number, number>();
+  const queue = new MinHeap<{ node: number; distance: number }>(
+    (a, b) => a.distance - b.distance,
+  );
+  for (const line of lines) {
+    if (line.bridge) {
+      for (const node of line.nodes)
+        if (!distances.has(node)) {
+          distances.set(node, 0);
+          queue.push({ node, distance: 0 });
+        }
+      continue;
+    }
+    for (let i = 1; i < line.nodes.length; i++) {
+      const length = distance2(line.points[i - 1], line.points[i]);
+      for (const [from, to] of [
+        [line.nodes[i - 1], line.nodes[i]],
+        [line.nodes[i], line.nodes[i - 1]],
+      ]) {
+        const neighbors = links.get(from) ?? [];
+        neighbors.push({ node: to, length });
+        links.set(from, neighbors);
       }
     }
+  }
+  while (queue.size) {
+    const current = queue.pop()!;
+    if (current.distance !== distances.get(current.node)) continue;
+    for (const link of links.get(current.node) ?? []) {
+      const distance = current.distance + link.length;
+      if (
+        distance >= RAIL_APPROACH_LENGTH ||
+        distance >= (distances.get(link.node) ?? Infinity)
+      )
+        continue;
+      distances.set(link.node, distance);
+      queue.push({ node: link.node, distance });
+    }
+  }
+  const lift = (distance: number) =>
+    RAIL_BRIDGE_LIFT * (1 - smooth(distance / RAIL_APPROACH_LENGTH));
+  for (const line of lines) {
+    if (line.bridge) {
+      for (const point of line.points) point.y += RAIL_BRIDGE_LIFT;
+      continue;
+    }
+    const profile: Point[] = [];
+    for (let i = 1; i < line.points.length; i++) {
+      const a = line.points[i - 1],
+        b = line.points[i];
+      const length = distance2(a, b);
+      const start = distances.get(line.nodes[i - 1]) ?? Infinity;
+      const end = distances.get(line.nodes[i]) ?? Infinity;
+      const parts =
+        Math.min(start, end) < RAIL_APPROACH_LENGTH
+          ? Math.max(1, Math.ceil(length / 10))
+          : 1;
+      for (let j = i === 1 ? 0 : 1; j <= parts; j++) {
+        const point =
+          j === 0
+            ? { ...a }
+            : j === parts
+              ? { ...b }
+              : mixPoint(a, b, j / parts);
+        const distance = Math.min(
+          start + (length * j) / parts,
+          end + length * (1 - j / parts),
+        );
+        if (parts > 1 || distance < RAIL_APPROACH_LENGTH)
+          point.y =
+            sampleElevation(elevation, point.x, point.z) + lift(distance);
+        profile.push(point);
+      }
+    }
+    line.points = profile;
+  }
   return lines;
 }
 
@@ -101,14 +159,19 @@ export function parkedWagons(
     const tags = element.tags ?? {};
     if (
       tags.railway !== 'station' ||
-      ['subway', 'light_rail', 'tram', 'monorail'].includes(tags.station || '') ||
+      ['subway', 'light_rail', 'tram', 'monorail'].includes(
+        tags.station || '',
+      ) ||
       tags.subway === 'yes'
-    ) return [];
+    )
+      return [];
     if (element.lat !== undefined && element.lon !== undefined)
       return [toLocal(element.lat, element.lon, region.center)];
-    const stationNodes = element.nodes ?? (element.members ?? [])
-      .filter((member) => member.type === 'way')
-      .flatMap((member) => ways.get(member.ref)?.nodes ?? []);
+    const stationNodes =
+      element.nodes ??
+      (element.members ?? [])
+        .filter((member) => member.type === 'way')
+        .flatMap((member) => ways.get(member.ref)?.nodes ?? []);
     const points = stationNodes.flatMap((id) => {
       const node = nodes.get(id);
       return node?.lat !== undefined && node.lon !== undefined
@@ -146,8 +209,10 @@ export function parkedWagons(
   };
   for (const station of stations) {
     const siding = lines
-      .filter((line) =>
-        ['siding', 'yard', 'spur'].includes(line.service) && !used.has(line.id),
+      .filter(
+        (line) =>
+          ['siding', 'yard', 'spur'].includes(line.service) &&
+          !used.has(line.id),
       )
       .map((line) => stationProjection(line, station))
       .filter((candidate) => candidate.total >= 85)

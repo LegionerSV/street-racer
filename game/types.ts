@@ -153,6 +153,7 @@ export type Area = {
 };
 export type RailLine = {
   id: number;
+  // Исходные узлы OSM; points дополнительно содержит отсчёты высотного профиля.
   nodes: number[];
   points: Point[];
   bridge: boolean;
