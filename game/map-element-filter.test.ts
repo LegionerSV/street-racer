@@ -371,3 +371,27 @@ it('пропускает диагностическую сводку, когда
   expect(result.stats.raw.total).toBe(0);
   expect(result.stats.kept.total).toBe(0);
 });
+
+it.each(['standard', 'minimal', 'roads'] as const)(
+  'сохраняет контур посадочной платформы в режиме %s',
+  (mode) => {
+    // Arrange
+    const elements: OSMElement[] = [
+      { type: 'node', id: 1, lat: 0, lon: 0 },
+      { type: 'node', id: 2, lat: 0, lon: 0.001 },
+      { type: 'node', id: 3, lat: 0.001, lon: 0.001 },
+      {
+        type: 'way',
+        id: 40,
+        nodes: [1, 2, 3, 1],
+        tags: { railway: 'platform', area: 'yes' },
+      },
+    ];
+    // Act
+    const result = reduceMapElements(elements, center, mode);
+    // Assert
+    expect(result.elements.map((e) => e.id).sort((a, b) => a - b)).toEqual([
+      1, 2, 3, 40,
+    ]);
+  },
+);

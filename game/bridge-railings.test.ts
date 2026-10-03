@@ -83,6 +83,43 @@ function fixture(separation = 8, height = 0, layer = 1): World {
     routes: [],
   };
 }
+it.each([false, true])(
+  'защищает безымянный берег, но не нижний подход к туннелю: %s',
+  (tunnelApproach) => {
+    // Arrange
+    const world = fixture();
+    world.edges = [
+      {
+        ...world.edges[0],
+        bridge: false,
+        layer: 0,
+        name: 'Безымянная улица',
+        tunnelApproach,
+      },
+    ];
+    world.areas = [
+      {
+        id: 1,
+        kind: 'water',
+        railing: 'river',
+        waterKind: 'canal',
+        points: [
+          { x: 0, y: 0, z: 90 },
+          { x: 200, y: 0, z: 90 },
+          { x: 200, y: 0, z: 240 },
+          { x: 0, y: 0, z: 240 },
+        ],
+      },
+    ];
+    // Act
+    const fences = buildChunk(world, '0,0', 0).breakables.filter(
+      (p) => p.fenceType === 'embankment',
+    );
+    // Assert
+    expect(fences.length > 0).toBe(!tunnelApproach);
+  },
+);
+
 it('выбирает ближайший берег независимо от начала контура воды', () => {
   // Arrange
   const fences = (rotation: number) => {
@@ -514,4 +551,95 @@ it('не размещает перила на соседней проезжей 
   // Assert
   expect(points.length).toBeGreaterThan(0);
   expect(conflicts).toEqual([]);
+});
+
+it.each(
+  [-1, 1].flatMap((side) =>
+    [false, true].flatMap((sidewalk) =>
+      [false, true].map((segmented) => ({ side, sidewalk, segmented })),
+    ),
+  ),
+)(
+  'ставит ограждение безымянного съезда: сторона $side, тротуар $sidewalk, стык $segmented',
+  ({ side, sidewalk, segmented }) => {
+    // Arrange
+    const world = fixture(8 * side, -6);
+    world.edges[0] = {
+      ...world.edges[0],
+      bridge: false,
+      layer: 0,
+      name: 'Безымянная улица',
+      sidewalkLeft: sidewalk,
+      sidewalkRight: sidewalk,
+    };
+    world.edges[1] = {
+      ...world.edges[1],
+      bridge: false,
+      layer: 0,
+      name: 'Набережная',
+      tunnelApproach: true,
+    };
+    if (segmented)
+      world.edges[1].points.splice(1, 0, { x: 80, y: 0, z: 80 + 8 * side });
+    // Act
+    const fences = buildChunk(world, '0,0', 0).breakables.filter(
+      (p) => p.fenceType === 'embankment',
+    );
+    // Assert
+    expect(fences.length).toBeGreaterThan(0);
+    expect(
+      fences.every((p) => (p.point.z - 80) * side > 0 && p.point.y > 5),
+    ).toBe(true);
+  },
+);
+
+it('стыкует стенку берега с фактическими вершинами земли на уклоне между узлами сетки', () => {
+  // Arrange
+  const world = fixture();
+  world.edges = [
+    {
+      ...world.edges[0],
+      bridge: false,
+      layer: 0,
+      name: 'Набережная',
+      points: [
+        { x: 30, y: 6, z: 80 },
+        { x: 130, y: 10, z: 80 },
+      ],
+    },
+  ];
+  world.areas = [
+    {
+      id: 1,
+      kind: 'water',
+      railing: 'river',
+      waterKind: 'canal',
+      points: [
+        { x: 0, y: 0, z: 95.37 },
+        { x: 200, y: 0, z: 95.37 },
+        { x: 200, y: 0, z: 240 },
+        { x: 0, y: 0, z: 240 },
+      ],
+    },
+  ];
+  // Act
+  const chunk = buildChunk(world, '0,0', 0);
+  const bank = railVertices(chunk.structures).filter(
+    (p) => Math.abs(p.z - 95.37) < 1e-6 && p.x > 40 && p.x < 120 && p.y > 0,
+  );
+  const terrain = Array.from(
+    { length: chunk.terrain.positions.length / 3 },
+    (_, i) => ({
+      x: chunk.terrain.positions[i * 3],
+      y: chunk.terrain.positions[i * 3 + 1],
+      z: chunk.terrain.positions[i * 3 + 2],
+    }),
+  );
+  // Assert
+  expect(bank.length).toBeGreaterThan(0);
+  expect(
+    bank.every((p) =>
+      terrain.some((q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) < 1e-5),
+    ),
+  ).toBe(true);
 });

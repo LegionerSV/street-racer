@@ -145,11 +145,12 @@ export type Area = {
   id: number;
   osmType?: 'way' | 'relation';
   points: Point[];
-  kind: 'water' | 'park' | 'paved';
+  kind: 'water' | 'park' | 'paved' | 'platform';
   surface?: string;
   holes?: Point[][];
   railing?: 'river' | 'park';
   waterKind?: 'river' | 'canal';
+  platformHeight?: number;
 };
 export type RailLine = {
   id: number;
@@ -247,6 +248,7 @@ export type Breakable = {
   point: Point;
   heading: number;
   length?: number;
+  rise?: number;
   fenceType?: 'park' | 'embankment';
 };
 export type ChunkData = {

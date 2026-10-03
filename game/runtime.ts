@@ -861,7 +861,12 @@ export class Game {
                 { height: 7, diameter: 0.16, tessellation: 6 },
                 this.scene,
               )
-            : createFenceVisual(this.scene, prop.fenceType, prop.length || 2);
+            : createFenceVisual(
+                this.scene,
+                prop.fenceType,
+                prop.length || 2,
+                prop.rise,
+              );
         mesh.name = `${chunk.key}:breakable-${pole ? 'pole' : 'fence'}-${i}`;
         mesh.position.copyFromFloats(
           prop.point.x,
@@ -1194,7 +1199,9 @@ export class Game {
         } else if (!prop.broken && !prop.body && distance < activateDistance) {
           const body = new PhysicsAggregate(
             prop.mesh,
-            PhysicsShapeType.BOX,
+            prop.fenceType === 'embankment'
+              ? PhysicsShapeType.CONVEX_HULL
+              : PhysicsShapeType.BOX,
             { mass: prop.pole ? 28 : 18, friction: 0.5, restitution: 0.08 },
             this.scene,
           );

@@ -93,6 +93,8 @@ it('запрашивает только используемые автомоб�
   expect(q).toContain('nwr["area:highway"]');
   expect(q).toContain('nwr["historic"="citywalls"]');
   expect(q).toContain('nwr["barrier"~"^(city_wall|wall)$"]');
+  expect(q).toContain('nwr["railway"~"^(station|platform)$"]');
+  expect(q).toContain('nwr["public_transport"="platform"]["train"="yes"]');
   expect(q).toContain('(._;>;);out body;');
 });
 it('превышение времени выполнения делит участок и сохраняет успешные части', async () => {

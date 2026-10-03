@@ -32,12 +32,17 @@ export function railFeatureTiles(
   coverage: Set<string>,
 ): string[] {
   const railway = feature.properties?.railway;
+  const trainPlatform =
+    feature.properties?.public_transport === 'platform' &&
+    feature.properties?.train === 'yes';
   const ship =
     ['ship', 'houseboat'].includes(feature.properties?.building || '') ||
     feature.properties?.historic === 'ship' ||
     !!feature.properties?.['ship:type'];
   if (
-    (!['rail', 'narrow_gauge', 'station'].includes(railway || '') && !ship) ||
+    (!['rail', 'narrow_gauge', 'station', 'platform'].includes(railway || '') &&
+      !trainPlatform &&
+      !ship) ||
     !feature.geometry
   )
     return [];
@@ -122,8 +127,8 @@ async function preparedSelection(
   const cache = resolve(cacheRoot, 'rail-ship-selection');
   await mkdir(cache, { recursive: true });
   const checksum = definition.pbf.checksum.slice(4, 16);
-  const filtered = join(cache, `${region}-${checksum}.osm.pbf`);
-  const exported = join(cache, `${region}-${checksum}.geojsonseq`);
+  const filtered = join(cache, `${region}-${checksum}-platforms-2.osm.pbf`);
+  const exported = join(cache, `${region}-${checksum}-platforms-2.geojsonseq`);
   try {
     await stat(filtered);
   } catch {
@@ -133,6 +138,8 @@ async function preparedSelection(
       pbf,
       'w/railway=rail,narrow_gauge',
       'nwr/railway=station',
+      'nwr/railway=platform',
+      'nwr/public_transport=platform',
       ...(region === 'saint-petersburg'
         ? [
             'nwr/historic=ship',

@@ -6,7 +6,12 @@ import {
   osmKey,
   resolveBuildingEnvelopes,
 } from './building-groups';
-import { inferredRoofRise, osmDirection, osmLength } from './roof-forms';
+import {
+  inferredRoofRise,
+  osmDirection,
+  osmLength,
+  roofForm,
+} from './roof-forms';
 import { MinHeap } from './min-heap';
 import type {
   Area,
@@ -52,6 +57,7 @@ import { roadLayout, directedLanes, roadTypes } from './lanes';
 import {
   buildingCoveredByParts,
   genericPartMayHaveFacadeWindows,
+  isRoofOnly,
   windowsForbiddenByTags,
 } from './buildings';
 import { applyBuildingAppearances } from './building-appearance';
@@ -512,22 +518,22 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
           t['building:levels'] === undefined
             ? clamp(Math.sqrt(footprintArea) / 35, 4.5, 12)
             : undefined;
-      const fallbackLevels = ['garage', 'garages', 'shed', 'hut'].includes(
-        t.building,
-      )
-        ? 1
-        : [
-              'yes',
-              'house',
-              'detached',
-              'semi_detached',
-              'semidetached_house',
-              'bungalow',
-              'cabin',
-              'farm',
-            ].includes(t.building)
-          ? 2
-          : 3 + Math.floor(seeded(e.id) * 6);
+      const roofOnly = isRoofOnly(t);
+      const fallbackLevels =
+        roofOnly || ['garage', 'garages', 'shed', 'hut'].includes(t.building)
+          ? 1
+          : [
+                'yes',
+                'house',
+                'detached',
+                'semi_detached',
+                'semidetached_house',
+                'bungalow',
+                'cabin',
+                'farm',
+              ].includes(t.building)
+            ? 2
+            : 3 + Math.floor(seeded(e.id) * 6);
       const publicUse =
         !!(t.shop || t.amenity || t.office || t.tourism) ||
         [
@@ -591,11 +597,20 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
                 )
               : calculatedGable);
       const technicalHeight =
-        !fortification && ['flat', 'terrace'].includes(roof) && levels > 0
+        !roofOnly &&
+        !fortification &&
+        ['flat', 'terrace'].includes(roof) &&
+        levels > 0
           ? 0.8
           : 0;
       const height = clamp(
         explicitHeight ??
+          (roofOnly
+            ? (osmLength(t.min_height) ??
+                (osmLength(t['building:min_level']) !== undefined
+                  ? osmLength(t['building:min_level'])! * floorHeight
+                  : Math.max(1, levels) * floorHeight)) + roofHeight
+            : undefined) ??
           generatedFortificationHeight ??
           levels * floorHeight + roofHeight + technicalHeight,
         0.1,
@@ -615,7 +630,7 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
           !genericPartMayHaveFacadeWindows(t, inheritedGroupTags)
             ? 'forbid'
             : 'procedural';
-      buildings.push({
+      const building: Building = {
         id: e.id,
         osmType: e.type === 'relation' ? 'relation' : 'way',
         footprint,
@@ -638,7 +653,7 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
           t.colour ||
           inheritedGroupTags?.['building:colour'] ||
           inheritedGroupTags?.colour,
-        levels,
+        levels: roofOnly ? 0 : levels,
         floorHeight,
         technicalHeight: Math.min(technicalHeight, height),
         windowPolicy,
@@ -655,6 +670,28 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
         groupTags: inheritedGroupTags,
         osmTags: { ...t },
         roofOrientation: t['roof:orientation'],
+      };
+      if (
+        roofOnly &&
+        osmLength(t.min_height) === undefined &&
+        osmLength(t['building:min_level']) === undefined
+      )
+        building.minHeight = roofForm(building, 0, height, 0).eaves;
+      buildings.push(building);
+    } else if (
+      (t.railway === 'platform' ||
+        (t.public_transport === 'platform' && t.train === 'yes')) &&
+      t.location !== 'underground' &&
+      t.subway !== 'yes' &&
+      (!t.tunnel || t.tunnel === 'no')
+    ) {
+      areas.push({
+        id: e.id,
+        osmType: e.type === 'relation' ? 'relation' : 'way',
+        points: footprint,
+        holes,
+        kind: 'platform',
+        platformHeight: osmLength(t.height) ?? 1.1,
       });
     } else if (
       t.natural === 'water' ||

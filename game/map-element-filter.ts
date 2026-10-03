@@ -56,7 +56,10 @@ function isRailway(element: OSMElement) {
     (element.type === 'way' &&
       ['rail', 'narrow_gauge'].includes(railway || '') &&
       !!element.nodes?.length) ||
-    railway === 'station'
+    railway === 'station' ||
+    railway === 'platform' ||
+    (element.tags?.public_transport === 'platform' &&
+      element.tags?.train === 'yes')
   );
 }
 

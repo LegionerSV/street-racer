@@ -6,6 +6,7 @@ import {
   facesWater,
 } from './bridge-railings';
 import { appendParapet } from './parapet';
+import { shorelineSpans } from './shoreline';
 import { ASPHALT_COLOUR } from './surface-textures';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
@@ -25,6 +26,7 @@ import {
   appendBuilding,
   appendBuildingSilhouette,
   buildingPartMasks,
+  isRoofOnly,
 } from './buildings';
 import { worldLandmarks, appendLandmark } from './landmarks';
 import { appendShip, isShipTags } from './ships';
@@ -1334,7 +1336,7 @@ export function buildChunk(
     let distance = WATERFRONT_REACH,
       height: number | undefined;
     for (const s of index.spatial.query(boundsOf([point], WATERFRONT_REACH))) {
-      if (s.edge.bridge || s.edge.tunnel || !isEmbankment(s.edge)) continue;
+      if (s.edge.bridge || s.edge.tunnel || s.edge.tunnelApproach) continue;
       const projected = projectOnSegment(point, s.a, s.b);
       if (projected.distance < distance) {
         distance = projected.distance;
@@ -1811,14 +1813,27 @@ export function buildChunk(
       }
     // Речное ограждение принадлежит дороге: так оно следует тротуару и его высоте,
     // а неточный контур воды используется только для выбора стороны набережной.
-    if (lod === 0 && !edge.bridge && !edge.tunnel && isEmbankment(edge)) {
+    if (
+      lod === 0 &&
+      !edge.bridge &&
+      !edge.tunnel &&
+      !edge.tunnelApproach &&
+      (isEmbankment(edge) ||
+        index.waters
+          .query(boundsOf([a, b], WATERFRONT_REACH))
+          .some((area) => area.railing === 'river') ||
+        index.spatial
+          .query(boundsOf([a, b], 18))
+          .some((other) => other.edge.tunnel || other.edge.tunnelApproach))
+    ) {
       const length = distance2(a, b) || 1,
         nx = (b.z - a.z) / length,
         nz = -(b.x - a.x) / length;
       const choices = [-1, 1]
-        .filter((side) => s.join?.side !== side && sidewalkOn(edge, side))
+        .filter((side) => s.join?.side !== side)
         .map((side) => {
-          const outer = w + CURB_WIDTH + SIDEWALK_WIDTH,
+          const outer =
+              w + CURB_WIDTH + (sidewalkOn(edge, side) ? SIDEWALK_WIDTH : 0),
             aa = {
               x: a.x + (s.na?.x ?? nx) * outer * side,
               y: a.y + CURB_HEIGHT,
@@ -1858,28 +1873,57 @@ export function buildChunk(
                 }
               }
           }
-          return { aa, bb, score, mid, shore };
+          const drop = index.spatial
+            .query(boundsOf([aa, bb], 18))
+            .some((other) => {
+              if (
+                other.edge.way === edge.way ||
+                other.edge.bridge ||
+                !(other.edge.tunnel || other.edge.tunnelApproach)
+              )
+                return false;
+              const p = projectOnSegment(mid, other.a, other.b),
+                dx = other.b.x - other.a.x,
+                dz = other.b.z - other.a.z,
+                along = (mid.x - other.a.x) * dx + (mid.z - other.a.z) * dz;
+              return (
+                along >= 0 &&
+                along <= dx * dx + dz * dz &&
+                (p.point.x - mid.x) * nx * side +
+                  (p.point.z - mid.z) * nz * side >
+                  0 &&
+                p.distance < other.edge.width / 2 + 12 &&
+                mid.y - p.point.y > 2.5
+              );
+            });
+          return { aa, bb, score, mid, shore, drop };
         })
         .sort((x, y) => x.score - y.score);
-      const banks =
+      const waterBanks =
         choices[0]?.score < WATERFRONT_REACH &&
         (!choices[1] || choices[1].score - choices[0].score > CURB_WIDTH)
           ? [choices[0]]
           : [];
+      const banks = choices.filter(
+        (choice) => choice.drop || waterBanks.includes(choice),
+      );
       for (const bank of banks)
         if (
-          bank.shore &&
-          facesWater(
-            bank.mid,
-            bank.shore,
-            edge,
-            index.spatial.query(boundsOf([bank.mid, bank.shore], 1)),
-          )
+          bank.drop ||
+          (bank.shore &&
+            facesWater(
+              bank.mid,
+              bank.shore,
+              edge,
+              index.spatial.query(boundsOf([bank.mid, bank.shore], 1)),
+            ))
         )
           for (const span of embankmentRailingSpans(
             bank.aa,
             bank.bb,
-            index.spatial.query(boundsOf([bank.aa, bank.bb], 20)),
+            index.spatial
+              .query(boundsOf([bank.aa, bank.bb], 20))
+              .filter((other) => other.edge.way !== edge.way),
           )) {
             const spanLength = distance2(span.a, span.b),
               parts = Math.max(1, Math.ceil(spanLength / 10));
@@ -1893,6 +1937,7 @@ export function buildChunk(
                 point: mid,
                 heading: Math.atan2(q.x - p.x, q.z - p.z),
                 length: distance2(p, q),
+                rise: q.y - p.y,
               });
             }
           }
@@ -1954,6 +1999,7 @@ export function buildChunk(
         tags.tourism ||
         building.kind === 'bridge' ||
         building.kind === 'wall' ||
+        isRoofOnly(tags, building.kind) ||
         ['cathedral', 'church', 'chapel', 'mosque', 'tower'].includes(
           building.kind || '',
         )
@@ -2180,15 +2226,13 @@ export function buildChunk(
               Math.min(a.z, b.z) > z0 + 250
             )
               continue;
-            const parts = Math.max(1, Math.ceil(distance2(a, b) / 12.5));
-            for (let j = 0; j < parts; j++) {
-              const p = mixPoint(a, b, j / parts),
-                q = mixPoint(a, b, (j + 1) / parts);
+            for (const { a: p, b: q } of shorelineSpans(a, b)) {
               const mid = mixPoint(p, q, 0.5);
               if (tileKey(mid.x, mid.z) !== key) continue;
-              const py = quayHeight(p),
-                qy = quayHeight(q);
-              if (py === undefined || qy === undefined) continue;
+              if (quayHeight(p) === undefined || quayHeight(q) === undefined)
+                continue;
+              const py = terrainHeight(p.x, p.z),
+                qy = terrainHeight(q.x, q.z);
               quad(
                 result.structures,
                 { ...p, y: waterLevel(area, p) - 3 },
@@ -2199,6 +2243,60 @@ export function buildChunk(
               );
             }
           }
+    } else if (area.kind === 'platform') {
+      const rings = [area.points, ...(area.holes || [])],
+        vertices = rings.flat(),
+        holes: number[] = [];
+      let count = area.points.length;
+      for (const hole of rings.slice(1)) {
+        holes.push(count);
+        count += hole.length;
+      }
+      const triangles = earcut(
+        vertices.flatMap((p) => [p.x, p.z]),
+        holes,
+      );
+      const height = area.platformHeight ?? 1.1;
+      const top = (p: Point) => ({
+        ...p,
+        y: sampleElevation(world.elevation, p.x, p.z) + height,
+      });
+      for (let i = 0; i < triangles.length; i += 3) {
+        const clipped = clipToChunk(
+          triangles.slice(i, i + 3).map((j) => top(vertices[j])),
+          x0,
+          z0,
+        );
+        const base = result.structures.positions.length / 3;
+        for (const p of clipped) {
+          result.structures.positions.push(p.x, p.y, p.z);
+          result.structures.colors!.push(0.55, 0.54, 0.5, 1);
+        }
+        for (let j = 1; j < clipped.length - 1; j++)
+          result.structures.indices.push(base, base + j, base + j + 1);
+      }
+      for (const ring of rings)
+        for (let i = 0; i < ring.length; i++) {
+          const a = ring[i],
+            b = ring[(i + 1) % ring.length];
+          const clipped = clipToChunk(
+            [
+              top(a),
+              top(b),
+              { ...top(b), y: top(b).y - height },
+              { ...top(a), y: top(a).y - height },
+            ],
+            x0,
+            z0,
+          );
+          const base = result.structures.positions.length / 3;
+          for (const p of clipped) {
+            result.structures.positions.push(p.x, p.y, p.z);
+            result.structures.colors!.push(0.43, 0.42, 0.39, 1);
+          }
+          for (let j = 1; j < clipped.length - 1; j++)
+            result.structures.indices.push(base, base + j, base + j + 1);
+        }
     } else if (area.kind === 'paved') {
       const rings = [area.points, ...(area.holes || [])],
         vertices = rings.flat(),

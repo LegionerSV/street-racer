@@ -1,6 +1,30 @@
-import { NullEngine, Scene } from '@babylonjs/core';
+import { NullEngine, Scene, VertexBuffer } from '@babylonjs/core';
 import { expect, it } from 'vitest';
 import { createFenceVisual } from './breakable-visuals';
+
+it.each([-3, 3])(
+  'сохраняет постоянную высоту парапета на уклоне %s м',
+  (rise) => {
+    // Arrange
+    const engine = new NullEngine(),
+      scene = new Scene(engine);
+    try {
+      // Act
+      const mesh = createFenceVisual(scene, 'embankment', 10, rise);
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+      const localHeights = Array.from(
+        { length: positions.length / 3 },
+        (_, i) => positions[i * 3 + 1] - (positions[i * 3 + 2] * rise) / 10,
+      );
+      // Assert
+      expect(Math.min(...localHeights)).toBeCloseTo(0, 5);
+      expect(Math.max(...localHeights)).toBeCloseTo(1, 5);
+    } finally {
+      scene.dispose();
+      engine.dispose();
+    }
+  },
+);
 
 it('делает парковую решётку двухметровой и гранитный парапет набережной метровым', () => {
   // Arrange

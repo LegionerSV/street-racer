@@ -31,6 +31,8 @@ export const OSMIUM_FILTER_EXPRESSIONS = [
   `w/highway=${ROAD_TYPES.join(',')}`,
   'w/railway=rail,narrow_gauge',
   'nwr/railway=station',
+  'nwr/railway=platform',
+  'nwr/public_transport=platform',
   'n/highway=traffic_signals',
   'r/type=restriction',
   'w/building',

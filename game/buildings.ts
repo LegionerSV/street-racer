@@ -131,6 +131,14 @@ export function hasExplicitWindows(tags: Tags) {
   return values.length > 0 && !values.some((value) => negative.has(value));
 }
 
+export function isRoofOnly(tags: Tags, kind?: string) {
+  return (
+    kind === 'roof' ||
+    tags.building === 'roof' ||
+    tags['building:part'] === 'roof'
+  );
+}
+
 export function windowsForbiddenByTags(tags: Tags) {
   const values = [tags.window, tags.windows, tags['building:windows']]
     .map((value) => value?.trim().toLowerCase())
@@ -278,7 +286,17 @@ function parsedColour(value?: string): Colour | undefined {
 }
 function colour(b: Building): Colour {
   const explicit = parsedColour(b.facadeColour);
-  if (explicit) return explicit;
+  if (explicit) {
+    const high = Math.max(...explicit),
+      low = Math.min(...explicit);
+    if (high > 0 && (high - low) / high > 0.65) {
+      const value = Math.min(0.78, Math.max(0.55, high));
+      return explicit.map(
+        (v) => value * (0.55 + (0.45 * (v - low)) / (high - low)),
+      ) as Colour;
+    }
+    return explicit;
+  }
   const palettes: Colour[][] = [
     [
       [0.62, 0.34, 0.26],
@@ -374,6 +392,7 @@ export function appendBuildingSilhouette(
   foundationFloor?: number,
   openings: Prism[] = [],
 ) {
+  const roofOnly = isRoofOnly(b.osmTags || {}, b.kind);
   const emit = (mesh: MeshData, points: Point[], colour: Colour) => {
     for (const piece of subtractPrisms(points, openings))
       emitPolygon(mesh, piece, colour);
@@ -394,7 +413,7 @@ export function appendBuildingSilhouette(
     wallColour = colour(b),
     roofColour =
       parsedColour(b.roofColour) || (wallColour.map((v) => v * 0.48) as Colour);
-  for (const ring of rings)
+  for (const ring of roofOnly ? [] : rings)
     for (let i = 0; i < ring.length; i++) {
       const a = ring[i],
         next = ring[(i + 1) % ring.length];
@@ -413,12 +432,13 @@ export function appendBuildingSilhouette(
     flat.flatMap((p) => [p.x, p.z]),
     holes,
   );
-  for (let i = 0; i < indices.length; i += 3)
-    emit(
-      mesh,
-      indices.slice(i, i + 3).map((index) => ({ ...flat[index], y: top })),
-      roofColour,
-    );
+  for (let i = 0; i < indices.length; i += 3) {
+    const triangle = indices
+      .slice(i, i + 3)
+      .map((index) => ({ ...flat[index], y: top }));
+    emit(mesh, triangle, roofColour);
+    if (roofOnly) emit(mesh, [...triangle].reverse(), roofColour);
+  }
 }
 export function appendBuilding(
   b: Building,
@@ -430,6 +450,7 @@ export function appendBuilding(
   detailedEdge?: (ring: Point[], index: number) => boolean,
   bareFacades: MeshData[] = [],
 ) {
+  const roofOnly = isRoofOnly(b.osmTags || {}, b.kind);
   if (b.envelopeHeight !== undefined)
     b = { ...b, height: b.envelopeHeight, roof: 'flat', roofHeight: 0 };
   // Вдали убирается только мелкий декор уже связанного комплекса.
@@ -531,7 +552,7 @@ export function appendBuilding(
       (eaves - floor) /
         Math.max(1, b.levels ?? Math.round((eaves - floor) / 3.2)),
     );
-  for (const ring of rings)
+  for (const ring of roofOnly ? [] : rings)
     for (let i = 0; i < ring.length; i++) {
       const allowed = !detailedEdge || detailedEdge(ring, i),
         edgeTextured = textured && allowed,
@@ -677,6 +698,10 @@ export function appendBuilding(
         }
       }
     }
+  const roofPolygon = (points: Point[]) => {
+    polygon(shell, points, roofColour);
+    if (roofOnly) polygon(shell, [...points].reverse(), roofColour);
+  };
   // Каждая треугольная часть контура режется плоскостями скатов; дворы остаются пустыми.
   for (let i = 0; i < indices.length; i += 3) {
     const triangle = indices.slice(i, i + 3).map((j) => flat[j]);
@@ -685,13 +710,9 @@ export function appendBuilding(
       for (let k = 0; k < planes.length; k++)
         if (k !== j) part = clip(part, (p) => planes[k](p) - planes[j](p));
       if (part.length >= 3)
-        polygon(
-          shell,
-          part.map((p) => ({ ...p, y: planes[j](p) })),
-          roofColour,
-        );
+        roofPolygon(part.map((p) => ({ ...p, y: planes[j](p) })));
     }
-    if ((b.minHeight || 0) > 0)
+    if (!roofOnly && (b.minHeight || 0) > 0)
       polygon(
         shell,
         [...triangle].reverse().map((p) => ({ ...p, y: floor })),
@@ -718,8 +739,7 @@ export function appendBuilding(
           bNext = b.footprint[(i + 1) % b.footprint.length],
           [r0, y0] = profile[j - 1],
           [r1, y1] = profile[j];
-        polygon(
-          shell,
+        roofPolygon(
           r1 === 0
             ? [at(a, r0, y0), at(bNext, r0, y0), at(a, 0, y1)]
             : [
@@ -728,7 +748,6 @@ export function appendBuilding(
                 at(bNext, r1, y1),
                 at(a, r1, y1),
               ],
-          roofColour,
         );
       }
   }

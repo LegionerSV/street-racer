@@ -1,9 +1,16 @@
-import { Mesh, MeshBuilder, type Scene } from '@babylonjs/core';
+import {
+  Mesh,
+  MeshBuilder,
+  VertexBuffer,
+  VertexData,
+  type Scene,
+} from '@babylonjs/core';
 
 export function createFenceVisual(
   scene: Scene,
   type: 'park' | 'embankment' | undefined,
   length: number,
+  rise = 0,
 ) {
   if (type !== 'park') {
     const parts: Mesh[] = [];
@@ -22,6 +29,16 @@ export function createFenceVisual(
     }
     const mesh = Mesh.MergeMeshes(parts, true, true, undefined, false, true)!;
     mesh.name = 'embankment-parapet';
+    if (rise && length > 0) {
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+      for (let i = 0; i < positions.length; i += 3)
+        positions[i + 1] += (positions[i + 2] * rise) / length;
+      mesh.setVerticesData(VertexBuffer.PositionKind, positions);
+      const normals: number[] = [];
+      VertexData.ComputeNormals(positions, mesh.getIndices()!, normals);
+      mesh.setVerticesData(VertexBuffer.NormalKind, normals);
+      mesh.refreshBoundingInfo();
+    }
     return mesh;
   }
   const parts: Mesh[] = [];

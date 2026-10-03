@@ -2,6 +2,26 @@ import { expect, it } from 'vitest';
 import { latLonToSourceTile, sourceTileKey } from '../game/source-tiles';
 import { railFeatureTiles } from './generate-rail-overlay';
 
+it.each([
+  [{ railway: 'platform' }, true],
+  [{ public_transport: 'platform', train: 'yes' }, true],
+  [{ public_transport: 'platform', train: 'no' }, false],
+  [{ public_transport: 'platform', bus: 'yes' }, false],
+  [{ public_transport: 'platform' }, false],
+  [{}, false],
+])('выбирает железнодорожные платформы по тегам %j', (properties, selected) => {
+  // Arrange
+  const key = sourceTileKey(latLonToSourceTile(59.93, 30.3));
+  const feature = {
+    geometry: { type: 'Point', coordinates: [30.3, 59.93] },
+    properties,
+  };
+  // Act
+  const result = railFeatureTiles(feature, new Set([key]));
+  // Assert
+  expect(result).toEqual(selected ? [key] : []);
+});
+
 it('выбирает только покрытые тайлы рядом с действующим путём и вокзалом', () => {
   // Arrange
   const center = latLonToSourceTile(59.93, 30.3);
