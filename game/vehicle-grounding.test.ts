@@ -3,6 +3,35 @@ import { Quaternion, Vector3 } from '@babylonjs/core';
 import { vehicleGroundPose, wheelSurfaceY } from './vehicle-grounding';
 import { VEHICLE_PROFILES } from './vehicle-profiles';
 
+it('каждый расчёт опоры заново измеряет все колёса после изменения поверхности', () => {
+  // Arrange
+  const profile = VEHICLE_PROFILES['city-sedan'];
+  let height = 3, calls = 0;
+  const surface = () => { calls++; return height; };
+  // Act
+  const before = vehicleGroundPose(profile, { x: 0, y: 3, z: 0 }, 0, surface);
+  height = 15;
+  const after = vehicleGroundPose(profile, { x: 0, y: 15, z: 0 }, 0, surface);
+  // Assert
+  expect(calls).toBe(16);
+  expect(before.y).toBeCloseTo(3 + profile.rideHeight, 10);
+  expect(after.y).toBeCloseTo(15 + profile.rideHeight, 10);
+});
+
+it('вложенный расчёт опоры не портит промежуточные координаты внешнего', () => {
+  // Arrange
+  const profile = VEHICLE_PROFILES['city-sedan'];
+  const point = { x: 5, y: 3, z: 9 }, surface = (x: number, z: number) => 3 + x * 0.1 + z * 0.15;
+  const expected = vehicleGroundPose(profile, point, 0.7, surface);
+  // Act
+  const actual = vehicleGroundPose(profile, point, 0.7, (x, z) => {
+    vehicleGroundPose(VEHICLE_PROFILES['sport-coupe'], { x: 0, y: 10, z: 0 }, 1.2, () => 10);
+    return surface(x, z);
+  });
+  // Assert
+  expect(actual).toEqual(expected);
+});
+
 it.each([
   ['ровная дорога', 0, 0],
   ['подъём', 0, 0.18],

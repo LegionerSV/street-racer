@@ -43,6 +43,7 @@ import { signalApproaches } from './signal-approaches';
 import { trafficClearancePoint, trajectoryConflict } from './traffic-conflicts';
 import { TrafficCarPool, type TrafficCarLease } from './traffic-pool';
 import { trafficDecisionDue } from './traffic-decisions';
+import { trafficPathLengths } from './traffic-paths';
 
 type Plan = {
   ids: EdgeStableId[];
@@ -86,6 +87,12 @@ type Agent = {
     traits?: RacerTraits;
     finishTime?: number;
   };
+};
+type TrafficSnapshot = {
+  agent: Agent;
+  point: Point;
+  heading: number;
+  speed: number;
 };
 export function roadPitch(
   points: Point[],
@@ -167,6 +174,9 @@ export function trafficVisibleAt(
 export class Traffic {
   private pool: TrafficCarPool;
   agents: Agent[] = [];
+  private snapshot: TrafficSnapshot[] = [];
+  private neighbors: TrafficSnapshot[] = [];
+  private neighborIndex = new TrafficNeighborIndex<TrafficSnapshot>();
   wetness = 0;
   private mobile = false;
   setMobile(mobile: boolean) {
@@ -407,8 +417,9 @@ export class Traffic {
     agent.heading = s.heading;
     const profile = this.profile(agent);
     const edge = edgeById(this.world, agent.edge)!;
-    const roadY = pointAt(edge.points, pathLengths(edge.points), agent.distance)
-      .point.y;
+    const roadY = pointAt(
+      edge.points, trafficPathLengths(this.world, edge.points), agent.distance,
+    ).point.y;
     const pose = vehicleGroundPose(
       profile,
       { ...agent.point, y: roadY },
@@ -644,7 +655,7 @@ export class Traffic {
             )!,
             edge = spawn.edge;
           const entry = pointAt(
-            edge.points, pathLengths(edge.points), spawn.distance,
+            edge.points, trafficPathLengths(this.world, edge.points), spawn.distance,
           ).point;
           if (!trafficEntryAllowed(entry, player, playerHeading, frontier)) continue;
           const a: Agent = {
@@ -687,21 +698,28 @@ export class Traffic {
         }
     }
     // Решения принимаются по одному снимку, чтобы порядок массива не давал преимущество.
-    const snapshot = this.agents.map((a) => ({
-      agent: a,
-      point:
-        a.dynamic && a.visual ? a.visual.root.position.clone() : { ...a.point },
-      heading: a.heading,
-      speed: a.speed,
-    }));
-    const neighborIndex = new TrafficNeighborIndex(snapshot);
+    for (let i = 0; i < this.agents.length; i++) {
+      const a = this.agents[i],
+        point = a.dynamic && a.visual ? a.visual.root.position : a.point,
+        entry = this.snapshot[i] ??= {
+          agent: a, point: { x: 0, y: 0, z: 0 }, heading: 0, speed: 0,
+        };
+      entry.agent = a;
+      entry.point.x = point.x;
+      entry.point.y = point.y;
+      entry.point.z = point.z;
+      entry.heading = a.heading;
+      entry.speed = a.speed;
+    }
+    this.snapshot.length = this.agents.length;
+    this.neighborIndex.reset(this.snapshot);
     for (const a of this.agents) {
       const far = !a.race && !a.dynamic && !a.visual && distance2(a.point, player) > 245;
       const step = trafficStep(frameDt, a.farElapsed || 0, far);
       a.farElapsed = step.pending;
       if (!step.dt) continue;
       const dt = step.dt;
-      const neighbors = neighborIndex.query(a.point, 130);
+      const neighbors = this.neighborIndex.query(a.point, 130, this.neighbors);
       if (!a.plan) this.makePlan(a);
       if (
         !a.race &&
@@ -1176,6 +1194,9 @@ export class Traffic {
   dispose() {
     this.agents.forEach((a) => this.hide(a));
     this.agents = [];
+    this.snapshot.length = 0;
+    this.neighbors.length = 0;
+    this.neighborIndex.reset(this.snapshot);
     this.pool.dispose();
   }
 }

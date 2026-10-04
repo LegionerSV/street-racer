@@ -10,6 +10,9 @@ import HavokPhysics from '@babylonjs/havok';
 import { readFile } from 'node:fs/promises';
 import { Traffic } from './traffic';
 import type { Edge, World } from './types';
+import { createWorldPatch } from './world-patch';
+import { reconcileWorld } from './world-update';
+import { prepareDrivingIndex } from './driving-index';
 
 const edge = (id: number, y: number, rise = 0): Edge => ({
   id,
@@ -72,6 +75,84 @@ async function setup(edges: Edge[]) {
   });
   return { engine, scene, traffic };
 }
+
+it.each(['bridge', 'tunnel', 'dem', 'cancelled'] as const)(
+  'сохраняет опору трафика при догрузке: %s',
+  async (state) => {
+    // Arrange
+    const activeRoad = edge(1, 0.12, 24);
+    const { engine, scene, traffic } = await setup([activeRoad]);
+    try {
+      for (let i = 0; i < 30; i++) {
+        traffic.update(1 / 60, i / 60, { x: 50, y: 1, z: 40 }, 0, false);
+        scene.getPhysicsEngine()!._step(1 / 60);
+      }
+      const agent = traffic.agents[0], before = { ...agent.point };
+      const previous = { ...makeWorld([activeRoad]), spawnEdge: null };
+      const added = edge(2, state === 'tunnel' ? -20 : 20);
+      added.tunnel = state === 'tunnel';
+      added.layer = state === 'tunnel' ? -1 : 1;
+      const next = makeWorld([edge(1, 100, -48), ...(state === 'dem' ? [] : [added])]);
+      next.spawnEdge = null;
+      next.elevation.values.fill(100);
+      const prepared = reconcileWorld(previous, next);
+      // Act
+      const preparation = prepareDrivingIndex(prepared);
+      if (state === 'cancelled') {
+        preparation.next();
+        preparation.return(undefined as never);
+      } else {
+        while (!preparation.next().done) {}
+        traffic.applyWorldPatch(prepared, createWorldPatch(previous, prepared));
+      }
+      traffic.update(0, 0.5, { x: 50, y: 1, z: 40 }, 0, false);
+      scene.getPhysicsEngine()!._step(1 / 60);
+      traffic.updateVisuals(0.5);
+      // Assert
+      expect(agent.point.x).toBeCloseTo(before.x, 10);
+      expect(agent.point.z).toBeCloseTo(before.z, 10);
+      expect(agent.point.y).toBeCloseTo(before.y, 10);
+      expect(prepared.edges[0].points).toBe(activeRoad.points);
+      const car = agent.visual!;
+      car.root.computeWorldMatrix(true);
+      const up = car.root.getDirection(Vector3.Up());
+      for (const wheel of car.wheels) {
+        wheel.computeWorldMatrix(true);
+        const center = wheel.getAbsolutePosition();
+        expect(center.y - car.profile.wheelRadius * up.y).toBeCloseTo(
+          0.12 + center.z * 24 / 400, 2,
+        );
+      }
+    } finally {
+      traffic.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  },
+);
+
+it('замена дороги с тем же ID использует новый профиль и длины пути', async () => {
+  // Arrange
+  const original = edge(1, 0.12), replacement = edge(1, 0.12, 48);
+  const { engine, scene, traffic } = await setup([original]);
+  try {
+    traffic.update(1 / 60, 0, { x: 50, y: 1, z: 40 }, 0, false);
+    const previous = makeWorld([original]), next = makeWorld([replacement]);
+    // Act
+    traffic.applyWorldPatch(next, createWorldPatch(previous, next));
+    traffic.update(1 / 60, 1 / 60, { x: 50, y: 1, z: 40 }, 0, false);
+    const agent = traffic.agents[0];
+    // Assert
+    expect(agent.pitch).toBeCloseTo(-Math.atan2(48, 400), 10);
+    expect(agent.point.y - agent.visual!.profile.rideHeight).toBeCloseTo(
+      0.12 + agent.point.z * 48 / 400, 2,
+    );
+  } finally {
+    traffic.dispose();
+    scene.dispose();
+    engine.dispose();
+  }
+});
 
 it.each([0, 48, -48])(
   'анимированный и физический трафик опираются колёсами на дорогу с перепадом %s',

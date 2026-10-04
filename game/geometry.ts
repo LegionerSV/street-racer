@@ -10,9 +10,11 @@ export const overlaps = (a: Bounds, b: Bounds) =>
   a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ;
 export class SpatialGrid<T> {
   private cells = new Map<string, { item: T; bounds: Bounds }[]>();
+  private queries = new Map<string, { item: T; bounds: Bounds }[]>();
   constructor(
     private size = 32,
     private coverage?: Bounds[],
+    private queryCacheSize = 0,
   ) {}
   get cellCount() {
     return this.cells.size;
@@ -47,6 +49,7 @@ export class SpatialGrid<T> {
     return keys;
   }
   add(item: T, bounds: Bounds) {
+    this.queries.clear();
     const entry = { item, bounds };
     for (const key of this.keys(bounds)) {
       const list = this.cells.get(key) || [];
@@ -56,6 +59,21 @@ export class SpatialGrid<T> {
   }
   query(bounds: Bounds) {
     const found = new Set<T>();
+    if (this.queryCacheSize > 0) {
+      const keys = this.keys(bounds), key = [...keys].join(';');
+      let entries = this.queries.get(key);
+      if (!entries) {
+        entries = [...new Set(
+          [...keys].flatMap(cell => this.cells.get(cell) || []),
+        )];
+        if (this.queries.size >= this.queryCacheSize)
+          this.queries.delete(this.queries.keys().next().value!);
+        this.queries.set(key, entries);
+      }
+      for (const entry of entries)
+        if (overlaps(bounds, entry.bounds)) found.add(entry.item);
+      return [...found];
+    }
     for (const key of this.keys(bounds))
       for (const entry of this.cells.get(key) || [])
         if (overlaps(bounds, entry.bounds)) found.add(entry.item);

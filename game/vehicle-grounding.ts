@@ -20,20 +20,20 @@ export function vehicleGroundPose(
   heading: number,
   surface: VehicleSurface,
 ) {
-  const wheels = [profile.wheelbase / 2, -profile.wheelbase / 2].flatMap((z) =>
-    [-profile.track / 2, profile.track / 2].map(
-      (x) => new Vector3(x, -profile.rideHeight + profile.wheelRadius, z),
-    ),
-  );
+  const halfWheelbase = profile.wheelbase / 2, halfTrack = profile.track / 2,
+    localY = -profile.rideHeight + profile.wheelRadius,
+    wheel = new Vector3(), rotated = new Vector3();
   const height = (x: number, z: number) => {
     const value = surface(x, z);
     return value !== undefined && Number.isFinite(value) ? value : point.y;
   };
   const yaw = Quaternion.RotationYawPitchRoll(heading, 0, 0);
-  const heights = wheels.map((w) => {
-    const p = w.applyRotationQuaternion(yaw);
-    return height(point.x + p.x, point.z + p.z);
-  });
+  const heights: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    wheel.set(i % 2 ? halfTrack : -halfTrack, localY, i < 2 ? halfWheelbase : -halfWheelbase);
+    wheel.applyRotationQuaternionToRef(yaw, rotated);
+    heights.push(height(point.x + rotated.x, point.z + rotated.z));
+  }
   const pitch =
     -Math.atan2(
       (heights[0] + heights[1] - heights[2] - heights[3]) / 2,
@@ -44,16 +44,18 @@ export function vehicleGroundPose(
     profile.track,
   );
   const rotation = Quaternion.RotationYawPitchRoll(heading, pitch, roll);
-  const support = wheels.map((w) => {
-    const p = w.applyRotationQuaternion(rotation);
-    return (
-      height(point.x + p.x, point.z + p.z) -
-      p.y +
-      profile.wheelRadius * Math.cos(pitch) * Math.cos(roll)
+  let support = -Infinity;
+  for (let i = 0; i < 4; i++) {
+    wheel.set(i % 2 ? halfTrack : -halfTrack, localY, i < 2 ? halfWheelbase : -halfWheelbase);
+    wheel.applyRotationQuaternionToRef(rotation, rotated);
+    support = Math.max(support,
+      height(point.x + rotated.x, point.z + rotated.z) -
+      rotated.y +
+      profile.wheelRadius * Math.cos(pitch) * Math.cos(roll),
     );
-  });
+  }
   // На переломе профиля шины не должны проваливаться сквозь асфальт.
-  return { y: Math.max(...support), pitch, roll };
+  return { y: support, pitch, roll };
 }
 
 export function settleVehicleWheels(car: CarVisual, surface: VehicleSurface) {

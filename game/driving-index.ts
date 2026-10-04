@@ -34,6 +34,7 @@ export function* prepareDrivingIndex(
     spatial: new SpatialGrid(
       32,
       coverageBounds(world.loadedTiles, world.center),
+      256,
     ),
     buildings: new Map(),
     roads: new Map(),
