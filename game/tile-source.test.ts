@@ -423,7 +423,7 @@ describe('источники TileArtifactV1', () => {
   it('инвалидирует локальный кэш без смены совместимого S3-формата', () => {
     // Arrange / Act / Assert
     expect(TILE_ARTIFACT_SCHEMA_VERSION).toBe(1);
-    expect(SOURCE_TILE_CACHE_VERSION).toBe(2);
+    expect(SOURCE_TILE_CACHE_VERSION).toBe(3);
   });
   function catalog(
     tileChecksum = JSON.parse(encodeTileArtifact(artifact())).checksum,
@@ -780,7 +780,7 @@ describe('источники TileArtifactV1', () => {
 
     // Assert
     expect(result.kind).toBe(kind);
-    expect(store.get).toHaveBeenCalledWith('source-tile:2:15/19808/10243');
+    expect(store.get).toHaveBeenCalledWith('source-tile:3:15/19808/10243');
   });
 
   it('fallback создаёт валидный артефакт, сохраняет его и повторно читает из IndexedDB', async () => {

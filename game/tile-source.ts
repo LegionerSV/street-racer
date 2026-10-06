@@ -11,7 +11,7 @@ import {
 } from './tile-artifact';
 
 // Версия локального кэша меняется независимо от совместимого формата S3.
-export const SOURCE_TILE_CACHE_VERSION = 2;
+export const SOURCE_TILE_CACHE_VERSION = 3;
 
 export type TileLoadFailureKind =
   | 'missing'

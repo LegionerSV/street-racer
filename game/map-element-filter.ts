@@ -5,7 +5,7 @@ import {
 } from './building-groups';
 import { isShipTags } from './ships';
 import { toLocal } from './geo';
-import { ROAD_TYPES } from './map-object-filters';
+import { ROAD_TYPES, isTowerStructure } from './map-object-filters';
 import type { Center, OSMElement } from './types';
 
 const FRONTAGE_METERS = 30;
@@ -128,7 +128,7 @@ function summarize(elements: OSMElement[]): ElementBreakdown {
     const tags = element.tags ?? {};
     if (tags.highway && element.type === 'way') result.roads++;
     if (tags['building:part']) result.buildingParts++;
-    else if (tags.building) result.buildings++;
+    else if (tags.building || isTowerStructure(tags)) result.buildings++;
     if (tags.natural === 'tree' && element.type === 'node') result.trees++;
     if (isArea(element)) result.areas++;
   }
@@ -306,6 +306,7 @@ export function reduceMapElements(
       retain(element);
     } else if (
       (tags.building && tags.building !== 'no') ||
+      isTowerStructure(tags) ||
       isShipTags(tags) ||
       isBuildingPart(tags) ||
       tags.type === 'building' ||
@@ -314,6 +315,7 @@ export function reduceMapElements(
     ) {
       if (
         tags.building === 'wall' ||
+        isTowerStructure(tags) ||
         isShipTags(tags) ||
         isSignificantBuilding(tags) ||
         (mode !== 'roads' &&

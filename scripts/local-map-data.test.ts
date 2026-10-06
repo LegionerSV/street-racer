@@ -89,6 +89,7 @@ it('держит osmium-фильтры эквивалентными катего
     ['building', '["building"]'],
     ['building:part', '["building:part"]'],
     ['r/building:part', 'relation["building:part"]'],
+    ['man_made=tower,water_tower', '["man_made"~"^(tower|water_tower)$"]'],
     ['natural=water,wood,tree', '["natural"'],
     ['waterway=riverbank', '["waterway"="riverbank"]'],
     ['landuse=forest,grass,meadow,reservoir', '["landuse"'],

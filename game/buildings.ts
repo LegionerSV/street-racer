@@ -7,6 +7,7 @@ import {
   type Prism,
 } from './geometry';
 import { distance2, mixPoint } from './geo';
+import { isTowerStructure } from './map-object-filters';
 import type { Building, MeshData, Point, Tags } from './types';
 type Colour = [number, number, number];
 
@@ -146,6 +147,8 @@ export function windowsForbiddenByTags(tags: Tags) {
   const part = tags['building:part'] || '';
   return (
     values.some((value) => ['no', 'false', '0', 'none'].includes(value)) ||
+    ((tags.building === 'service' || isTowerStructure(tags)) &&
+      !hasExplicitWindows(tags)) ||
     [
       'bridge',
       'bunker',

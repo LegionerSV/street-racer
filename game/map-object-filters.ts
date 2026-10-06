@@ -1,3 +1,11 @@
+import type { Tags } from './types';
+
+export function isTowerStructure(tags: Tags) {
+  return (
+    ['tower', 'water_tower'].includes(tags.man_made) && tags.building !== 'no'
+  );
+}
+
 export const ROAD_TYPES = [
   'motorway',
   'motorway_link',

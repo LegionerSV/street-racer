@@ -7,6 +7,7 @@ import {
 } from './bridge-railings';
 import { appendParapet } from './parapet';
 import { shorelineSpans } from './shoreline';
+import { parkFencePadding, parkFenceSpan } from './park-fences';
 import { ASPHALT_COLOUR } from './surface-textures';
 import { coverageBounds } from './stream-coverage';
 import { carriagewayJoin, type CarriagewayJoin } from './carriageways';
@@ -1384,10 +1385,7 @@ export function buildChunk(
       );
       const quay = bank && area.railing === 'river' ? quayHeight(p) : undefined;
       if (quay !== undefined) roadHeight = quay;
-      else if (
-        (inside || (bank && area.railing !== 'river')) &&
-        !roadSamples.length
-      )
+      else if (inside && area.railing === 'river' && !roadSamples.length)
         roadHeight = Math.min(roadHeight, waterLevel(area, p) - 3);
     }
     index.ground.set(cacheKey, roadHeight);
@@ -2176,7 +2174,19 @@ export function buildChunk(
       maxx = Math.max(...area.points.map((p) => p.x)),
       minz = Math.min(...area.points.map((p) => p.z)),
       maxz = Math.max(...area.points.map((p) => p.z));
-    if (maxx < x0 || minx > x0 + 250 || maxz < z0 || minz > z0 + 250) continue;
+    if (maxx < x0 || minx > x0 + 250 || maxz < z0 || minz > z0 + 250) {
+      if (lod !== 0 || !area.railing || area.railing === 'river') continue;
+      const padding = parkFencePadding(
+        index.spatial.query(boundsOf(area.points, 20)),
+      );
+      if (
+        maxx + padding < x0 ||
+        minx - padding > x0 + 250 ||
+        maxz + padding < z0 ||
+        minz - padding > z0 + 250
+      )
+        continue;
+    }
     if (area.kind === 'water') {
       const y = waterLevel(area, { x: x0, y: 0, z: z0 }),
         rings = [area.points, ...(area.holes || [])],
@@ -2369,10 +2379,24 @@ export function buildChunk(
           const a = ring[i],
             b = ring[(i + 1) % ring.length],
             length = distance2(a, b),
-            parts = Math.max(1, Math.ceil(length / 10));
+            parts = Math.max(1, Math.ceil(length / 10)),
+            nearbyRoads = index.spatial.query(boundsOf([a, b], 20));
           for (let j = 0; j < parts; j++) {
-            const p = mixPoint(a, b, j / parts),
-              q = mixPoint(a, b, (j + 1) / parts),
+            const span = parkFenceSpan(
+              mixPoint(a, b, j / parts),
+              mixPoint(a, b, (j + 1) / parts),
+              nearbyRoads,
+              terrainHeight,
+              {
+                previous:
+                  j === 0
+                    ? ring[(i + ring.length - 1) % ring.length]
+                    : undefined,
+                next: j === parts - 1 ? ring[(i + 2) % ring.length] : undefined,
+              },
+            );
+            if (!span) continue;
+            const [p, q] = span,
               mid = mixPoint(p, q, 0.5);
             if (tileKey(mid.x, mid.z) !== key) continue;
             result.breakables.push({
@@ -2381,6 +2405,7 @@ export function buildChunk(
               point: mid,
               heading: Math.atan2(q.x - p.x, q.z - p.z),
               length: distance2(p, q),
+              rise: q.y - p.y,
             });
           }
         }

@@ -39,6 +39,7 @@ export const OSMIUM_FILTER_EXPRESSIONS = [
   'w/building:part',
   'r/building',
   'r/building:part',
+  'nwr/man_made=tower,water_tower',
   'nwr/historic=ship',
   'nwr/ship:type',
   'nwr/natural=water,wood,tree',

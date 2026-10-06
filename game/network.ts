@@ -64,6 +64,7 @@ import { applyBuildingAppearances } from './building-appearance';
 import { isShipTags } from './ships';
 import { addLandmarkSupplements } from './landmark-supplements';
 import { SpatialGrid, boundsOf, overlaps } from './geometry';
+import { isTowerStructure } from './map-object-filters';
 import {
   coverageBounds,
   pointHasCoverage,
@@ -495,6 +496,7 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
     if (
       ((t.building && t.building !== 'no') ||
         isBuildingPart(t) ||
+        isTowerStructure(t) ||
         isShipTags(t)) &&
       t.location !== 'underground'
     ) {
@@ -520,7 +522,17 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
             : undefined;
       const roofOnly = isRoofOnly(t);
       const fallbackLevels =
-        roofOnly || ['garage', 'garages', 'shed', 'hut'].includes(t.building)
+        roofOnly ||
+        isTowerStructure(t) ||
+        [
+          'garage',
+          'garages',
+          'shed',
+          'hut',
+          'service',
+          'retail',
+          'kiosk',
+        ].includes(t.building)
           ? 1
           : [
                 'yes',
@@ -659,7 +671,10 @@ export function buildWorld(region: RegionData, racePreviews = true): World {
         windowPolicy,
         kind: isShipTags(t)
           ? 'ship'
-          : t.building || inheritedGroupTags?.building,
+          : t.building ||
+            (isTowerStructure(t)
+              ? t['tower:type'] || t.man_made
+              : inheritedGroupTags?.building),
         roofHeight: roofHeight || undefined,
         roofDirection,
         roofAngle,

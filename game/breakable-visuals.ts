@@ -6,6 +6,20 @@ import {
   type Scene,
 } from '@babylonjs/core';
 
+function inclineFence(mesh: Mesh, length: number, rise: number): Mesh {
+  if (rise && length > 0) {
+    const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+    for (let i = 0; i < positions.length; i += 3)
+      positions[i + 1] += (positions[i + 2] * rise) / length;
+    mesh.setVerticesData(VertexBuffer.PositionKind, positions);
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, mesh.getIndices()!, normals);
+    mesh.setVerticesData(VertexBuffer.NormalKind, normals);
+    mesh.refreshBoundingInfo();
+  }
+  return mesh;
+}
+
 export function createFenceVisual(
   scene: Scene,
   type: 'park' | 'embankment' | undefined,
@@ -29,17 +43,7 @@ export function createFenceVisual(
     }
     const mesh = Mesh.MergeMeshes(parts, true, true, undefined, false, true)!;
     mesh.name = 'embankment-parapet';
-    if (rise && length > 0) {
-      const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
-      for (let i = 0; i < positions.length; i += 3)
-        positions[i + 1] += (positions[i + 2] * rise) / length;
-      mesh.setVerticesData(VertexBuffer.PositionKind, positions);
-      const normals: number[] = [];
-      VertexData.ComputeNormals(positions, mesh.getIndices()!, normals);
-      mesh.setVerticesData(VertexBuffer.NormalKind, normals);
-      mesh.refreshBoundingInfo();
-    }
-    return mesh;
+    return inclineFence(mesh, length, rise);
   }
   const parts: Mesh[] = [];
   for (const y of [0.62, 1.42]) {
@@ -76,5 +80,5 @@ export function createFenceVisual(
   }
   const mesh = Mesh.MergeMeshes(parts, true, true, undefined, false, true)!;
   mesh.name = 'park-fence';
-  return mesh;
+  return inclineFence(mesh, length, rise);
 }
